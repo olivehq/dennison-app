@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/app/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
 import type { ExportKind } from "@/server/exports/kinds";
 import { exportAvailability, type ExportState } from "@/server/exports/queries";
@@ -58,6 +59,7 @@ function LastGenerated({ state }: { state: ExportState }) {
 }
 
 export default async function ExportsPage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();

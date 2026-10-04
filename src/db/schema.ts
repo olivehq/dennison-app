@@ -251,21 +251,28 @@ export const nameAliases = pgTable(
   "name_aliases",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    eventId: uuid("event_id")
-      .notNull()
-      .references(() => events.id, { onDelete: "cascade" }),
+    // Null for a cross-year alias: it applies to every event and
+    // resolves through canonical_name instead of a roster id from one year.
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "cascade" }),
     rawText: text("raw_text").notNull(),
     entityType: partyTypeEnum("entity_type").notNull(),
     entityId: uuid("entity_id").notNull(),
+    // The roster name a cross-year alias points at. Null for event aliases.
+    canonicalName: text("canonical_name"),
     source: aliasSourceEnum("source").notNull(),
     createdAt: createdAt(),
   },
   (table) => [
+    // Event aliases. NULL event_id rows are distinct here, so they need the
+    // partial index below. Kept as plain columns so ON CONFLICT can infer it.
     uniqueIndex("name_aliases_event_type_raw_key").on(
       table.eventId,
       table.entityType,
       table.rawText,
     ),
+    uniqueIndex("name_aliases_global_type_raw_key")
+      .on(table.entityType, sql`lower(${table.rawText})`)
+      .where(sql`${table.eventId} is null`),
   ],
 );
 
@@ -345,7 +352,11 @@ export const matchRuns = pgTable(
     createdAt: createdAt(),
     completedAt: timestamptz("completed_at"),
   },
-  (table) => [index("match_runs_event_idx").on(table.eventId, table.createdAt)],
+  (table) => [
+    index("match_runs_event_idx").on(table.eventId, table.createdAt),
+    // At most one active run per event (D33). The database is the authority.
+    uniqueIndex("match_runs_event_active_key").on(table.eventId).where(sql`${table.isActive}`),
+  ],
 );
 
 export const appointments = pgTable(
@@ -432,6 +443,10 @@ export const accessTokens = pgTable(
   },
   (table) => [
     index("access_tokens_event_entity_idx").on(table.eventId, table.contactType, table.entityId),
+    // At most one live (unrevoked) link per contact (D59).
+    uniqueIndex("access_tokens_contact_live_key")
+      .on(table.contactType, table.entityId)
+      .where(sql`${table.revokedAt} is null`),
   ],
 );
 

@@ -68,7 +68,7 @@ export async function undoAuditAction(input: unknown): Promise<ActionResult<Edit
   const admin = await requireAdmin();
   const parsed = undoAuditInput.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
-  const result = await undoAudit(getDb(), { auditEventId: parsed.data.auditEventId, adminId: admin.id });
+  const result = await undoAudit(getDb(), { ...parsed.data, adminId: admin.id });
   if (result.ok) revalidateSchedule(result.data.eventId);
   return result;
 }

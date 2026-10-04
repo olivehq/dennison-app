@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { isRankingKind, type ImportKind } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
 import {
   getImportStatusByKind,
@@ -90,6 +91,7 @@ function ReadinessPanel({ eventId, readiness }: { eventId: string; readiness: Ma
 }
 
 export default async function ImportsPage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();

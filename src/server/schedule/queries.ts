@@ -16,4 +16,5 @@ export {
   type ScheduleSlot,
   type ScheduleSupplier,
   type ScheduleView,
+  type WithdrawnEntry,
 } from "./views";

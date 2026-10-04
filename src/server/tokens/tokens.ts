@@ -1,4 +1,5 @@
-import { and, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import { z } from "zod";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
@@ -6,12 +7,15 @@ import {
   suppliers,
   type AccessToken,
   type ContactType,
+  type Event,
 } from "@/db/schema";
 import { env } from "@/lib/env";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import { endOfDayInTimezone } from "@/lib/time";
 import { decryptToken, encryptToken, generateToken, hashToken } from "@/lib/tokens";
-import { buyerDisplayName, loadEvent } from "@/server/matching/common";
+import { recordAudit } from "@/server/audit/audit";
+import { getEvent } from "@/server/events/queries";
+import { displayNameFor } from "@/server/roster/display-name";
 
 /**
  * Participant access links (D14, scope 2.6). One token per contact: every
@@ -88,7 +92,7 @@ export async function listContacts(db: Db, eventId: string): Promise<ContactRef[
   const contacts: ContactRef[] = [];
   for (const b of buyers) {
     if (!b.email) continue;
-    contacts.push({ contactType: "buyer", entityId: b.id, name: buyerDisplayName(b), email: b.email });
+    contacts.push({ contactType: "buyer", entityId: b.id, name: displayNameFor(b), email: b.email });
   }
   for (const s of supplierRows) {
     if (s.adminContactEmail) {
@@ -111,23 +115,51 @@ export async function listContacts(db: Db, eventId: string): Promise<ContactRef[
   return contacts;
 }
 
+/**
+ * Gives the contact a live link and returns it. At most one unrevoked token
+ * per contact exists (unique index `access_tokens_contact_live_key`), so an
+ * expired one is revoked first, and when another request issued a link a
+ * moment earlier that link is reused instead of failing. Safe inside a
+ * transaction: the insert uses ON CONFLICT DO NOTHING, which never aborts it.
+ */
 export async function issueTokenForContact(
   db: Db,
   input: { eventId: string; contactType: ContactType; entityId: string; expiresAt: Date },
 ): Promise<{ tokenId: string; token: string; expiresAt: Date }> {
-  const token = generateToken();
-  const [row] = await db
-    .insert(accessTokens)
-    .values({
-      eventId: input.eventId,
-      contactType: input.contactType,
-      entityId: input.entityId,
-      tokenHash: hashToken(token),
-      tokenCiphertext: encryptToken(token),
-      expiresAt: input.expiresAt,
-    })
-    .returning({ id: accessTokens.id, expiresAt: accessTokens.expiresAt });
-  return { tokenId: row.id, token, expiresAt: row.expiresAt };
+  const now = new Date();
+  const contactIs = and(
+    eq(accessTokens.contactType, input.contactType),
+    eq(accessTokens.entityId, input.entityId),
+    isNull(accessTokens.revokedAt),
+  );
+  await db.update(accessTokens).set({ revokedAt: now }).where(and(contactIs, lte(accessTokens.expiresAt, now)));
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = generateToken();
+    const [row] = await db
+      .insert(accessTokens)
+      .values({
+        eventId: input.eventId,
+        contactType: input.contactType,
+        entityId: input.entityId,
+        tokenHash: hashToken(token),
+        tokenCiphertext: encryptToken(token),
+        expiresAt: input.expiresAt,
+      })
+      .onConflictDoNothing({
+        target: [accessTokens.contactType, accessTokens.entityId],
+        where: sql`${accessTokens.revokedAt} is null`,
+      })
+      .returning({ id: accessTokens.id, expiresAt: accessTokens.expiresAt });
+    if (row) return { tokenId: row.id, token, expiresAt: row.expiresAt };
+
+    const [live] = await db.select().from(accessTokens).where(contactIs).limit(1);
+    const plain = live?.tokenCiphertext ? decryptToken(live.tokenCiphertext) : null;
+    if (live && plain) return { tokenId: live.id, token: plain, expiresAt: live.expiresAt };
+    // A link from before D59 can't be handed out again: retire it and retry once.
+    if (live) await db.update(accessTokens).set({ revokedAt: now }).where(eq(accessTokens.id, live.id));
+  }
+  throw new Error(`Could not issue a link for ${input.contactType} ${input.entityId}.`);
 }
 
 async function issueForContacts(
@@ -155,7 +187,7 @@ async function issueForContacts(
  * this twice is safe. Returns only the newly issued plain tokens.
  */
 export async function issueTokensForEvent(db: Db, eventId: string): Promise<ActionResult<IssuedToken[]>> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   const now = new Date();
   const [contacts, existing] = await Promise.all([
@@ -175,7 +207,7 @@ export async function issueTokensForEvent(db: Db, eventId: string): Promise<Acti
  * database only holds hashes. Older links stop working.
  */
 export async function rotateTokensForEvent(db: Db, eventId: string): Promise<ActionResult<IssuedToken[]>> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   const contacts = await listContacts(db, eventId);
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
@@ -205,7 +237,7 @@ export async function linksForContacts(
   contacts: Pick<ContactRef, "contactType" | "entityId">[],
   options: { issueMissing: boolean },
 ): Promise<ActionResult<Map<string, ContactLink>>> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   const now = new Date();
   const rows = await db
@@ -254,40 +286,121 @@ export async function linksForContacts(
   return ok(links);
 }
 
-/** Revokes one token. Already revoked tokens are left as they are. Callers write the audit row. */
-export async function revokeToken(db: Db, tokenId: string): Promise<ActionResult<{ tokenId: string }>> {
-  const [row] = await db.select().from(accessTokens).where(eq(accessTokens.id, tokenId)).limit(1);
+const tokenIdSchema = z.uuid();
+
+type TokenContext = { row: AccessToken; event: Event };
+
+/**
+ * Loads a token for a link action, refusing archived events and, unless
+ * `allowWithdrawn`, people who withdrew. Links are allowed on locked and sent
+ * events (AGENTS.md, "locked event" exceptions).
+ */
+async function loadTokenForChange(
+  db: Db,
+  tokenId: unknown,
+  options: { allowWithdrawn: boolean },
+): Promise<ActionResult<TokenContext>> {
+  const parsed = tokenIdSchema.safeParse(tokenId);
+  if (!parsed.success) return fail("not_found", "That link no longer exists.");
+  const [row] = await db.select().from(accessTokens).where(eq(accessTokens.id, parsed.data)).limit(1);
   if (!row) return fail("not_found", "That link no longer exists.");
-  if (row.revokedAt) return ok({ tokenId: row.id });
-  await db.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, row.id));
-  return ok({ tokenId: row.id });
+  const event = await getEvent(row.eventId, db);
+  if (!event) return fail("not_found", "That event no longer exists.");
+  if (event.status === "archived") return fail("locked", "This event is archived and can't be changed.");
+  if (!options.allowWithdrawn && (await contactStatus(db, row)) !== "active") {
+    return fail("conflict", "This person has withdrawn. Restore them before giving them a new link.");
+  }
+  return ok({ row, event });
+}
+
+async function contactStatus(db: Db, row: Pick<AccessToken, "contactType" | "entityId">): Promise<string | null> {
+  if (row.contactType === "buyer") {
+    const [p] = await db.select({ status: participants.status }).from(participants).where(eq(participants.id, row.entityId)).limit(1);
+    return p?.status ?? null;
+  }
+  const [s] = await db.select({ status: suppliers.status }).from(suppliers).where(eq(suppliers.id, row.entityId)).limit(1);
+  return s?.status ?? null;
 }
 
 /**
- * Revokes a token and issues a new one for the same contact, with the expiry
- * recomputed from the event date. Returns the new plain token once.
+ * Revokes one token and audits it in the same transaction. Already revoked
+ * tokens are left as they are. Allowed for a withdrawn person, since it only
+ * removes access; refused on an archived event.
+ */
+export async function revokeToken(
+  db: Db,
+  tokenId: unknown,
+  adminId: string | null,
+): Promise<ActionResult<{ tokenId: string; eventId: string }>> {
+  const loaded = await loadTokenForChange(db, tokenId, { allowWithdrawn: true });
+  if (!loaded.ok) return loaded;
+  const { row } = loaded.data;
+  if (row.revokedAt) return ok({ tokenId: row.id, eventId: row.eventId });
+  await db.transaction(async (tx) => {
+    const changed = await tx
+      .update(accessTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(accessTokens.id, row.id), isNull(accessTokens.revokedAt)))
+      .returning({ id: accessTokens.id });
+    if (changed.length === 0) return;
+    await recordAudit(tx, {
+      eventId: row.eventId,
+      adminId,
+      action: "token.revoke",
+      entityType: "access_token",
+      entityId: row.id,
+      after: { contactType: row.contactType, entityId: row.entityId },
+    });
+  });
+  return ok({ tokenId: row.id, eventId: row.eventId });
+}
+
+/**
+ * Revokes the contact's live links and issues a new one, with the expiry
+ * recomputed from the event date, then audits it, all in one transaction.
+ * Refused for a withdrawn person or an archived event. Returns the new plain
+ * token once.
  */
 export async function regenerateToken(
   db: Db,
-  tokenId: string,
-): Promise<ActionResult<{ tokenId: string; token: string; expiresAt: Date; previousTokenId: string }>> {
-  const [row] = await db.select().from(accessTokens).where(eq(accessTokens.id, tokenId)).limit(1);
-  if (!row) return fail("not_found", "That link no longer exists.");
-  const event = await loadEvent(db, row.eventId);
-  if (!event) return fail("not_found", "That event no longer exists.");
+  tokenId: unknown,
+  adminId: string | null,
+): Promise<
+  ActionResult<{ tokenId: string; token: string; expiresAt: Date; previousTokenId: string; eventId: string }>
+> {
+  const loaded = await loadTokenForChange(db, tokenId, { allowWithdrawn: false });
+  if (!loaded.ok) return loaded;
+  const { row, event } = loaded.data;
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
   const issued = await db.transaction(async (tx) => {
-    if (!row.revokedAt) {
-      await tx.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, row.id));
-    }
-    return issueTokenForContact(tx, {
+    await tx
+      .update(accessTokens)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(accessTokens.contactType, row.contactType),
+          eq(accessTokens.entityId, row.entityId),
+          isNull(accessTokens.revokedAt),
+        ),
+      );
+    const fresh = await issueTokenForContact(tx, {
       eventId: row.eventId,
       contactType: row.contactType,
       entityId: row.entityId,
       expiresAt,
     });
+    await recordAudit(tx, {
+      eventId: row.eventId,
+      adminId,
+      action: "token.regenerate",
+      entityType: "access_token",
+      entityId: fresh.tokenId,
+      before: { tokenId: row.id },
+      after: { contactType: row.contactType, entityId: row.entityId, expiresAt: fresh.expiresAt },
+    });
+    return fresh;
   });
-  return ok({ ...issued, previousTokenId: row.id });
+  return ok({ ...issued, previousTokenId: row.id, eventId: row.eventId });
 }
 
 /**

@@ -7,8 +7,9 @@ import { E2E_ADMIN } from "./helpers";
 export default function globalSetup() {
   rmSync(E2E_DATA_DIR, { recursive: true, force: true });
   const env = { ...process.env, LOCAL_DATA_DIR: E2E_DATA_DIR, APP_URL: E2E_URL, DATABASE_URL: "" };
-  const run = (...args: string[]) => execFileSync("pnpm", args, { env, stdio: "inherit" });
-  run("db:migrate");
-  run("create-admin", E2E_ADMIN.email, E2E_ADMIN.name, E2E_ADMIN.password);
-  run("db:seed");
+  const run = (args: string[], extraEnv: Record<string, string> = {}) =>
+    execFileSync("pnpm", args, { env: { ...env, ...extraEnv }, stdio: "inherit" });
+  run(["db:migrate"]);
+  run(["create-admin", E2E_ADMIN.email, E2E_ADMIN.name], { ADMIN_PASSWORD: E2E_ADMIN.password });
+  run(["db:seed"]);
 }

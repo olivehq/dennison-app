@@ -3,11 +3,13 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { appointments, events, matchRuns, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { raceBeforeTransaction } from "@/server/events/test-race";
 import { VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
-import { nameWarning } from "./common";
-import { getActiveRun, getRun, listRuns } from "./queries";
-import { activateRun, compareRuns, setPinned, startRun } from "./runs";
+import { isUniqueViolation, nameWarning } from "./common";
+import { activationPreviews, compareRunForPage, getActiveRun, getRun, listRuns } from "./queries";
+import { activateRun, compareRuns, failRunsOlderThan, setPinned, startRun } from "./runs";
 import { seedEvent, UUID_RE, type Seeded } from "./test-seed";
 
 let db: Db;
@@ -211,6 +213,131 @@ describe("locked events", () => {
     const pin = await setPinned(db, { appointmentId: row.appointments.id, pinned: false, adminId: seeded.adminId });
     expect(!pin.ok && pin.error.code).toBe("locked");
     await db.update(events).set({ status: "matched" }).where(eq(events.id, seeded.eventId));
+  });
+});
+
+describe("one active run per event", () => {
+  it("the partial unique index rejects a second active run", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    const first = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    const second = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!first.ok || !second.ok) throw new Error("runs failed");
+    const error = await db
+      .update(matchRuns)
+      .set({ isActive: true })
+      .where(eq(matchRuns.id, second.data.runId))
+      .then(() => null, (e: unknown) => e);
+    expect(isUniqueViolation(error)).toBe(true);
+  });
+
+  it("a first run that loses the race to another first run is stored completed and inactive", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    // Another admin's first run completes and activates while this one is matching.
+    const winner = async () => {
+      const [row] = await db
+        .insert(matchRuns)
+        .values({
+          eventId: other.eventId,
+          status: "completed",
+          settingsSnapshot: (await db.select().from(events).where(eq(events.id, other.eventId)))[0].settings,
+          isActive: true,
+          createdBy: other.adminId,
+          completedAt: new Date(),
+        })
+        .returning();
+      return row;
+    };
+    const result = await startRun(raceBeforeTransaction(db, winner), {
+      eventId: other.eventId,
+      adminId: other.adminId,
+      keepExisting: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.isActive).toBe(false);
+    const runs = await listRuns(other.eventId, db);
+    expect(runs.filter((r) => r.isActive)).toHaveLength(1);
+    expect(runs.find((r) => r.id === result.data.runId)?.status).toBe("completed");
+  });
+
+  it("activateRun is a conflict when the event was locked between its read and its write", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    const first = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    const second = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!first.ok || !second.ok) throw new Error("runs failed");
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
+    const result = await activateRun(raceBeforeTransaction(db, lock), { runId: second.data.runId, adminId: other.adminId });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await getActiveRun(other.eventId, db))?.id).toBe(first.data.runId);
+  });
+
+  it("startRun marks its run failed when the event is locked while the engine runs", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
+    const result = await startRun(raceBeforeTransaction(db, lock), { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    const runs = await listRuns(other.eventId, db);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe("failed");
+    expect(await db.select().from(appointments).where(eq(appointments.eventId, other.eventId))).toHaveLength(0);
+  });
+});
+
+describe("failRunsOlderThan", () => {
+  it("fails runs still running after the timeout, from listRuns, and leaves fresh ones", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    const [event] = await db.select().from(events).where(eq(events.id, other.eventId));
+    const stale = new Date(Date.now() - 11 * 60_000);
+    const [old] = await db
+      .insert(matchRuns)
+      .values({ eventId: other.eventId, status: "running", settingsSnapshot: event.settings, createdAt: stale })
+      .returning();
+    const [fresh] = await db
+      .insert(matchRuns)
+      .values({ eventId: other.eventId, status: "running", settingsSnapshot: event.settings })
+      .returning();
+    const runs = await listRuns(other.eventId, db);
+    expect(runs.find((r) => r.id === old.id)?.status).toBe("failed");
+    expect(runs.find((r) => r.id === fresh.id)?.status).toBe("running");
+    expect((await getRun(old.id, db))?.warnings).toEqual(["Timed out"]);
+    expect(await failRunsOlderThan(db, 10)).toBe(0);
+  });
+});
+
+describe("comparisons for the matching page", () => {
+  it("compares a kept-existing run with its parent by default and can switch to the active run", async () => {
+    const other = await seedEvent(db);
+    const first = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    const second = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!first.ok || !second.ok) throw new Error("runs failed");
+    // Activate the second, re-run keeping it, then go back to the first: the re-run's parent is not the active run.
+    await activateRun(db, { runId: second.data.runId, adminId: other.adminId });
+    const rerun = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: true });
+    if (!rerun.ok) throw new Error("rerun failed");
+    await activateRun(db, { runId: first.data.runId, adminId: other.adminId });
+
+    const byDefault = await compareRunForPage(other.eventId, rerun.data.runId, undefined, db);
+    expect(byDefault?.against).toBe("parent");
+    expect(byDefault?.otherRunId).toBe(second.data.runId);
+    expect(byDefault?.options).toEqual(["parent", "active"]);
+    expect(byDefault?.result.ok && byDefault.result.data.removed).toEqual([]);
+
+    const vsActive = await compareRunForPage(other.eventId, rerun.data.runId, "active", db);
+    expect(vsActive?.otherRunId).toBe(first.data.runId);
+
+    // A run with no parent compares with the active run; the active run has nothing to compare with.
+    expect((await compareRunForPage(other.eventId, second.data.runId, undefined, db))?.against).toBe("active");
+    expect(await compareRunForPage(other.eventId, first.data.runId, undefined, db)).toBeNull();
+
+    const previews = await activationPreviews(other.eventId, db);
+    expect([...previews.keys()].sort()).toEqual([second.data.runId, rerun.data.runId].sort());
+    const full = await compareRuns(db, { runId: second.data.runId, otherRunId: first.data.runId });
+    if (!full.ok) throw new Error("compare failed");
+    expect(previews.get(second.data.runId)).toEqual({
+      added: full.data.added.length,
+      removed: full.data.removed.length,
+      countChanges: full.data.countChanges.length,
+    });
   });
 });
 

@@ -10,7 +10,8 @@ import {
   type Supplier,
 } from "@/db/schema";
 import type { Appointment, Buyer, MatchInput, Ranking, Supplier as EngineSupplier } from "@/engine";
-import { buyerDisplayName, loadEvent } from "./common";
+import { getEvent } from "@/server/events/queries";
+import { displayNameFor } from "@/server/roster/display-name";
 
 /** Everything about an event's people that the engine and the views need. */
 export type Roster = {
@@ -23,7 +24,7 @@ export type Roster = {
 };
 
 export async function loadRoster(db: Db, eventId: string): Promise<Roster | null> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return null;
   const [participantRows, supplierRows, rankingRows] = await Promise.all([
     db.select().from(participants).where(eq(participants.eventId, eventId)),
@@ -31,7 +32,7 @@ export async function loadRoster(db: Db, eventId: string): Promise<Roster | null
     db.select().from(rankings).where(eq(rankings.eventId, eventId)),
   ]);
   const names = new Map<string, string>();
-  for (const p of participantRows) names.set(p.id, buyerDisplayName(p));
+  for (const p of participantRows) names.set(p.id, displayNameFor(p));
   for (const s of supplierRows) names.set(s.id, s.name);
   return { event, participants: participantRows, suppliers: supplierRows, rankings: rankingRows, names };
 }
@@ -73,14 +74,4 @@ export function buildMatchInput(roster: Roster, pinned: Appointment[]): MatchInp
     rankings: toEngineRankings(roster.rankings),
     pinned,
   };
-}
-
-export async function loadMatchInput(
-  db: Db,
-  eventId: string,
-  options: { pinned: Appointment[] },
-): Promise<MatchInput | null> {
-  const roster = await loadRoster(db, eventId);
-  if (!roster) return null;
-  return buildMatchInput(roster, options.pinned);
 }

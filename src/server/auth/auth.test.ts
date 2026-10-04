@@ -20,6 +20,12 @@ async function seedFirstAdmin(email: string) {
   return id;
 }
 
+/** Sign-up body with the invite token. Better Auth passes extra body keys through to the create hook untyped. */
+function signUpBody(email: string, name: string, inviteToken: string | undefined) {
+  const body = { email, password: PASSWORD, name, inviteToken };
+  return body as { email: string; password: string; name: string };
+}
+
 function inviteTokenFromEmail(): string {
   const last = getLoggedEmails().at(-1);
   const match = last?.text?.match(/\/invite\/([A-Za-z0-9_-]+)/);
@@ -58,9 +64,10 @@ describe("sign up", () => {
     expect(await getInviteByToken("not-a-real-token", db)).toBeNull();
 
     const result = await auth.api.signUpEmail({
-      body: { email: "new@example.com", password: PASSWORD, name: "New Admin" },
+      body: signUpBody("new@example.com", "New Admin", token),
     });
     expect(result.user.email).toBe("new@example.com");
+    expect(result.user).not.toHaveProperty("inviteToken");
 
     const [row] = await db.select().from(admins).where(eq(admins.email, "new@example.com"));
     expect(row.invitedBy).toBe(founderId);
@@ -72,6 +79,49 @@ describe("sign up", () => {
 
     const audit = await listAudit({ eventId: null }, db);
     expect(audit.rows.map((r) => r.action)).toEqual(["admin.accept_invite", "admin.invite"]);
+  });
+
+  it("fails with a missing, wrong, or another person's token", async () => {
+    const founderId = "admin-founder@example.com";
+    await createInvite(db, { email: "victim@example.com", name: "Victim", invitedBy: founderId });
+    const victimToken = inviteTokenFromEmail();
+    await createInvite(db, { email: "attacker@example.com", name: "Attacker", invitedBy: founderId });
+    const attackerToken = inviteTokenFromEmail();
+
+    for (const inviteToken of [undefined, "", "not-a-real-token", attackerToken]) {
+      await expect(
+        auth.api.signUpEmail({
+          body: signUpBody("victim@example.com", "Victim", inviteToken),
+        }),
+      ).rejects.toThrow(/invitation/i);
+    }
+    expect(await db.select().from(admins).where(eq(admins.email, "victim@example.com"))).toHaveLength(0);
+
+    const ok = await auth.api.signUpEmail({
+      body: signUpBody("victim@example.com", "Victim", victimToken),
+    });
+    expect(ok.user.email).toBe("victim@example.com");
+    // Later tests count active admins; keep this one out of them.
+    await db.update(admins).set({ disabledAt: new Date() }).where(eq(admins.id, ok.user.id));
+  });
+
+  it("fails with a token that was already used", async () => {
+    const founderId = "admin-founder@example.com";
+    await createInvite(db, { email: "once@example.com", name: "Once", invitedBy: founderId });
+    const token = inviteTokenFromEmail();
+    const first = await auth.api.signUpEmail({
+      body: signUpBody("once@example.com", "Once", token),
+    });
+    // Free the email and retire the account so only the used invite can stop the second attempt.
+    await db
+      .update(admins)
+      .set({ email: "once-renamed@example.com", disabledAt: new Date() })
+      .where(eq(admins.id, first.user.id));
+    await expect(
+      auth.api.signUpEmail({
+        body: signUpBody("once@example.com", "Once", token),
+      }),
+    ).rejects.toThrow(/invitation/i);
   });
 
   it("refuses a second pending invite for the same email, and an invite for an existing admin", async () => {

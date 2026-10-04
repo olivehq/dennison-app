@@ -5,12 +5,14 @@ import { PageHeader } from "@/components/app/page-header";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { nowInTimezone } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { getScheduleView } from "@/server/schedule/queries";
 import { eventSectionHref } from "../event-sections";
 import { ScheduleWorkspace } from "./schedule-workspace";
 import { dateInTimezone } from "./timeline-geometry";
 
 export default async function SchedulePage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const view = await getScheduleView(id);
   if (!view) notFound();
@@ -57,6 +59,8 @@ export default async function SchedulePage({ params }: { params: Promise<{ id: s
         suppliers: view.suppliers,
         buyers: view.buyers,
         appointments: view.appointments,
+        withdrawn: view.health.withdrawn,
+        manualChanges: view.manualChanges,
       }}
       serverNow={serverNow}
     />

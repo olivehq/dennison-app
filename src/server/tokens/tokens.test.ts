@@ -1,13 +1,14 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens } from "@/db/schema";
+import { accessTokens, auditEvents, events, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
 import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { issueAccessList, listTokens } from "./queries";
 import {
+  issueTokenForContact,
   issueTokensForEvent,
   linkFor,
   linksForContacts,
@@ -94,10 +95,12 @@ describe("issue and verify", () => {
 
   it("rejects an expired token", async () => {
     const token = generateToken();
+    // A supplier with no attendee contact, so no live link exists for it (one per contact).
+    const noAttendee = seeded.suppliers.find((s) => !s.attendeeContactEmail)!;
     await db.insert(accessTokens).values({
       eventId: seeded.eventId,
-      contactType: "buyer",
-      entityId: seeded.buyers[0].id,
+      contactType: "supplier_attendee",
+      entityId: noAttendee.id,
       tokenHash: hashToken(token),
       expiresAt: new Date(Date.now() - 1000),
     });
@@ -106,6 +109,11 @@ describe("issue and verify", () => {
 
   it("rejects a token hashed under a different pepper", async () => {
     const token = generateToken();
+    // One live link per contact: retire buyers[1]'s link before planting a legacy one.
+    await db
+      .update(accessTokens)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(accessTokens.entityId, seeded.buyers[1].id), isNull(accessTokens.revokedAt)));
     await db.insert(accessTokens).values({
       eventId: seeded.eventId,
       contactType: "buyer",
@@ -118,13 +126,13 @@ describe("issue and verify", () => {
 
   it("revoke stops a token; regenerate replaces it for the same contact", async () => {
     const target = issued[1];
-    const revoked = await revokeToken(db, target.tokenId);
+    const revoked = await revokeToken(db, target.tokenId, null);
     expect(revoked.ok).toBe(true);
     expect(await verifyToken(db, target.token)).toBeNull();
-    expect((await revokeToken(db, target.tokenId)).ok).toBe(true);
+    expect((await revokeToken(db, target.tokenId, null)).ok).toBe(true);
 
     const other = issued[2];
-    const regenerated = await regenerateToken(db, other.tokenId);
+    const regenerated = await regenerateToken(db, other.tokenId, null);
     expect(regenerated.ok).toBe(true);
     if (!regenerated.ok) return;
     expect(regenerated.data.previousTokenId).toBe(other.tokenId);
@@ -134,7 +142,7 @@ describe("issue and verify", () => {
     expect(verified?.contactType).toBe(other.contactType);
     expect(verified?.entityId).toBe(other.entityId);
 
-    expect((await revokeToken(db, "00000000-0000-0000-0000-000000000000")).ok).toBe(false);
+    expect((await revokeToken(db, "00000000-0000-0000-0000-000000000000", null)).ok).toBe(false);
   });
 
   it("listTokens shows status per contact and never the token", async () => {
@@ -195,3 +203,100 @@ describe("issue and verify", () => {
     expect(await count()).toBe(total);
   });
 });
+
+describe("one live link per contact", () => {
+  it("issueTokenForContact reuses a live link instead of creating a second one", async () => {
+    const fresh = await seedEvent(db);
+    const buyer = fresh.buyers[0];
+    const expiresAt = new Date(Date.now() + 86_400_000);
+    // Another request issued this contact's link a moment ago.
+    const first = await issueTokenForContact(db, { eventId: fresh.eventId, contactType: "buyer", entityId: buyer.id, expiresAt });
+    const second = await issueTokenForContact(db, { eventId: fresh.eventId, contactType: "buyer", entityId: buyer.id, expiresAt });
+    expect(second).toEqual(first);
+    const live = await db
+      .select()
+      .from(accessTokens)
+      .where(and(eq(accessTokens.entityId, buyer.id), isNull(accessTokens.revokedAt)));
+    expect(live).toHaveLength(1);
+    const duplicate = await db
+      .insert(accessTokens)
+      .values({ eventId: fresh.eventId, contactType: "buyer", entityId: buyer.id, tokenHash: "dup", expiresAt })
+      .then(() => "inserted", () => "refused");
+    expect(duplicate).toBe("refused");
+  });
+
+  it("revokes an expired unrevoked link before issuing, and replaces a link it can't decrypt", async () => {
+    const fresh = await seedEvent(db);
+    const buyer = fresh.buyers[1];
+    const [expired] = await db
+      .insert(accessTokens)
+      .values({ eventId: fresh.eventId, contactType: "buyer", entityId: buyer.id, tokenHash: hashToken(generateToken()), expiresAt: new Date(Date.now() - 1000) })
+      .returning();
+    const issued = await issueTokenForContact(db, {
+      eventId: fresh.eventId,
+      contactType: "buyer",
+      entityId: buyer.id,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    expect(issued.tokenId).not.toBe(expired.id);
+    const [old] = await db.select().from(accessTokens).where(eq(accessTokens.id, expired.id));
+    expect(old.revokedAt).not.toBeNull();
+
+    // A live link from before D59 (no ciphertext) is retired and replaced.
+    await db.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, issued.tokenId));
+    const [legacy] = await db
+      .insert(accessTokens)
+      .values({ eventId: fresh.eventId, contactType: "buyer", entityId: buyer.id, tokenHash: hashToken(generateToken()), expiresAt: new Date(Date.now() + 60_000) })
+      .returning();
+    const replaced = await issueTokenForContact(db, {
+      eventId: fresh.eventId,
+      contactType: "buyer",
+      entityId: buyer.id,
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    expect(replaced.tokenId).not.toBe(legacy.id);
+    expect(await verifyToken(db, replaced.token)).not.toBeNull();
+  });
+});
+
+describe("regenerate and revoke rules", () => {
+  it("audit in the same transaction, refuse a withdrawn person's new link, and refuse archived events", async () => {
+    const fresh = await seedEvent(db);
+    const result = await issueTokensForEvent(db, fresh.eventId);
+    if (!result.ok) throw new Error(result.error.message);
+    const target = result.data.find((t) => t.contactType === "buyer")!;
+
+    const regenerated = await regenerateToken(db, target.tokenId, fresh.adminId);
+    expect(regenerated.ok).toBe(true);
+    if (!regenerated.ok) return;
+    const [audit] = await db.select().from(auditEvents).where(eq(auditEvents.entityId, regenerated.data.tokenId));
+    expect(audit).toMatchObject({ action: "token.regenerate", adminId: fresh.adminId, before: { tokenId: target.tokenId } });
+
+    // Withdrawn: no new link, but revoking still works.
+    await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, target.entityId));
+    const refused = await regenerateToken(db, regenerated.data.tokenId, fresh.adminId);
+    expect(!refused.ok && refused.error.code).toBe("conflict");
+    const revoked = await revokeToken(db, regenerated.data.tokenId, fresh.adminId);
+    expect(revoked.ok).toBe(true);
+    const revokeAudit = await db.select().from(auditEvents).where(and(eq(auditEvents.entityId, regenerated.data.tokenId), eq(auditEvents.action, "token.revoke")));
+    expect(revokeAudit).toHaveLength(1);
+    // Revoking again is a no-op and writes no second row.
+    await revokeToken(db, regenerated.data.tokenId, fresh.adminId);
+    expect(await db.select().from(auditEvents).where(and(eq(auditEvents.entityId, regenerated.data.tokenId), eq(auditEvents.action, "token.revoke")))).toHaveLength(1);
+
+    // Locked events still allow link actions; archived ones don't.
+    const other = result.data.find((t) => t.contactType === "supplier_admin")!;
+    await db.update(events).set({ status: "locked" }).where(eq(events.id, fresh.eventId));
+    expect((await regenerateToken(db, other.tokenId, fresh.adminId)).ok).toBe(true);
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, fresh.eventId));
+    const live = await db
+      .select()
+      .from(accessTokens)
+      .where(and(eq(accessTokens.entityId, other.entityId), eq(accessTokens.contactType, "supplier_admin"), isNull(accessTokens.revokedAt)));
+    const archivedRegen = await regenerateToken(db, live[0].id, fresh.adminId);
+    expect(!archivedRegen.ok && archivedRegen.error.code).toBe("locked");
+    const archivedRevoke = await revokeToken(db, live[0].id, fresh.adminId);
+    expect(!archivedRevoke.ok && archivedRevoke.error.code).toBe("locked");
+  });
+});
+

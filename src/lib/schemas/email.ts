@@ -82,6 +82,7 @@ export const previewCampaignInput = z.object({
 
 export const sendTestInput = z.object({
   campaignId: uuid,
+  /** Any well-formed address here; `sendTest` then requires an active admin's email. */
   toEmail: address,
   recipient: recipientKeySchema.optional(),
 });

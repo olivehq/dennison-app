@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import {
@@ -117,6 +117,16 @@ describe("deleteExpiredParticipantData", () => {
       before: { retainData: true },
       after: { retainData: false },
     });
+    // Cross-year aliases (D76): the due event's buyer alias goes, a supplier alias and another event's buyer alias stay.
+    const globalAlias = (entityType: "buyer" | "supplier", entityId: string, rawText: string) =>
+      db
+        .insert(nameAliases)
+        .values({ eventId: null, rawText, entityType, entityId, canonicalName: rawText, source: "manual" })
+        .returning()
+        .then(([row]) => row);
+    const dueGlobal = await globalAlias("buyer", due.buyers[0].id, "B. Zero");
+    const supplierGlobal = await globalAlias("supplier", due.suppliers[0].id, "Hyatt Monterey");
+    const keptGlobal = await globalAlias("buyer", kept.buyers[0].id, "K. Zero");
     const before = await countFor(due.eventId);
     expect(before.participants).toBe(12);
     expect(before.accessTokens).toBe(21);
@@ -136,7 +146,7 @@ describe("deleteExpiredParticipantData", () => {
       emailMessages: 1,
       imports: 1,
       files: 1,
-      nameAliases: 1,
+      nameAliases: 2,
       matchRuns: 1,
     });
     expect(results[0].deleted.auditRowsRedacted).toBeGreaterThan(0);
@@ -152,6 +162,9 @@ describe("deleteExpiredParticipantData", () => {
       nameAliases: 0,
     });
     expect(await getFile(due.fileKey)).toBeNull();
+    const globals = (await db.select().from(nameAliases).where(isNull(nameAliases.eventId))).map((a) => a.id);
+    expect(globals).not.toContain(dueGlobal.id);
+    expect(globals).toEqual(expect.arrayContaining([supplierGlobal.id, keptGlobal.id]));
     const [archived] = await db.select().from(events).where(eq(events.id, due.eventId));
     expect(archived.status).toBe("archived");
 

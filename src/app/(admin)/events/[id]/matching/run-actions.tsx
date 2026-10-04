@@ -84,18 +84,39 @@ export function RunMatchingButtons({
   );
 }
 
-/** Makes a completed run the schedule everyone sees. */
-export function ActivateRunButton({ runId, disabled }: { runId: string; disabled: boolean }) {
+/** Makes a completed run the schedule everyone sees. The confirm shows what changes against the active run. */
+export function ActivateRunButton({
+  runId,
+  disabled,
+  preview,
+}: {
+  runId: string;
+  disabled: boolean;
+  /** Counts against the active run; null when no run is active yet. */
+  preview: { added: number; removed: number; countChanges: number } | null;
+}) {
   const router = useRouter();
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const summary = preview
+    ? preview.added === 0 && preview.removed === 0
+      ? "It has the same appointments as the current schedule, so nobody's schedule changes."
+      : `Against the current schedule it adds ${plural(preview.added, "appointment", "appointments")}, removes ${preview.removed}, and changes the meeting count of ${plural(preview.countChanges, "person", "people")}.`
+    : null;
   return (
     <ConfirmDialog
       title="Activate this run?"
-      description="It replaces the current schedule in the workspace, exports, and participant pages. The run it replaces is kept here and can be activated again."
+      description={[
+        summary,
+        "It replaces the current schedule in the workspace, exports, and participant pages. The run it replaces is kept here and can be activated again. Anyone editing the current schedule will be asked to reload.",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       confirmLabel="Activate this run"
       onConfirm={async () => {
         const result = await activateRunAction(runId);
         if (!result.ok) {
           toast.error(result.error.message);
+          router.refresh();
           return;
         }
         toast.success("Run activated", { description: "The schedule now shows this run." });

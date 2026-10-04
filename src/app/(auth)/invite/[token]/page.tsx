@@ -39,7 +39,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
         <CardDescription>Set a password to finish accepting the invitation for {invite.email}.</CardDescription>
       </CardHeader>
       <CardContent>
-        <AcceptInviteForm email={invite.email} name={invite.name} />
+        <AcceptInviteForm token={token} email={invite.email} name={invite.name} />
       </CardContent>
     </>
   );

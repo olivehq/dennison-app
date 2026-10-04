@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseResendEvent } from "./webhook";
+import { parseResendEvent, WEBHOOK_MAX_BYTES, webhookSizeProblem } from "./webhook";
 
 const bounced = {
   type: "email.bounced",
@@ -47,5 +47,20 @@ describe("parseResendEvent", () => {
     expect(parseResendEvent({ type: "email.received", created_at: "x", data: { email_id: "a" } })).toBeNull();
     expect(parseResendEvent({ type: "email.delivered" })).toBeNull();
     expect(parseResendEvent("nope")).toBeNull();
+  });
+});
+
+describe("webhookSizeProblem", () => {
+  it("answers 413 without a Content-Length or above 256 KB", () => {
+    expect(webhookSizeProblem(null)?.status).toBe(413);
+    expect(webhookSizeProblem("")?.status).toBe(413);
+    expect(webhookSizeProblem("abc")?.status).toBe(413);
+    expect(webhookSizeProblem("-1")?.status).toBe(413);
+    expect(webhookSizeProblem(String(WEBHOOK_MAX_BYTES + 1))?.status).toBe(413);
+  });
+
+  it("lets a normal body through", () => {
+    expect(webhookSizeProblem("2048")).toBeNull();
+    expect(webhookSizeProblem(String(WEBHOOK_MAX_BYTES))).toBeNull();
   });
 });

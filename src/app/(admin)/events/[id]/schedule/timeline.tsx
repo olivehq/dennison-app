@@ -448,10 +448,13 @@ function TimelineBlock({
           timeLabel={`${slot.start} to ${slot.end}`}
           onClick={onClick}
           style={style}
+          title={a.counterpartWithdrawn ? "Someone in this meeting withdrew. Replace or remove it before locking." : undefined}
+          data-withdrawn={a.counterpartWithdrawn || undefined}
           className={cn(
             live && !selected && "outline-2 outline-offset-1 outline-now",
             dim && "opacity-25",
             hit && "outline-2 outline-offset-1 outline-foreground",
+            a.counterpartWithdrawn && "border-l-4 border-l-destructive",
           )}
         />
       </HoverCardTrigger>
@@ -489,6 +492,12 @@ function TimelineBlock({
             <p className="text-muted-foreground">{strengthLabel(a.strength, topN)}</p>
           </div>
         </div>
+        {a.counterpartWithdrawn ? (
+          <p className="mt-2 border-t pt-2 text-xs font-semibold text-destructive">
+            {[supplier.withdrawn ? supplier.name : null, buyer.withdrawn ? buyerLabel.primary : null].filter(Boolean).join(" and ")} withdrew.
+            Replace or remove this meeting before locking.
+          </p>
+        ) : null}
         {a.pinned || a.source === "manual" ? (
           <p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
             {[a.pinned ? "Pinned, kept by the next re-run" : null, a.source === "manual" ? "Placed by hand" : null]

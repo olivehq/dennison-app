@@ -32,7 +32,7 @@ One Vercel project on the Pro plan (scope section 8). Production deploys from `m
 |---|---|
 | Framework | Next.js |
 | Install command | `pnpm install` (default) |
-| Build command | `pnpm db:migrate && pnpm build` |
+| Build command | Set by `vercel.json` (`pnpm db:migrate && pnpm build`) |
 | Node.js version | 22.x |
 
 The build migrates the deployment's own database before `next build`. A failed migration fails the deploy and the previous deployment keeps serving.
@@ -62,7 +62,9 @@ Set per environment (Production and Preview) in Vercel. `.env.example` has the s
 | `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` | Sentry project settings |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | Sentry integration (build only) |
 
-`LOCAL_DATA_DIR` is for local runs only; leave it unset on Vercel.
+A production deployment (Preview included) refuses to start without `DATABASE_URL`, `APP_URL` (not `http://localhost`), `BLOB_READ_WRITE_TOKEN`, `BETTER_AUTH_SECRET`, and `TOKEN_PEPPER` (D78). Without `RESEND_API_KEY` it runs, but campaigns refuse to send.
+
+`LOCAL_DATA_DIR` is for local runs only; leave it unset on Vercel. `ADMIN_PASSWORD` and `SEED_ALLOW_REMOTE` are for the scripts and never go on Vercel.
 
 ### Cron and data retention
 
@@ -77,8 +79,10 @@ curl -H "Authorization: Bearer $CRON_SECRET" https://<app domain>/api/cron/reten
 Run once against the production database, from a machine with the repo:
 
 ```bash
-DATABASE_URL="<production DATABASE_URL from Neon>" pnpm create-admin you@example.com "Your Name" '<password of 10+ characters>'
+DATABASE_URL="<production DATABASE_URL from Neon>" pnpm create-admin you@example.com "Your Name"
 ```
+
+It prompts for the password (10+ characters) without echoing it. For a non-interactive run, set `ADMIN_PASSWORD` in the environment instead; a password given as an argument is refused, since arguments stay in shell history and the process list.
 
 Everyone else joins through an invite from the Team page.
 

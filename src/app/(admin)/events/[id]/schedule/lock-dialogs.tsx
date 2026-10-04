@@ -28,6 +28,7 @@ export function LockDialog({
   appointments,
   buyersBelowMin,
   buyerMin,
+  withdrawn,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -35,6 +36,8 @@ export function LockDialog({
   appointments: number;
   buyersBelowMin: number;
   buyerMin: number;
+  /** Appointments naming someone who withdrew. Lock refuses while there are any. */
+  withdrawn: number;
 }) {
   const router = useRouter();
   const [pending, setPending] = React.useState(false);
@@ -100,12 +103,19 @@ export function LockDialog({
                       ? `${buyersBelowMin === 1 ? "1 buyer is" : `${buyersBelowMin} buyers are`} still below ${buyerMin} meetings.`
                       : "Every buyer is within target."}
                   </p>
+                  {withdrawn ? (
+                    <p className="font-semibold text-destructive">
+                      {withdrawn === 1
+                        ? "1 appointment involves someone who withdrew. Re-run matching keeping existing appointments, or remove it, before locking."
+                        : `${withdrawn} appointments involve someone who withdrew. Re-run matching keeping existing appointments, or remove them, before locking.`}
+                    </p>
+                  ) : null}
                 </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
-              <AlertDialogAction disabled={pending} onClick={lock}>
+              <AlertDialogAction disabled={pending || withdrawn > 0} onClick={lock}>
                 {pending ? <Spinner data-icon="inline-start" /> : null}
                 Lock schedule
               </AlertDialogAction>

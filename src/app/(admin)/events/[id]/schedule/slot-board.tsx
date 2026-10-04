@@ -116,8 +116,11 @@ export function SlotBoard({ model, slots, slot, liveSlot, onPick, query, flagged
                     <TableRow
                       key={a.id}
                       tabIndex={0}
-                      className="cursor-pointer outline-none focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                      aria-label={`Desk ${supplier.desk ?? "not set"}, ${supplier.name} with ${buyer.name}. Open supplier`}
+                      className={cn(
+                        "cursor-pointer outline-none focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                        a.counterpartWithdrawn && "shadow-[inset_4px_0_0_var(--destructive)]",
+                      )}
+                      aria-label={`Desk ${supplier.desk ?? "not set"}, ${supplier.name} with ${buyer.name}.${a.counterpartWithdrawn ? " Someone in this meeting withdrew." : ""} Open supplier`}
                       onClick={() => onSelect(supplier.id, a.slot)}
                       onKeyDown={(e) => {
                         if (e.key !== "Enter" && e.key !== " ") return;

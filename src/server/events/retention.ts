@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lt, notLike, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, notLike, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
@@ -91,7 +91,25 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
         // Runs store warnings with people's names in them (D34).
         matchRuns: await gone(tx.delete(matchRuns).where(eq(matchRuns.eventId, event.id)).returning({ id: matchRuns.id })),
         rankings: await gone(tx.delete(rankings).where(eq(rankings.eventId, event.id)).returning({ id: rankings.id })),
-        nameAliases: await gone(tx.delete(nameAliases).where(eq(nameAliases.eventId, event.id)).returning({ id: nameAliases.id })),
+        // Event aliases, plus the cross-year buyer aliases (D76) that point at this
+        // event's buyers: they hold personal names. Supplier ones are business names.
+        nameAliases:
+          (await gone(tx.delete(nameAliases).where(eq(nameAliases.eventId, event.id)).returning({ id: nameAliases.id }))) +
+          (await gone(
+            tx
+              .delete(nameAliases)
+              .where(
+                and(
+                  isNull(nameAliases.eventId),
+                  eq(nameAliases.entityType, "buyer"),
+                  inArray(
+                    nameAliases.entityId,
+                    tx.select({ id: participants.id }).from(participants).where(eq(participants.eventId, event.id)),
+                  ),
+                ),
+              )
+              .returning({ id: nameAliases.id }),
+          )),
         imports: await gone(tx.delete(imports).where(eq(imports.eventId, event.id)).returning({ id: imports.id })),
         participants: await gone(tx.delete(participants).where(eq(participants.eventId, event.id)).returning({ id: participants.id })),
         suppliers: await gone(tx.delete(suppliers).where(eq(suppliers.eventId, event.id)).returning({ id: suppliers.id })),

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { recipientKey } from "@/lib/schemas/email";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { requireSession } from "@/server/auth/session";
 import { getScheduleChangeState } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { listSuppliers } from "@/server/roster/queries";
@@ -21,6 +22,7 @@ export default async function SuppliersPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  await requireSession();
   const [{ id }, query] = await Promise.all([params, searchParams]);
   const event = await getEvent(id);
   if (!event) notFound();

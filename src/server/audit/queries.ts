@@ -5,8 +5,9 @@ import { admins, auditEvents, participants, suppliers, type AuditEvent, type Eve
 import { compareNames } from "@/lib/names";
 import { endOfDayInTimezone, formatTimestamp } from "@/lib/time";
 import { isEventEditable } from "@/server/events/editable";
-import { buyerDisplayName, loadEvent } from "@/server/matching/common";
+import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
+import { displayNameFor } from "@/server/roster/display-name";
 import { UNDOABLE_ACTIONS, undoNote } from "@/server/schedule/edits";
 import { DEFAULT_AUDIT_PAGE_SIZE, listAudit, type AuditFilters } from "./audit";
 import { AUDIT_ACTION_GROUPS, describeAudit, isAuditActionGroup, type AuditActionGroup } from "./describe";
@@ -136,7 +137,7 @@ export async function getActivityPage(
   params: ActivityParams,
   db: Db = getDb(),
 ): Promise<ActivityPage | null> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return null;
 
   const [list, buyerRows, supplierRows, adminRows, activeRun] = await Promise.all([
@@ -151,7 +152,7 @@ export async function getActivityPage(
   ]);
 
   const names = new Map<string, string>();
-  for (const b of buyerRows) names.set(b.id, buyerDisplayName(b));
+  for (const b of buyerRows) names.set(b.id, displayNameFor(b));
   for (const s of supplierRows) names.set(s.id, s.name);
   const adminNames = new Map(adminRows.map((a) => [a.id, a.name]));
 

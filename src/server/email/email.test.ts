@@ -19,6 +19,7 @@ import {
   resendToBounced,
   sendCampaign,
   sendTest,
+  TEST_SEND_ADMINS_ONLY,
   updateCampaign,
 } from "./campaigns";
 import { campaignStats, getAudienceOptions, getCampaign, getEmailSummary, listCampaigns } from "./queries";
@@ -35,6 +36,11 @@ import { handleResendWebhook, recordDeliveryEvent } from "./webhook";
 vi.mock("@/lib/email/adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/email/adapter")>();
   return { ...actual, sendBatch: vi.fn(actual.sendBatch) };
+});
+
+vi.mock("./schedule-hash", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./schedule-hash")>();
+  return { ...actual, scheduleHashesForEvent: vi.fn(actual.scheduleHashesForEvent) };
 });
 
 let db: Db;
@@ -73,11 +79,12 @@ async function newDraft(kind: "initial" | "update" = "initial") {
 beforeAll(async () => {
   db = await createTestDb();
   seeded = await seedEvent(db);
-  const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
-  if (!run.ok) throw new Error(run.error.message);
-  // One withdrawn buyer, who must never get mail.
+  // One withdrawn buyer, who must never get mail. Withdrawn before matching:
+  // lock refuses a schedule that still holds a withdrawn person's appointments.
   withdrawnId = seeded.buyers[11].id;
   await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, withdrawnId));
+  const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+  if (!run.ok) throw new Error(run.error.message);
   clearLoggedEmails();
 });
 
@@ -198,10 +205,14 @@ describe("sending", () => {
     expect(preview.data.html).toMatch(/<a href="http[^"]+\/s\/[A-Za-z0-9_-]{43}">/);
 
     clearLoggedEmails();
-    const test = await sendTest(db, { campaignId: campaign.id, toEmail: "me@example.com", adminId: seeded.adminId, recipient: key });
+    const stranger = await sendTest(db, { campaignId: campaign.id, toEmail: "me@example.com", adminId: seeded.adminId, recipient: key });
+    expect(!stranger.ok && stranger.error).toMatchObject({ code: "validation", message: TEST_SEND_ADMINS_ONLY });
+    expect(getLoggedEmails()).toHaveLength(0);
+
+    const test = await sendTest(db, { campaignId: campaign.id, toEmail: "Admin@Example.com", adminId: seeded.adminId, recipient: key });
     expect(test.ok).toBe(true);
     expect(getLoggedEmails()).toHaveLength(1);
-    expect(getLoggedEmails()[0]).toMatchObject({ to: "me@example.com", replyTo: "admin@example.com" });
+    expect(getLoggedEmails()[0]).toMatchObject({ to: "Admin@Example.com", replyTo: "admin@example.com" });
     expect(getLoggedEmails()[0].subject).toMatch(/^\[Test\] /);
     const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
     expect(row.testSentAt).not.toBeNull();
@@ -227,6 +238,15 @@ describe("sending", () => {
     expect(fixed.ok).toBe(true);
     if (fixed.ok) campaign = fixed.data;
     expect(campaign.replyTo).toBe("desk@da.example.com");
+  });
+
+  it("refuses to send in production when email is not configured", async () => {
+    const refused = await sendCampaign(db, { campaignId: campaign.id, adminId: seeded.adminId }, { isProduction: true });
+    expect(!refused.ok && refused.error.message).toBe(
+      "Email is not configured for this deployment. Add RESEND_API_KEY.",
+    );
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
+    expect(row.status).toBe("draft");
   });
 
   it("sends one message per recipient, records ids and hashes, and moves the event to sent", async () => {
@@ -425,6 +445,40 @@ describe("batches", () => {
     // Failed messages count for "Resend to bounced".
     const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: big.adminId });
     expect(retry.ok && retry.data).toMatchObject({ recipients: 29, sent: 29 });
+  });
+});
+
+describe("a send that stops", () => {
+  it("marks the campaign failed with the reason, and resend reaches everyone it missed", async () => {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!locked.ok) throw new Error(locked.error.message);
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    vi.mocked(scheduleHashesForEvent).mockRejectedValueOnce(new Error("connection reset"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    error.mockRestore();
+    expect(!result.ok && result.error.message).toContain("connection reset");
+
+    const [stored] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, created.data.id));
+    expect(stored.status).toBe("failed");
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
+    expect(audit.after).toMatchObject({ status: "failed", failureReason: "connection reset" });
+    expect(await messagesOf(created.data.id)).toHaveLength(0);
+
+    clearLoggedEmails();
+    const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(retry.ok && retry.data).toMatchObject({ recipients: stored.recipientCount, sent: stored.recipientCount });
+    expect(getLoggedEmails()).toHaveLength(stored.recipientCount!);
+    const [after] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, created.data.id));
+    expect(after.status).toBe("sent");
   });
 });
 

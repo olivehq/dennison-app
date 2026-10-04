@@ -12,6 +12,9 @@ import { MAX_SLOT_COUNT } from "./event-settings";
 export const VERSION_CONFLICT_MESSAGE =
   "Someone else changed this schedule. Review their change, then try again.";
 
+/** Returned with code `conflict` when an edit targets a run that is no longer the active one (D33). */
+export const NOT_ACTIVE_RUN_MESSAGE = "This schedule is no longer the active one. Reload to see the current schedule.";
+
 const uuid = z.uuid("Expected an id.");
 const slot = z.int().min(1).max(MAX_SLOT_COUNT);
 const version = z.int().min(1);
@@ -52,7 +55,8 @@ export const swapCandidatesInput = z.object({
   excludeBuyerId: uuid.optional(),
 });
 
-export const undoAuditInput = z.object({ auditEventId: uuid });
+/** `version` is optional for one release so callers that do not send it yet keep working (D11). */
+export const undoAuditInput = z.object({ auditEventId: uuid, version: version.optional() });
 
 export const setPinnedInput = z.object({ appointmentId: uuid, pinned: z.boolean(), version: version.optional() });
 

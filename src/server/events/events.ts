@@ -1,4 +1,4 @@
-import { count, eq } from "drizzle-orm";
+import { and, count, eq, ne, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import { events, participants, type Event } from "@/db/schema";
@@ -6,9 +6,25 @@ import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { eventSchema } from "@/lib/schemas/event";
 import { defaultEventSettings, eventSettingsSchema } from "@/lib/schemas/event-settings";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEventEditable } from "./editable";
+import { assertEventEditable, EventChangedError, eventChangedResult, READ_ONLY_STATUSES } from "./editable";
 
 const idSchema = z.uuid();
+
+/** Matches the event only while it is still editable: the compare half of a compare-and-set. */
+function editableEvent(id: string) {
+  return and(eq(events.id, id), notInArray(events.status, [...READ_ONLY_STATUSES]));
+}
+
+/** Runs `work` in a transaction, turning `EventChangedError` into the conflict result. */
+async function inTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return ok(await db.transaction(work));
+  } catch (error) {
+    const changed = eventChangedResult(error);
+    if (changed) return changed;
+    throw error;
+  }
+}
 
 async function loadEvent(db: Db, id: unknown): Promise<ActionResult<Event>> {
   const parsedId = idSchema.safeParse(id);
@@ -59,8 +75,9 @@ export async function updateEvent(
   const parsed = eventSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  await db.transaction(async (tx) => {
-    await tx.update(events).set(parsed.data).where(eq(events.id, event.id));
+  const done = await inTransaction(db, async (tx) => {
+    const changed = await tx.update(events).set(parsed.data).where(editableEvent(event.id)).returning({ id: events.id });
+    if (changed.length === 0) throw new EventChangedError();
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
@@ -71,6 +88,7 @@ export async function updateEvent(
       after: parsed.data,
     });
   });
+  if (!done.ok) return done;
   return ok({ id: event.id });
 }
 
@@ -91,8 +109,9 @@ export async function updateEventSettings(
 
   // retainData only changes through setRetainData, so a stale settings form can't flip it.
   const settings = { ...parsed.data, retainData: event.settings.retainData ?? false };
-  await db.transaction(async (tx) => {
-    await tx.update(events).set({ settings }).where(eq(events.id, event.id));
+  const done = await inTransaction(db, async (tx) => {
+    const changed = await tx.update(events).set({ settings }).where(editableEvent(event.id)).returning({ id: events.id });
+    if (changed.length === 0) throw new EventChangedError();
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
@@ -103,13 +122,14 @@ export async function updateEventSettings(
       after: settings,
     });
   });
+  if (!done.ok) return done;
   return ok({ id: event.id });
 }
 
 /**
  * "Keep participant data after 90 days" (SOW 4). Allowed in every status
  * except archived, because D&A usually asks after the show, when the event is
- * locked or sent. An archived event's data is already gone.
+ * locked or sent. Archived events refuse every change, this one included.
  */
 export async function setRetainData(
   db: Db,
@@ -123,16 +143,18 @@ export async function setRetainData(
   const parsed = z.boolean().safeParse(retain);
   if (!parsed.success) return fail("validation", "Choose whether to keep the data.");
   if (event.status === "archived") {
-    return fail("locked", "This event is archived. Its participant data has already been deleted.");
+    return fail("locked", "This event is archived, so its retention setting can't change.");
   }
   const current = event.settings.retainData ?? false;
   if (current === parsed.data) return ok({ id: event.id, retainData: current });
 
-  await db.transaction(async (tx) => {
-    await tx
+  const done = await inTransaction(db, async (tx) => {
+    const changed = await tx
       .update(events)
       .set({ settings: { ...event.settings, retainData: parsed.data } })
-      .where(eq(events.id, event.id));
+      .where(and(eq(events.id, event.id), ne(events.status, "archived")))
+      .returning({ id: events.id });
+    if (changed.length === 0) throw new EventChangedError();
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
@@ -143,6 +165,7 @@ export async function setRetainData(
       after: { retainData: parsed.data },
     });
   });
+  if (!done.ok) return done;
   return ok({ id: event.id, retainData: parsed.data });
 }
 
@@ -155,15 +178,20 @@ export async function deleteEvent(db: Db, id: unknown, actorId: string): Promise
   if (event.status !== "draft") {
     return fail("conflict", "Only draft events can be deleted. Archive this one instead.");
   }
-  const [{ value: participantCount }] = await db
-    .select({ value: count() })
-    .from(participants)
-    .where(eq(participants.eventId, event.id));
-  if (participantCount > 0) {
-    return fail("conflict", "This event already has participants. Withdraw or remove them before deleting it.");
-  }
-
-  await db.transaction(async (tx) => {
+  const done = await inTransaction(db, async (tx) => {
+    // Lock the row while it is still a draft, then count, so a participant
+    // added or a status change in between can't slip past the checks.
+    const [draft] = await tx
+      .select({ id: events.id })
+      .from(events)
+      .where(and(eq(events.id, event.id), eq(events.status, "draft")))
+      .for("update");
+    if (!draft) throw new EventChangedError();
+    const [{ value: participantCount }] = await tx
+      .select({ value: count() })
+      .from(participants)
+      .where(eq(participants.eventId, event.id));
+    if (participantCount > 0) return false;
     await tx.delete(events).where(eq(events.id, event.id));
     // The event row is gone, so the audit row is filed under no event.
     await recordAudit(tx, {
@@ -174,6 +202,47 @@ export async function deleteEvent(db: Db, id: unknown, actorId: string): Promise
       entityId: event.id,
       before: { name: event.name, eventDate: event.eventDate, timezone: event.timezone, status: event.status },
     });
+    return true;
   });
+  if (!done.ok) return done;
+  if (!done.data) {
+    return fail("conflict", "This event already has participants. Withdraw or remove them before deleting it.");
+  }
+  return ok({ id: event.id });
+}
+
+/**
+ * Archives an event from any status (the "Archive event" button). Archived
+ * events refuse every change; exports still work. A compare-and-set on the
+ * status read here, so the audit row's `before` is the status it replaced.
+ * Participant data stays until the retention job (D69) or D&A asks.
+ */
+export async function archiveEvent(
+  db: Db,
+  input: { eventId: unknown; adminId: string },
+): Promise<ActionResult<{ id: string }>> {
+  const loaded = await loadEvent(db, input.eventId);
+  if (!loaded.ok) return loaded;
+  const event = loaded.data;
+  if (event.status === "archived") return fail("conflict", "This event is already archived.");
+
+  const done = await inTransaction(db, async (tx) => {
+    const changed = await tx
+      .update(events)
+      .set({ status: "archived" })
+      .where(and(eq(events.id, event.id), eq(events.status, event.status)))
+      .returning({ id: events.id });
+    if (changed.length === 0) throw new EventChangedError();
+    await recordAudit(tx, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "event.archive",
+      entityType: "event",
+      entityId: event.id,
+      before: { status: event.status },
+      after: { status: "archived" },
+    });
+  });
+  if (!done.ok) return done;
   return ok({ id: event.id });
 }

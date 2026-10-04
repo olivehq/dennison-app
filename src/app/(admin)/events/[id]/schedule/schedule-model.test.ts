@@ -3,6 +3,7 @@ import type { ScheduleAppointment, ScheduleBuyer, ScheduleSupplier } from "@/ser
 import {
   attentionCount,
   buildModel,
+  describeEdit,
   distribution,
   freeIn,
   healthOf,
@@ -44,6 +45,7 @@ const appt = (id: string, slot: number, buyerId: string, supplierId: string): Sc
   pinned: false,
   mutualTopN: true,
   strength: "mutual",
+  counterpartWithdrawn: false,
 });
 
 const model = buildModel({
@@ -148,3 +150,30 @@ describe("distribution", () => {
     ]);
   });
 });
+
+describe("describeEdit", () => {
+  const m = buildModel({
+    suppliers: [supplier("s1", "Hyatt", 1, 2)],
+    buyers: [buyer("b1", "Acme", "CEO", 2), buyer("b2", "Beta", "CFO", 0)],
+    appointments: [appt("a1", 4, "b1", "s1")],
+  });
+  const add = { buyerId: "b2", name: "Beta", count: 0, countAfter: 1 };
+
+  it("lists both sides of a replace and both buyers' counts; the supplier's count does not move", () => {
+    expect(describeEdit(m, { supplierId: "s1", slot: 4, removeBuyerId: "b1", add })).toEqual({
+      lines: ["Remove Acme from Hyatt, slot 4", "Add Beta to Hyatt, slot 4"],
+      counts: [
+        { personId: "b1", name: "Acme", before: 2, after: 1 },
+        { personId: "b2", name: "Beta", before: 0, after: 1 },
+      ],
+    });
+  });
+
+  it("counts the supplier for an add or a remove", () => {
+    expect(describeEdit(m, { supplierId: "s1", slot: 5, add }).counts.at(-1)).toEqual({ personId: "s1", name: "Hyatt", before: 2, after: 3 });
+    const removal = describeEdit(m, { supplierId: "s1", slot: 4, removeBuyerId: "b1" });
+    expect(removal.lines).toEqual(["Remove Acme from Hyatt, slot 4"]);
+    expect(removal.counts.at(-1)).toEqual({ personId: "s1", name: "Hyatt", before: 2, after: 1 });
+  });
+});
+

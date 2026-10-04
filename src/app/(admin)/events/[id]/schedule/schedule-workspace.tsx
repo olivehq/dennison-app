@@ -32,6 +32,7 @@ import { Legend } from "./legend";
 import { LockDialog, UnlockDialog } from "./lock-dialogs";
 import { PersonSheet } from "./person-sheet";
 import { QualityView } from "./quality-view";
+import { ReassignDesksButton } from "./reassign-desks-button";
 import {
   attentionCount,
   buildModel,
@@ -248,7 +249,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
   };
 
   // Derived
-  const attention = attentionCount(model, targets);
+  const attention = attentionCount(model, targets) + data.withdrawn.length;
   const timelineMode = view === "supplier" || view === "buyer" ? view : null;
   const lanes = React.useMemo(
     () => (timelineMode ? lanesFor(model, timelineMode, { q, free, flagged }, targets) : []),
@@ -350,10 +351,13 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
                 </Button>
               ) : null
             ) : (
-              <Button size="lg" onClick={() => setLockOpen(true)}>
-                <LockIcon data-icon="inline-start" />
-                Lock schedule
-              </Button>
+              <>
+                <ReassignDesksButton eventId={eventId} />
+                <Button size="lg" onClick={() => setLockOpen(true)}>
+                  <LockIcon data-icon="inline-start" />
+                  Lock schedule
+                </Button>
+              </>
             )}
             <Button variant="outline" size="lg" asChild>
               <Link href={eventSectionHref(eventId, "exports")}>
@@ -382,7 +386,8 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
           <PencilIcon />
           <AlertTitle>Editing the schedule</AlertTitle>
           <AlertDescription>
-            Click a meeting or an open slot. Changes save straight away, show in the activity log, and can be undone there.
+            Click a meeting or an open slot. You see what each change does before you save it. Saved changes show in the
+            activity log and can be undone there.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -553,7 +558,8 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
           warnings={run.warnings}
           model={model}
           slots={slots}
-          appointments={data.appointments}
+          withdrawn={data.withdrawn}
+          manualChanges={data.manualChanges}
           targets={targets}
           query={query}
           onSelect={select}
@@ -605,6 +611,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
         appointments={data.appointments.length}
         buyersBelowMin={buyersBelowMin}
         buyerMin={targets.buyerMin}
+        withdrawn={data.withdrawn.length}
       />
       <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} eventId={eventId} />
     </div>

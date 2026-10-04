@@ -172,6 +172,23 @@ export type WebhookResponse = { status: number; body: string };
  * 401 for a missing or bad signature. Without a secret: 500 in production,
  * 200 and skip in development and tests (with a warning).
  */
+/** Resend webhook bodies are a few KB; anything far larger is not from Resend. */
+export const WEBHOOK_MAX_BYTES = 256 * 1024;
+
+/**
+ * Checked before the body is read: a request without a Content-Length or with
+ * one over `WEBHOOK_MAX_BYTES` gets 413, so a large or streamed body is never
+ * buffered. Null means the size is fine.
+ */
+export function webhookSizeProblem(contentLength: string | null): WebhookResponse | null {
+  const bytes = contentLength === null || contentLength.trim() === "" ? NaN : Number(contentLength);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) {
+    return { status: 413, body: "A Content-Length header is required." };
+  }
+  if (bytes > WEBHOOK_MAX_BYTES) return { status: 413, body: "The webhook body is too large." };
+  return null;
+}
+
 export async function handleResendWebhook(
   db: Db,
   request: WebhookRequest,

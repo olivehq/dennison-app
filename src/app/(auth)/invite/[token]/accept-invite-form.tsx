@@ -24,7 +24,7 @@ const formSchema = acceptInviteSchema
 
 type FormValues = z.infer<typeof formSchema>;
 
-export function AcceptInviteForm({ email, name }: { email: string; name: string }) {
+export function AcceptInviteForm({ token, email, name }: { token: string; email: string; name: string }) {
   const router = useRouter();
   const [formError, setFormError] = React.useState<string | null>(null);
   const {
@@ -38,7 +38,10 @@ export function AcceptInviteForm({ email, name }: { email: string; name: string 
 
   const onSubmit = async (values: FormValues) => {
     setFormError(null);
-    const { error } = await authClient.signUp.email({ email, name: values.name, password: values.password });
+    // The sign-up hook in src/server/auth/auth.ts requires `inviteToken`. Better
+    // Auth passes extra body keys through untyped, hence the plain object.
+    const body = { email, name: values.name, password: values.password, inviteToken: token };
+    const { error } = await authClient.signUp.email(body);
     if (error) {
       setFormError(describeAuthError(error, "The account could not be created. Try again."));
       return;

@@ -1,30 +1,15 @@
-import { eq } from "drizzle-orm";
-import type { Db } from "@/db/client";
-import { events, type Event } from "@/db/schema";
-
 /** Helpers shared by the matching, schedule, and tokens modules. */
 
-export async function loadEvent(db: Db, eventId: string): Promise<Event | null> {
-  const [event] = await db.select().from(events).where(eq(events.id, eventId)).limit(1);
-  return event ?? null;
-}
-
-export type BuyerNameSource = {
-  firstName: string;
-  lastName: string;
-  organization: string | null;
-  title: string | null;
-  displayName?: string | null;
-};
-
 /**
- * How a buyer is shown everywhere: an explicit display name if an admin set
- * one, else "Organization - Title" when both exist, else first and last name.
+ * True for a Postgres unique violation (23505). Drizzle wraps driver errors,
+ * so the cause chain is walked; works for postgres.js and PGlite.
  */
-export function buyerDisplayName(buyer: BuyerNameSource): string {
-  if (buyer.displayName && buyer.displayName.trim() !== "") return buyer.displayName.trim();
-  if (buyer.organization && buyer.title) return `${buyer.organization} - ${buyer.title}`;
-  return `${buyer.firstName} ${buyer.lastName}`.trim();
+export function isUniqueViolation(error: unknown): boolean {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; current = current.cause, depth++) {
+    if ((current as { code?: unknown }).code === "23505") return true;
+    if (/duplicate key value violates unique constraint/i.test(current.message)) return true;
+  }
+  return false;
 }
 
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;

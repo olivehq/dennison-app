@@ -6,17 +6,10 @@ import { getDb } from "@/db/client";
 import { fromZod, type ActionResult } from "@/lib/errors";
 import { requireAdmin } from "@/server/auth/session";
 import { getParticipant, getSupplier } from "./queries";
-import {
-  saveParticipantSchema,
-  saveSupplierSchema,
-  setBiztechOptInSchema,
-  setSupplierDeskSchema,
-} from "./schemas";
+import { saveParticipantSchema, saveSupplierSchema } from "./schemas";
 import {
   restoreParticipant,
   restoreSupplier,
-  setBiztechOptIn,
-  setSupplierDesk,
   upsertParticipant,
   upsertSupplier,
   withdrawParticipant,
@@ -65,14 +58,6 @@ export async function restoreParticipantAction(id: unknown): Promise<IdResult> {
   return participantAction(id, (input) => restoreParticipant(getDb(), input));
 }
 
-export async function setBiztechOptInAction(input: unknown): Promise<IdResult> {
-  const parsed = setBiztechOptInSchema.safeParse(input);
-  if (!parsed.success) return fromZod(parsed.error);
-  return participantAction(parsed.data.id, (base) =>
-    setBiztechOptIn(getDb(), { ...base, optIn: parsed.data.optIn }),
-  );
-}
-
 export async function saveSupplier(input: unknown): Promise<IdResult> {
   const actor = await requireAdmin();
   const parsed = saveSupplierSchema.safeParse(input);
@@ -104,12 +89,4 @@ export async function withdrawSupplierAction(id: unknown): Promise<IdResult> {
 
 export async function restoreSupplierAction(id: unknown): Promise<IdResult> {
   return supplierAction(id, (input) => restoreSupplier(getDb(), input));
-}
-
-export async function setSupplierDeskAction(input: unknown): Promise<IdResult> {
-  const parsed = setSupplierDeskSchema.safeParse(input);
-  if (!parsed.success) return fromZod(parsed.error);
-  return supplierAction(parsed.data.id, (base) =>
-    setSupplierDesk(getDb(), { ...base, deskNumber: parsed.data.deskNumber }),
-  );
 }

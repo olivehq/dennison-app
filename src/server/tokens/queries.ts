@@ -4,7 +4,7 @@ import { accessTokens, participants, suppliers, type ContactType } from "@/db/sc
 import type { ActionResult } from "@/lib/errors";
 import { ok } from "@/lib/errors";
 import { compareNames } from "@/lib/names";
-import { buyerDisplayName } from "@/server/matching/common";
+import { displayNameFor } from "@/server/roster/display-name";
 import { contactKey, linkFor, linksForContacts, listContacts } from "./tokens";
 
 export type TokenStatus = "active" | "revoked" | "expired";
@@ -43,7 +43,7 @@ export async function listTokens(eventId: string, db: Db = getDb()): Promise<Tok
     if (row.contactType === "buyer") {
       const buyer = buyerById.get(row.entityId);
       if (buyer) {
-        name = buyerDisplayName(buyer);
+        name = displayNameFor(buyer);
         email = buyer.email;
       }
     } else {

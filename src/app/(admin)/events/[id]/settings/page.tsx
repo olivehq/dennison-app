@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { formatEventDate } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { isEventEditable } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { retentionDeadline, retentionDeleteDate } from "@/server/events/retention";
@@ -7,6 +8,7 @@ import { EventSettingsForm } from "./event-settings-form";
 import { RetentionCard } from "./retention-card";
 
 export default async function EventSettingsPage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();

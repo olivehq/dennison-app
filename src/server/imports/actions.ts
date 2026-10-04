@@ -30,7 +30,7 @@ function hasAllowedExtension(filename: string): boolean {
 
 /**
  * Expects FormData with `eventId`, `kind`, and `file`. Accepts xlsx, xls, or
- * csv under 5 MB. A file that fails to parse still creates a `failed` import
+ * csv under 4 MB. A file that fails to parse still creates a `failed` import
  * so the admin sees the message on the card.
  */
 export async function uploadImport(
@@ -53,7 +53,7 @@ export async function uploadImport(
     });
   }
   if (file.size > IMPORT_MAX_FILE_BYTES) {
-    return fail("validation", "The file is larger than 5 MB.", { file: ["Must be under 5 MB."] });
+    return fail("validation", "The file is larger than 4 MB.", { file: ["Must be under 4 MB."] });
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());

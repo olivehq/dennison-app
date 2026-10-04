@@ -1,7 +1,11 @@
 import { accessCsv } from "@/server/exports/access";
 import { fileResponse, isSameOrigin, loadExportContext, plainResponse } from "@/server/exports/http";
 
-/** POST only: generating the list replaces every participant link (D31). */
+/**
+ * POST only: generating the list writes. Contacts keep their current link and
+ * only those without a usable one get a new token (D59, which superseded the
+ * rotate-everything rule of D31).
+ */
 export async function POST(request: Request, ctx: RouteContext<"/api/exports/[eventId]/access">) {
   if (!isSameOrigin(request)) return plainResponse(403, "Cross-site requests are not allowed.");
   const { eventId } = await ctx.params;

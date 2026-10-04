@@ -59,6 +59,12 @@ function resendAdapter(apiKey: string): EmailAdapter {
   };
 }
 
+/** The part after the last "@", or "unknown". */
+export function recipientDomain(address: string): string {
+  const at = address.lastIndexOf("@");
+  return at === -1 ? "unknown" : address.slice(at + 1).replace(/>$/, "").trim().toLowerCase() || "unknown";
+}
+
 const loggedEmails: EmailMessage[] = [];
 let loggedCounter = 0;
 
@@ -67,7 +73,8 @@ function loggerAdapter(): EmailAdapter {
     loggedEmails.push(message);
     loggedCounter += 1;
     if (env.NODE_ENV !== "test") {
-      console.log(`[email] to=${message.to} subject="${message.subject}"`);
+      // Server logs outlive the 90-day retention, so no address or subject text.
+      console.log(`[email] logged, not sent: to=*@${recipientDomain(message.to)} subjectLength=${message.subject.length}`);
     }
     return { id: `logged-${loggedCounter}` };
   };
@@ -83,9 +90,14 @@ function loggerAdapter(): EmailAdapter {
 
 let adapter: EmailAdapter | undefined;
 
+/** False when mail goes to the logger adapter instead of Resend (no RESEND_API_KEY). */
+export function isEmailConfigured(): boolean {
+  return Boolean(env.RESEND_API_KEY);
+}
+
 function getAdapter(): EmailAdapter {
   if (adapter) return adapter;
-  adapter = env.RESEND_API_KEY ? resendAdapter(env.RESEND_API_KEY) : loggerAdapter();
+  adapter = isEmailConfigured() ? resendAdapter(env.RESEND_API_KEY!) : loggerAdapter();
   return adapter;
 }
 

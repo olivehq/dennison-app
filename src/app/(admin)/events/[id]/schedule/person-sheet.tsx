@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { cn } from "cn";
 import { TYPE_LABEL, typeDotClass } from "@/components/app/appointment-block";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { PersonSchedule, type PersonScheduleSlot } from "@/components/app/person-schedule";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,9 @@ import { setPinnedAction } from "@/server/matching/actions";
 import { addAppointmentAction, removeAppointmentAction, replaceAppointmentAction } from "@/server/schedule/actions";
 import type { EditResult, SwapCandidate } from "@/server/schedule/edits";
 import type { ScheduleSlot } from "@/server/schedule/queries";
+import { EditPreviewPanel, previewSentence } from "./edit-preview";
 import {
+  describeEdit,
   healthOf,
   healthText,
   personLabel,
@@ -100,8 +103,31 @@ export function PersonSheet(props: PersonSheetProps) {
     return true;
   };
 
+  // Picking a buyer opens a preview; Save commits it. Tied to the request so a new picker starts clean.
+  const [draft, setDraft] = React.useState<{ request: PickerRequest; candidate: SwapCandidate } | null>(null);
+  const activeDraft = draft && draft.request === picker ? draft : null;
+  const preview = activeDraft
+    ? describeEdit(model, {
+        supplierId: activeDraft.request.supplierId,
+        slot: activeDraft.request.slot,
+        removeBuyerId: activeDraft.request.removeBuyerId,
+        add: {
+          buyerId: activeDraft.candidate.buyerId,
+          name: activeDraft.candidate.name,
+          count: activeDraft.candidate.count,
+          countAfter: activeDraft.candidate.countAfter,
+        },
+      })
+    : null;
+  const [removing, setRemoving] = React.useState<SheetRow | null>(null);
+
   const pick = (candidate: SwapCandidate) => {
-    if (!picker) return;
+    if (picker) setDraft({ request: picker, candidate });
+  };
+
+  const save = () => {
+    if (!activeDraft) return;
+    const { request: picker, candidate } = activeDraft;
     startTransition(async () => {
       const result = picker.removeBuyerId
         ? await replaceAppointmentAction({
@@ -120,21 +146,28 @@ export function PersonSheet(props: PersonSheetProps) {
             buyerId: candidate.buyerId,
           });
       const verb = picker.removeBuyerId ? `Replaced ${picker.removeBuyerName} with ${candidate.name}` : `Added ${candidate.name}`;
-      if (finish(result, `${verb} in slot ${picker.slot}`)) onPickerChange(null);
+      if (finish(result, `${verb} in slot ${picker.slot}`)) {
+        setDraft(null);
+        onPickerChange(null);
+      }
     });
   };
 
-  const remove = (row: SheetRow) => {
+  const remove = async (row: SheetRow) => {
     const a = row.appointment;
     if (!a) return;
     setBusyRow(a.id);
-    startTransition(async () => {
+    try {
       const result = await removeAppointmentAction({ runId, version, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId });
-      setBusyRow(null);
       const supplier = model.personById.get(a.supplierId);
       finish(result, `Removed. ${supplier?.name ?? "The supplier"} is open in slot ${a.slot}`);
-    });
+    } finally {
+      setBusyRow(null);
+    }
   };
+  const removal = removing?.appointment
+    ? describeEdit(model, { supplierId: removing.appointment.supplierId, slot: removing.appointment.slot, removeBuyerId: removing.appointment.buyerId })
+    : null;
 
   const togglePin = (row: SheetRow) => {
     const a = row.appointment;
@@ -204,6 +237,11 @@ export function PersonSheet(props: PersonSheetProps) {
     }
     return (
       <>
+        {row.counterpart?.withdrawn ? (
+          <Badge variant="destructive">
+            <AlertTriangleIcon /> Withdrew, fix before locking
+          </Badge>
+        ) : null}
         {row.counterpart ? (
           <Button size="xs" variant="outline" onClick={() => onSelect(row.counterpart!.id, a.slot)}>
             Open {row.counterpart.kind}
@@ -215,7 +253,7 @@ export function PersonSheet(props: PersonSheetProps) {
               <RepeatIcon data-icon="inline-start" />
               Replace
             </Button>
-            <Button size="xs" variant="outline" disabled={isPending} onClick={() => remove(row)}>
+            <Button size="xs" variant="outline" disabled={isPending || busy} onClick={() => setRemoving(row)}>
               {busy ? <Spinner data-icon="inline-start" /> : <Trash2Icon data-icon="inline-start" />}
               Remove
             </Button>
@@ -293,7 +331,11 @@ export function PersonSheet(props: PersonSheetProps) {
               </SheetHeader>
               <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {inlinePicker && picker ? (
-                  <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
+                  preview ? (
+                    <EditPreviewPanel preview={preview} pending={isPending} onSave={save} onCancel={() => setDraft(null)} />
+                  ) : (
+                    <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
+                  )
                 ) : (
                   <div className="flex flex-col gap-4">
                     <div className="flex flex-col gap-2">
@@ -327,8 +369,8 @@ export function PersonSheet(props: PersonSheetProps) {
                       {editing ? (
                         <p className="text-sm text-muted-foreground">
                           {person.kind === "supplier"
-                            ? "Replace, remove, or pin a meeting, or add a buyer to an open slot. Each change saves straight away and shows in the activity log."
-                            : "Replace, remove, or pin a meeting. To fill an open slot, open a supplier who is free then."}
+                            ? "Replace, remove, or pin a meeting, or add a buyer to an open slot. You see what changes before it saves, and every change shows in the activity log."
+                            : "Replace, remove, or pin a meeting. You see what changes before it saves. To fill an open slot, open a supplier who is free then."}
                         </p>
                       ) : null}
                     </div>
@@ -358,11 +400,24 @@ export function PersonSheet(props: PersonSheetProps) {
                 <DialogTitle className="font-display text-lg font-bold">{pickerTitle(picker)}</DialogTitle>
                 <DialogDescription>{pickerDescription(picker)}</DialogDescription>
               </DialogHeader>
-              <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
+              {preview ? (
+                <EditPreviewPanel preview={preview} pending={isPending} onSave={save} onCancel={() => setDraft(null)} />
+              ) : (
+                <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
+              )}
             </>
           ) : null}
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+        title="Remove this meeting?"
+        description={removal ? `${previewSentence(removal)} The slot stays open until you fill it.` : undefined}
+        confirmLabel="Remove meeting"
+        destructive
+        onConfirm={() => (removing ? remove(removing) : undefined)}
+      />
     </>
   );
 }

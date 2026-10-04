@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { QualityStats } from "@/engine";
-import type { ScheduleAppointment, ScheduleSlot } from "@/server/schedule/queries";
+import type { ScheduleSlot, WithdrawnEntry } from "@/server/schedule/queries";
 import { CountChip } from "./count-chip";
 import {
   appointmentsOf,
@@ -27,16 +27,28 @@ type QualityViewProps = {
   warnings: string[];
   model: ScheduleModel;
   slots: ScheduleSlot[];
-  appointments: ScheduleAppointment[];
+  /** Appointments still naming someone who withdrew. */
+  withdrawn: WithdrawnEntry[];
+  /** Manual saves on the active run still in effect, from the activity log. */
+  manualChanges: number;
   targets: Targets & { buyerIdeal: number };
   query: string;
-  onSelect: (personId: string) => void;
+  onSelect: (personId: string, slot?: number) => void;
 };
 
 const pct = (n: number, d: number) => (d ? Math.round((n / d) * 1000) / 10 : 0);
 
-export function QualityView({ stats, warnings, model, slots, appointments, targets, query, onSelect }: QualityViewProps) {
-  const manual = appointments.filter((a) => a.source === "manual").length;
+export function QualityView({
+  stats,
+  warnings,
+  model,
+  slots,
+  withdrawn,
+  manualChanges: manual,
+  targets,
+  query,
+  onSelect,
+}: QualityViewProps) {
   const filter = (list: Person[]) => (query ? list.filter((p) => personMatches(p, query)) : list);
   const below = model.buyers.filter((b) => healthOf(b, targets) === "under").sort((a, b) => a.count - b.count);
   const above = model.buyers.filter((b) => healthOf(b, targets) === "over").sort((a, b) => b.count - a.count);
@@ -198,6 +210,12 @@ export function QualityView({ stats, warnings, model, slots, appointments, targe
             {query ? <CardDescription>Filtered by &ldquo;{query}&rdquo;</CardDescription> : null}
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
+            {withdrawn.length ? (
+              <>
+                <WithdrawnList entries={withdrawn} model={model} onSelect={onSelect} />
+                <Separator />
+              </>
+            ) : null}
             <PeopleList
               title={`Below ${targets.buyerMin}`}
               people={filter(below)}
@@ -237,8 +255,8 @@ export function QualityView({ stats, warnings, model, slots, appointments, targe
           <PencilLineIcon />
           <AlertTitle>{manual === 1 ? "1 manual change" : `${manual} manual changes`}</AlertTitle>
           <AlertDescription>
-            Appointments placed by hand on top of the engine&apos;s result. Running matching without keeping existing
-            appointments would replace them.
+            Replacements, additions, and removals saved on this run, not counting ones undone. Running matching without
+            keeping existing appointments would replace them.
           </AlertDescription>
         </Alert>
       </aside>
@@ -309,3 +327,47 @@ function PeopleList({
     </div>
   );
 }
+
+/** "Needs attention: withdrawn": meetings that still name someone who withdrew. Lock refuses until they are gone. */
+function WithdrawnList({
+  entries,
+  model,
+  onSelect,
+}: {
+  entries: WithdrawnEntry[];
+  model: ScheduleModel;
+  onSelect: (personId: string, slot?: number) => void;
+}) {
+  return (
+    <div>
+      <h3 className="flex items-center gap-1.5 px-2 text-sm font-semibold text-destructive">
+        <AlertTriangleIcon aria-hidden="true" className="size-4" />
+        Withdrawn
+      </h3>
+      <p className="px-2 text-xs text-muted-foreground">
+        {entries.length === 1 ? "1 meeting still names" : `${entries.length} meetings still name`} someone who withdrew.
+        Replace or remove {entries.length === 1 ? "it" : "them"}, or re-run keeping existing appointments, before locking.
+      </p>
+      <ul className="mt-1 flex flex-col">
+        {entries.map((e) => {
+          const gone = e.withdrawnIds.map((id) => (model.personById.get(id) ? personLabel(model.personById.get(id)!).primary : "Someone")).join(" and ");
+          return (
+            <li key={e.appointmentId}>
+              <button
+                type="button"
+                onClick={() => onSelect(e.supplierId, e.slot)}
+                className="flex w-full flex-col rounded-md border-l-4 border-l-destructive px-2 py-2 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="truncate text-sm font-semibold">
+                  Slot {e.slot}: {e.supplierName} with {e.buyerName}
+                </span>
+                <span className="text-xs text-muted-foreground">{gone} withdrew</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+

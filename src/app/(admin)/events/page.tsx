@@ -3,11 +3,13 @@ import { PageHeader } from "@/components/app/page-header";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatEventDate } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { listEvents } from "@/server/events/queries";
 import { CreateEventDialog } from "./create-event-dialog";
 import { EventStatusBadge } from "./event-status-badge";
 
 export default async function EventsPage() {
+  await requireSession();
   const events = await listEvents();
 
   return (

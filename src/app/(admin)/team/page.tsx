@@ -5,7 +5,8 @@ import { InviteAdminDialog } from "./invite-admin-dialog";
 import { TeamTable, type TeamRow } from "./team-table";
 
 export default async function TeamPage() {
-  const [{ user }, { admins, invites }] = await Promise.all([requireSession(), listAdmins()]);
+  const { user } = await requireSession();
+  const { admins, invites } = await listAdmins();
 
   const rows: TeamRow[] = [
     ...admins.map<TeamRow>((admin) => ({

@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { isRankingKind, type EntityType, type ImportValidationReport } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
 import { getImport, listImports } from "@/server/imports/queries";
 import { fullNameFor, listParticipants, listSuppliers } from "@/server/roster/queries";
@@ -130,6 +131,7 @@ function ReportSections({ report, ranking }: { report: ImportValidationReport; r
 }
 
 export default async function ImportDetailPage({ params }: { params: Promise<{ id: string; importId: string }> }) {
+  await requireSession();
   const { id, importId } = await params;
   const event = await getEvent(id);
   if (!event) notFound();

@@ -6,7 +6,8 @@ import { fail, ok, type ActionResult } from "@/lib/errors";
 import { recipientKey, type EmailAudience } from "@/lib/schemas/email";
 import { formatEventDate } from "@/lib/time";
 import { compareNames } from "@/lib/names";
-import { buyerDisplayName, loadEvent } from "@/server/matching/common";
+import { getEvent } from "@/server/events/queries";
+import { displayNameFor } from "@/server/roster/display-name";
 import { contactKey, linkFor, linksForContacts } from "@/server/tokens/tokens";
 import type { MergeValues } from "./merge";
 import { changedSinceLastSend } from "./schedule-hash";
@@ -49,7 +50,7 @@ function eventValues(event: Event) {
 
 /** Every contact who can be emailed, sorted by name. */
 export async function listAudienceContacts(db: Db, eventId: string): Promise<AudienceContact[] | null> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return null;
   const [buyerRows, supplierRows] = await Promise.all([
     db
@@ -69,7 +70,7 @@ export async function listAudienceContacts(db: Db, eventId: string): Promise<Aud
       key: recipientKey("buyer", b.id),
       contactType: "buyer",
       entityId: b.id,
-      name: buyerDisplayName(b),
+      name: displayNameFor(b),
       email: b.email,
       mergeValues: {
         first_name: b.firstName,

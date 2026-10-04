@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { requireSession } from "@/server/auth/session";
 import { getActivityPage, parseActivityParams, type ActivityDetail, type ActivityParams } from "@/server/audit/queries";
 import { ActivityFilters } from "./activity-filters";
 import { UndoButton } from "./undo-button";
@@ -64,6 +65,7 @@ export default async function ActivityPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  await requireSession();
   const [{ id }, raw] = await Promise.all([params, searchParams]);
   const filters = parseActivityParams(raw);
   const activity = await getActivityPage(id, filters);

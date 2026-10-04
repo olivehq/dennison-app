@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/app/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatTimestamp } from "@/lib/time";
-import { requireAdmin } from "@/server/auth/session";
+import { requireSession } from "@/server/auth/session";
 import { getAudienceOptions, getCampaign } from "@/server/email/queries";
 import { getEvent } from "@/server/events/queries";
 import { eventSectionHref } from "../../event-sections";
@@ -18,6 +18,7 @@ import { EmailPreview } from "./email-preview";
 const NOT_LOCKED = "Lock the schedule before sending so every link is final.";
 
 export default async function CampaignPage({ params }: { params: Promise<{ id: string; campaignId: string }> }) {
+  const { user: admin } = await requireSession();
   const { id, campaignId } = await params;
   const event = await getEvent(id);
   if (!event) notFound();
@@ -46,7 +47,12 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             <>
               <ResendBouncedButton
                 campaignId={campaign.id}
-                count={stats.bounced + stats.failed}
+                count={
+                  campaign.status === "failed"
+                    ? // A failed send may have stopped early: queued messages and people with no message count too.
+                      stats.bounced + stats.failed + stats.queued + Math.max(0, (campaign.recipientCount ?? 0) - stats.total)
+                    : stats.bounced + stats.failed
+                }
                 disabledReason={sendBlockedReason}
               />
               <DuplicateAsReminderButton campaignId={campaign.id} />
@@ -58,7 +64,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   );
 
   if (campaign.status === "draft") {
-    const [admin, options] = await Promise.all([requireAdmin(), getAudienceOptions(event.id)]);
+    const options = await getAudienceOptions(event.id);
     if (!options) notFound();
     return (
       <>

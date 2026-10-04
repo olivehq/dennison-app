@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { admins, auditEvents, events, imports, nameAliases, participants, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
-import { useMemoryStorageForTests } from "@/lib/storage";
+import { getFile, useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
 import { applyImport, createImport, deleteImportRecord, saveAlias, saveAliases } from "./imports";
 import { getImport, getImportStatusByKind, listImports, readinessForMatching } from "./queries";
@@ -166,6 +166,16 @@ describe("participants import", () => {
     expect(garbage.report.errors).toHaveLength(1);
     expect((await getImport(garbage.importId, db))?.status).toBe("failed");
   });
+
+  it("refuses a sheet over the row limit with a plain message in the report", async () => {
+    const rows = Array.from({ length: 10_001 }, (_, i) => [`p${i}@example.com`, "A", "B", "", "", ""]);
+    const outcome = await expectOk(await upload("participants", writeSheet(participantHeaders, rows), "huge.xlsx"));
+    expect(outcome.state).toBe("failed");
+    expect(outcome.report.errors[0].message).toBe(
+      'Sheet "Sheet1" has more than 10,000 rows. Remove empty or extra rows, or split the file.',
+    );
+    await deleteImportRecord(db, { importId: outcome.importId, adminId });
+  });
 });
 
 describe("suppliers import", () => {
@@ -232,8 +242,16 @@ describe("buyer hotel rankings from the eShow sample", () => {
     expect(rows[23].targetId).toBe(slo.id);
 
     const [arrowhead] = await db.select().from(suppliers).where(eq(suppliers.name, "Lake Arrowhead Resort & Spa"));
-    const autoAlias = await db.select().from(nameAliases).where(eq(nameAliases.rawText, "Lake Arrowhead Resort and Spa"));
+    const autoAlias = await db
+      .select()
+      .from(nameAliases)
+      .where(and(eq(nameAliases.rawText, "Lake Arrowhead Resort and Spa"), eq(nameAliases.eventId, eventId)));
     expect(autoAlias).toMatchObject([{ entityId: arrowhead.id, source: "auto" }]);
+    const globalAuto = await db
+      .select()
+      .from(nameAliases)
+      .where(and(eq(nameAliases.rawText, "Lake Arrowhead Resort and Spa"), isNull(nameAliases.eventId)));
+    expect(globalAuto).toMatchObject([{ canonicalName: "Lake Arrowhead Resort & Spa", source: "auto" }]);
     expect(rows[13].targetId).toBe(arrowhead.id);
   });
 
@@ -354,12 +372,15 @@ describe("queries and readiness", () => {
     expect((await readinessForMatching(eventId, db)).ready).toBe(true);
   });
 
-  it("deleting an applied ranking import removes its rankings", async () => {
+  it("deleting an applied ranking import removes its rankings and its stored file", async () => {
     const byKind = await getImportStatusByKind(eventId, db);
     const target = byKind.supplier_rankings!;
+    const [{ fileKey }] = await db.select({ fileKey: imports.fileKey }).from(imports).where(eq(imports.id, target.id));
+    expect(await getFile(fileKey)).not.toBeNull();
     const result = await expectOk(await deleteImportRecord(db, { importId: target.id, adminId }));
     expect(result.rankingsDeleted).toBe(4);
     expect(await getImport(target.id, db)).toBeNull();
+    expect(await getFile(fileKey)).toBeNull();
     expect((await readinessForMatching(eventId, db)).missing).toEqual(["supplier_rankings"]);
   });
 });
@@ -412,6 +433,61 @@ describe("saving several aliases at once", () => {
     expect(saved.aliasIds).toHaveLength(2);
     expect(saved.imports).toEqual(expect.arrayContaining([{ importId: outcome.importId, kind: "supplier_rankings", state: "ready" }]));
     await deleteImportRecord(db, { importId: outcome.importId, adminId });
+  });
+});
+
+describe("cross-year aliases (D76)", () => {
+  it("resolve a name mapped in one event in the next event, through the canonical name", async () => {
+    const [nextYear] = await db
+      .insert(events)
+      .values({ name: "AW 2027", eventDate: "2027-11-09", timezone: "America/Los_Angeles", settings: defaultEventSettings })
+      .returning();
+    await expectOk(
+      await upload(
+        "suppliers",
+        writeSheet(supplierHeaders, [["visit san luis obispo county (slo cal)", "hotel", "", "", "", ""]]),
+        "suppliers-2027.xlsx",
+        nextYear.id,
+      ),
+    ).then((outcome) => applyImport(db, { importId: outcome.importId, adminId }));
+    await expectOk(
+      await upload("participants", writeSheet(participantHeaders, [["ann@example.com", "Ann", "Lee", "", "", ""]]), "p.xlsx", nextYear.id),
+    ).then((outcome) => applyImport(db, { importId: outcome.importId, adminId }));
+
+    // "Visit SLO CAL" was mapped by hand in AW 2026 above. AW 2027 has no event alias for it.
+    const outcome = await expectOk(
+      await upload("buyer_hotel_rankings", listSheet([{ name: "Ann Lee", choices: ["visit slo cal"] }]), "r.xlsx", nextYear.id),
+    );
+    expect(outcome.report.unknownNames).toEqual([]);
+    expect(outcome.state).toBe("ready");
+    const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
+    const [slo2027] = await db.select().from(suppliers).where(eq(suppliers.eventId, nextYear.id));
+    const [row] = await rankingsFor(outcome.importId);
+    expect(applied.summary.rankingsWritten).toBe(1);
+    expect(row.targetId).toBe(slo2027.id);
+
+    const globals = await db.select().from(nameAliases).where(and(isNull(nameAliases.eventId), eq(nameAliases.rawText, "Visit SLO CAL")));
+    expect(globals).toMatchObject([{ entityType: "supplier", canonicalName: "Visit San Luis Obispo County (SLO CAL)", source: "manual" }]);
+    await db.delete(events).where(eq(events.id, nextYear.id));
+  });
+});
+
+describe("applying the same import twice at once", () => {
+  it("applies once and returns a conflict for the other", async () => {
+    const outcome = await expectOk(
+      await upload("suppliers", writeSheet(supplierHeaders, [["Twice Inn", "hotel", "", "", "", ""]])),
+    );
+    const results = await Promise.all([
+      applyImport(db, { importId: outcome.importId, adminId }),
+      applyImport(db, { importId: outcome.importId, adminId }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => !r.ok)).toMatchObject([{ ok: false, error: { code: "conflict" } }]);
+    const applyRows = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "import.apply"), eq(auditEvents.entityId, outcome.importId)));
+    expect(applyRows).toHaveLength(1);
   });
 });
 

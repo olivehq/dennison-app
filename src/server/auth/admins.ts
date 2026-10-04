@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, count, eq, gt, isNull, ne } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { adminInvites, admins, sessions, type AdminInvite } from "@/db/schema";
 import { sendEmail } from "@/lib/email/adapter";
@@ -28,6 +28,30 @@ export async function findPendingInvite(db: Db, email: string): Promise<AdminInv
     .from(adminInvites)
     .where(
       and(
+        eq(adminInvites.email, email.toLowerCase()),
+        isNull(adminInvites.acceptedAt),
+        gt(adminInvites.expiresAt, new Date()),
+      ),
+    )
+    .limit(1);
+  return invite ?? null;
+}
+
+/**
+ * The pending, unexpired invite whose token hashes to `token_hash` and whose
+ * email matches. Sign-up requires this: knowing an invited email is not enough.
+ */
+export async function findPendingInviteByToken(
+  db: Db,
+  email: string,
+  token: string,
+): Promise<AdminInvite | null> {
+  const [invite] = await db
+    .select()
+    .from(adminInvites)
+    .where(
+      and(
+        eq(adminInvites.tokenHash, hashToken(token)),
         eq(adminInvites.email, email.toLowerCase()),
         isNull(adminInvites.acceptedAt),
         gt(adminInvites.expiresAt, new Date()),
@@ -150,16 +174,27 @@ export async function disableAdminAccount(
     if (!target) return fail("not_found", "That admin no longer exists.");
     if (target.disabledAt) return ok({ userId: target.id });
 
-    const [{ others }] = await tx
-      .select({ others: count() })
-      .from(admins)
-      .where(and(isNull(admins.disabledAt), ne(admins.id, target.id)));
-    if (others === 0) {
+    // Two concurrent disables of different admins must not both see the other
+    // as still active. Lock the active admins in id order (no deadlock), then
+    // set disabled_at in one conditional UPDATE that only matches while another
+    // active admin exists. Zero rows updated means this was the last one.
+    await tx.select({ id: admins.id }).from(admins).where(isNull(admins.disabledAt)).orderBy(admins.id).for("update");
+    const disabledAt = new Date();
+    const updated = await tx
+      .update(admins)
+      .set({ disabledAt })
+      .where(
+        and(
+          eq(admins.id, target.id),
+          isNull(admins.disabledAt),
+          sql`exists (select 1 from ${admins} as other where other.disabled_at is null and other.id <> ${target.id})`,
+        ),
+      )
+      .returning({ id: admins.id });
+    if (updated.length === 0) {
       return fail("conflict", "This is the last active admin. Invite someone else before disabling it.");
     }
 
-    const disabledAt = new Date();
-    await tx.update(admins).set({ disabledAt }).where(eq(admins.id, target.id));
     await tx.delete(sessions).where(eq(sessions.userId, target.id));
     await recordAudit(tx, {
       eventId: null,

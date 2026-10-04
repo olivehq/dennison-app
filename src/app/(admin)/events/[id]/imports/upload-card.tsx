@@ -50,7 +50,7 @@ export function UploadCard({ eventId, kind, latest, lockedReason }: UploadCardPr
     event.preventDefault();
     if (!file) return;
     if (file.size > IMPORT_MAX_FILE_BYTES) {
-      toast.error(`${file.name} is larger than 5 MB. Remove extra sheets or columns and try again.`);
+      toast.error(`${file.name} is larger than 4 MB. Remove extra sheets or columns and try again.`);
       return;
     }
     const formData = new FormData(event.currentTarget);

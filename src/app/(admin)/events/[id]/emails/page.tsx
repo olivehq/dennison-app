@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatTimestamp } from "@/lib/time";
+import { requireSession } from "@/server/auth/session";
 import { getEmailSummary, listCampaigns } from "@/server/email/queries";
 import { getEvent } from "@/server/events/queries";
 import { eventSectionHref } from "../event-sections";
@@ -13,6 +14,7 @@ import { CampaignsTable, type CampaignTableRow } from "./campaigns-table";
 import { people } from "./labels";
 
 export default async function EmailsPage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();

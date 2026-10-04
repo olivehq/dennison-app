@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeStats, type Appointment } from "@/engine";
 import { defaultEventSettings } from "@/lib/schemas/event-settings";
-import { qualityReportText } from "./report";
+import { neitherBandLines, qualityReportText } from "./report";
 
 type Fixture = {
   buyers: { name: string }[];
@@ -103,5 +103,31 @@ describe("qualityReportText against the 2025 results", () => {
     expect(text).toContain("keeping buyers between 7 and 9 (62 of 65 are)");
     expect(text).toContain("25 of the 31 are mixed rankings");
     expect(text).toContain("3 buyers have fewer than 7 appointments.");
+  });
+});
+
+describe("neitherBandLines", () => {
+  it("never prints a backwards band when the cutoff is at or below 2N", () => {
+    const low = computeStats(appointments, {
+      settings: { ...defaultEventSettings, mutualTopN: 10, hotelRankCutoff: 15 },
+      buyers: data.buyers.map((b) => ({ id: b.name, biztechOptIn: true })),
+      suppliers: data.suppliers.map((s) => ({ id: s.name, type: s.type })),
+    });
+    const lines = neitherBandLines(low);
+    expect(lines.map((line) => line.split(":")[0])).toEqual([
+      "  * Mutual ranks 11-20",
+      "  * Mutual ranks >20",
+      "  * Mixed rankings (one side 11-20, other higher/lower)",
+    ]);
+    expect(lines.join("\n")).not.toMatch(/21-15/);
+  });
+
+  it("keeps the three ranges with the default cutoff above 2N", () => {
+    expect(neitherBandLines(stats).map((line) => line.split(":")[0])).toEqual([
+      "  * Mutual ranks 11-20",
+      "  * Mutual ranks 21-27",
+      "  * Mutual ranks >27",
+      "  * Mixed rankings (one side 11-27, other higher/lower)",
+    ]);
   });
 });

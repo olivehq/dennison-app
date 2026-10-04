@@ -1,11 +1,14 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens, appointments, events, suppliers, type Appointment } from "@/db/schema";
+import { accessTokens, appointments, events, matchRuns, participants, suppliers, type Appointment } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
+import { NOT_ACTIVE_RUN_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { raceBeforeTransaction } from "@/server/events/test-race";
 import { getActiveRun } from "@/server/matching/queries";
-import { startRun } from "@/server/matching/runs";
+import { activateRun, setPinned, startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import {
   addAppointment,
@@ -525,5 +528,203 @@ describe("lock and unlock", () => {
 
     const desks = await reassignDesks(db, { eventId: seeded.eventId, adminId: seeded.adminId });
     expect(desks.ok).toBe(true);
+  });
+});
+
+describe("withdrawn people still on the schedule", () => {
+  /** Withdraws the buyer of the first appointment and returns that appointment. */
+  async function withdrawFirstBuyer(): Promise<Appointment> {
+    const [first] = (await rows()).sort((a, b) => a.slot - b.slot);
+    await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, first.buyerId));
+    return first;
+  }
+
+  it("getScheduleView flags the appointment and lists it under withdrawn", async () => {
+    const first = await withdrawFirstBuyer();
+    const view = (await getScheduleView(seeded.eventId, db))!;
+    const flagged = view.appointments.filter((a) => a.counterpartWithdrawn);
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged.every((a) => a.buyerId === first.buyerId)).toBe(true);
+    expect(view.health.withdrawn.map((w) => w.appointmentId).sort()).toEqual(flagged.map((a) => a.id).sort());
+    expect(view.health.withdrawn[0].withdrawnIds).toEqual([first.buyerId]);
+    expect(view.appointments.filter((a) => a.buyerId !== first.buyerId).every((a) => !a.counterpartWithdrawn)).toBe(true);
+  });
+
+  it("getPersonSchedule flags the row for staff and shows OPEN to the participant", async () => {
+    const first = await withdrawFirstBuyer();
+    const ref = { type: "supplier" as const, id: first.supplierId };
+    const admin = (await getPersonSchedule(seeded.eventId, ref, db))!;
+    const adminSlot = admin.slots.find((s) => s.slot === first.slot)!;
+    expect(adminSlot.appointment?.counterpartId).toBe(first.buyerId);
+    expect(adminSlot.appointment?.counterpartWithdrawn).toBe(true);
+
+    const participant = (await getPersonSchedule(seeded.eventId, { ...ref, forParticipant: true }, db))!;
+    expect(participant.slots.find((s) => s.slot === first.slot)!.appointment).toBeNull();
+    const others = participant.slots.filter((s) => s.appointment);
+    expect(others.every((s) => s.appointment!.counterpartWithdrawn === undefined)).toBe(true);
+  });
+
+  it("lockSchedule refuses until the appointments are gone, and writes nothing", async () => {
+    await withdrawFirstBuyer();
+    const view = (await getScheduleView(seeded.eventId, db))!;
+    const n = view.health.withdrawn.length;
+    const refused = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.error.code).toBe("conflict");
+    expect(refused.error.message).toBe(
+      n === 1
+        ? "1 appointment involves someone who withdrew. Re-run matching keeping existing appointments, or remove it, before locking."
+        : `${n} appointments involve someone who withdrew. Re-run matching keeping existing appointments, or remove them, before locking.`,
+    );
+    const [event] = await db.select().from(events).where(eq(events.id, seeded.eventId));
+    expect(event.status).toBe("matched");
+    expect(await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId))).toHaveLength(0);
+
+    for (const w of view.health.withdrawn) {
+      const removed = await removeAppointment(
+        db,
+        { runId, version: await version(), slot: w.slot, supplierId: w.supplierId, buyerId: w.buyerId },
+        seeded.adminId,
+      );
+      expect(removed.ok).toBe(true);
+    }
+    expect((await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId })).ok).toBe(true);
+  });
+});
+
+describe("status races (compare-and-set)", () => {
+  const setStatus = (status: "matched" | "locked" | "archived") => () =>
+    db.update(events).set({ status }).where(eq(events.id, seeded.eventId));
+
+  it("lock is a conflict when the event was locked between its read and its write", async () => {
+    const result = await lockSchedule(raceBeforeTransaction(db, setStatus("locked")), {
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+    });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId))).toHaveLength(0);
+    expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.lock" } }, db)).total).toBe(0);
+  });
+
+  it("unlock is a conflict when the event was unlocked or archived in between", async () => {
+    expect((await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId })).ok).toBe(true);
+    const raced = await unlockSchedule(raceBeforeTransaction(db, setStatus("archived")), {
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+      reason: "Late change",
+    });
+    expect(raced).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    const [event] = await db.select().from(events).where(eq(events.id, seeded.eventId));
+    expect(event.status).toBe("archived");
+    expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.unlock" } }, db)).total).toBe(0);
+  });
+
+  it("an edit or desk change that lands after a lock is a conflict, not a write", async () => {
+    const [a] = await rows();
+    const edit = await removeAppointment(
+      raceBeforeTransaction(db, setStatus("locked")),
+      { runId, version: await version(), slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
+      seeded.adminId,
+    );
+    expect(edit).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await rows()).some((r) => r.id === a.id)).toBe(true);
+
+    await setStatus("matched")();
+    const desks = await reassignDesks(raceBeforeTransaction(db, setStatus("locked")), {
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+    });
+    expect(!desks.ok && desks.error.code).toBe("conflict");
+  });
+});
+
+describe("only the active run is edited (D33)", () => {
+  it("replace, add, remove, and pin refuse once another run is activated", async () => {
+    const second = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+    if (!second.ok) throw new Error(second.error.message);
+    const staleVersion = await version();
+    expect((await activateRun(db, { runId: second.data.runId, adminId: seeded.adminId })).ok).toBe(true);
+
+    const [a] = await rows();
+    const removed = await removeAppointment(
+      db,
+      { runId, version: staleVersion, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
+      seeded.adminId,
+    );
+    expect(removed).toEqual({ ok: false, error: { code: "conflict", message: NOT_ACTIVE_RUN_MESSAGE } });
+    const added = await addAppointment(
+      db,
+      { runId, version: staleVersion, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
+      seeded.adminId,
+    );
+    expect(!added.ok && added.error.message).toBe(NOT_ACTIVE_RUN_MESSAGE);
+    const replaced = await replaceAppointment(
+      db,
+      { runId, version: staleVersion, slot: a.slot, supplierId: a.supplierId, removeBuyerId: a.buyerId, addBuyerId: seeded.buyers[0].id },
+      seeded.adminId,
+    );
+    expect(!replaced.ok && replaced.error.message).toBe(NOT_ACTIVE_RUN_MESSAGE);
+    const pinned = await setPinned(db, { appointmentId: a.id, pinned: true, adminId: seeded.adminId });
+    expect(!pinned.ok && pinned.error.message).toBe(NOT_ACTIVE_RUN_MESSAGE);
+    expect((await rows()).find((r) => r.id === a.id)?.pinned).toBe(false);
+  });
+
+  it("an activation that lands between an edit's read and write makes it a conflict", async () => {
+    const second = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+    if (!second.ok) throw new Error(second.error.message);
+    const [a] = await rows();
+    const activate = () =>
+      db.transaction(async (tx) => {
+        await tx.update(matchRuns).set({ isActive: false }).where(eq(matchRuns.id, runId));
+        await tx.update(matchRuns).set({ isActive: true }).where(eq(matchRuns.id, second.data.runId));
+      });
+    const result = await removeAppointment(
+      raceBeforeTransaction(db, activate),
+      { runId, version: await version(), slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
+      seeded.adminId,
+    );
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: NOT_ACTIVE_RUN_MESSAGE } });
+  });
+});
+
+describe("undo with a version (D11)", () => {
+  it("refuses a stale version and accepts the current one", async () => {
+    await removeOne();
+    const audit = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.remove" } }, db);
+    const current = await version();
+    const stale = await undoAudit(db, { auditEventId: audit.rows[0].id, adminId: seeded.adminId, version: current - 1 });
+    expect(stale).toEqual({ ok: false, error: { code: "conflict", message: VERSION_CONFLICT_MESSAGE } });
+    const fresh = await undoAudit(db, { auditEventId: audit.rows[0].id, adminId: seeded.adminId, version: current });
+    expect(fresh.ok).toBe(true);
+  });
+});
+
+describe("manualChanges", () => {
+  it("counts replace, add, and remove saves on the active run, minus undone ones", async () => {
+    expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(0);
+    const first = await removeOne();
+    const second = await removeOne();
+    expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(2);
+
+    const removals = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.remove" } }, db);
+    const ofSecond = removals.rows.find(
+      (r) => (r.before as { buyerId: string }).buyerId === second.buyerId && (r.before as { slot: number }).slot === second.slot,
+    )!;
+    const undone = await undoAudit(db, { auditEventId: ofSecond.id, adminId: seeded.adminId });
+    expect(undone.ok).toBe(true);
+    expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(1);
+
+    // Undoing the undo puts the removal back in effect.
+    if (!undone.ok) return;
+    expect((await undoAudit(db, { auditEventId: undone.data.auditEventId, adminId: seeded.adminId })).ok).toBe(true);
+    expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(2);
+    expect(first.runId).toBe(runId);
+
+    // Edits on another run don't count once it is not the active one.
+    const next = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+    if (!next.ok) throw new Error(next.error.message);
+    await activateRun(db, { runId: next.data.runId, adminId: seeded.adminId });
+    expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(0);
   });
 });

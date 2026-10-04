@@ -117,7 +117,8 @@ export const saveAliasesSchema = z.object({
 });
 
 export const IMPORT_FILE_EXTENSIONS = [".xlsx", ".xls", ".csv"] as const;
-export const IMPORT_MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** 4 MB: Vercel caps a function request body at 4.5 MB, multipart overhead included. */
+export const IMPORT_MAX_FILE_BYTES = 4 * 1024 * 1024;
 
 export type ImportKind = z.infer<typeof importKindSchema>;
 export type RankingKind = z.infer<typeof rankingKindSchema>;

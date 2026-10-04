@@ -1,5 +1,5 @@
 import type { ImportKind } from "@/lib/schemas/import";
-import { readSheetRows, type SheetRows } from "@/lib/xlsx";
+import { readSheetRows, SpreadsheetTooLargeError, type SheetRows } from "@/lib/xlsx";
 import { detectFormat } from "../templates";
 import { parseParticipants } from "./participants";
 import { parseRankingList } from "./ranking-list";
@@ -19,6 +19,7 @@ function readWorkbook(buffer: Buffer | Uint8Array): SheetRows | { message: strin
   try {
     sheets = readSheetRows(buffer);
   } catch (error) {
+    if (error instanceof SpreadsheetTooLargeError) return { message: error.message };
     const detail = error instanceof Error ? error.message : String(error);
     return { message: `Could not read the file as a spreadsheet (${detail}).` };
   }

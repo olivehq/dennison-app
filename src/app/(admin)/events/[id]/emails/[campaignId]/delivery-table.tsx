@@ -105,7 +105,7 @@ export function ResendBouncedButton({
   disabledReason,
 }: {
   campaignId: string;
-  /** Recipients whose latest message bounced or failed. */
+  /** Recipients whose latest message bounced or failed, plus, for a failed campaign, those it never reached. */
   count: number;
   disabledReason: string | null;
 }) {
@@ -121,7 +121,7 @@ export function ResendBouncedButton({
   return (
     <ConfirmDialog
       title={`Resend to ${recipients(count)}?`}
-      description="Sends this campaign again to everyone whose last email bounced or failed, at the address on the roster now. Fix any wrong addresses on the Participants or Suppliers page first."
+      description="Sends this campaign again to everyone whose last email bounced, failed, or never went out, at the address on the roster now. Fix any wrong addresses on the Participants or Suppliers page first."
       confirmLabel={`Send to ${recipients(count)}`}
       onConfirm={async () => {
         const result = await resendToBouncedAction({ campaignId });

@@ -1,13 +1,14 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { appointments, type Appointment, type Event, type Participant, type Supplier } from "@/db/schema";
+import { appointments, auditEvents, type Appointment, type Event, type Participant, type Supplier } from "@/db/schema";
 import { isTopN, type QualityStats } from "@/engine";
 import { formatMinutes } from "@/lib/time";
 import { compareNames } from "@/lib/names";
-import { buyerDisplayName } from "@/server/matching/common";
+import { displayNameFor } from "@/server/roster/display-name";
 import { loadRoster, type Roster } from "@/server/matching/input";
 import { readStats } from "@/server/matching/queries";
 import { findActiveRun } from "@/server/matching/runs";
+import { UNDO_NOTE_PREFIX } from "./undo-note";
 
 /**
  * Reads for the schedule workspace and the participant page. Everything is
@@ -70,14 +71,30 @@ export type ScheduleAppointment = {
   pinned: boolean;
   mutualTopN: boolean;
   strength: MatchStrength;
+  /** The buyer or the supplier withdrew after this was booked. Locking is refused until it is fixed. */
+  counterpartWithdrawn: boolean;
 };
 
 export type HealthEntry = { id: string; name: string; count: number };
+
+/** An appointment that still names someone who withdrew. */
+export type WithdrawnEntry = {
+  appointmentId: string;
+  slot: number;
+  buyerId: string;
+  supplierId: string;
+  buyerName: string;
+  supplierName: string;
+  /** The person (or people) who withdrew. */
+  withdrawnIds: string[];
+};
 
 export type ScheduleHealth = {
   buyersBelowMin: HealthEntry[];
   buyersAboveMax: HealthEntry[];
   suppliersOffTarget: HealthEntry[];
+  /** "Needs attention: withdrawn". Slot order. */
+  withdrawn: WithdrawnEntry[];
 };
 
 export type ScheduleRun = {
@@ -98,6 +115,8 @@ export type ScheduleView = {
   buyers: ScheduleBuyer[];
   appointments: ScheduleAppointment[];
   health: ScheduleHealth;
+  /** Manual replace, add, and remove saves on the active run that are still in effect (undone ones excluded). */
+  manualChanges: number;
 };
 
 export function slotsFor(event: Pick<Event, "settings">): ScheduleSlot[] {
@@ -121,6 +140,37 @@ function countBy(rows: Appointment[], pick: (a: Appointment) => string): Map<str
 
 function toHealth(entries: { id: string; count: number }[] | undefined, names: Map<string, string>): HealthEntry[] {
   return (entries ?? []).map((e) => ({ id: e.id, name: names.get(e.id) ?? e.id, count: e.count }));
+}
+
+const MANUAL_EDIT_ACTIONS = ["appointment.replace", "appointment.add", "appointment.remove"] as const;
+
+function snapshotRunId(value: unknown): string | null {
+  if (value && typeof value === "object" && "runId" in value && typeof value.runId === "string") return value.runId;
+  return null;
+}
+
+/**
+ * Manual edits on the run still in effect: replace, add, and remove rows on
+ * that run, minus the ones undone. An undo can itself be undone (D32), so an
+ * edit counts when it has no undo, or its undo was undone, and so on.
+ */
+export async function countManualChanges(db: Db, eventId: string, runId: string): Promise<number> {
+  const rows = await db
+    .select({ id: auditEvents.id, action: auditEvents.action, before: auditEvents.before, after: auditEvents.after, note: auditEvents.note })
+    .from(auditEvents)
+    .where(and(eq(auditEvents.eventId, eventId), inArray(auditEvents.action, [...MANUAL_EDIT_ACTIONS, "appointment.undo"])));
+  const onRun = rows.filter((r) => (snapshotRunId(r.before) ?? snapshotRunId(r.after)) === runId);
+  const undoneBy = new Map<string, string>();
+  for (const r of onRun) {
+    if (r.action !== "appointment.undo" || !r.note) continue;
+    const target = r.note.startsWith(UNDO_NOTE_PREFIX) ? r.note.slice(UNDO_NOTE_PREFIX.length) : null;
+    if (target) undoneBy.set(target, r.id);
+  }
+  const inEffect = (id: string, depth = 0): boolean => {
+    const undo = undoneBy.get(id);
+    return undo === undefined || depth > 50 || !inEffect(undo, depth + 1);
+  };
+  return onRun.filter((r) => r.action !== "appointment.undo" && inEffect(r.id)).length;
 }
 
 async function loadActiveAppointments(db: Db, eventId: string) {
@@ -154,7 +204,7 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
   const buyers: ScheduleBuyer[] = roster.participants
     .map((p) => ({
       id: p.id,
-      name: buyerDisplayName(p),
+      name: displayNameFor(p),
       organization: p.organization,
       title: p.title,
       count: buyerCounts.get(p.id) ?? 0,
@@ -163,6 +213,7 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
     }))
     .sort((a, b) => compareNames(a.name, b.name));
 
+  const withdrawnIds = new Set([...buyers.filter((b) => b.withdrawn), ...suppliers.filter((x) => x.withdrawn)].map((p) => p.id));
   const views: ScheduleAppointment[] = rows
     .map((a) => {
       const strength = matchStrength(a.buyerRank, a.supplierRank, n);
@@ -177,6 +228,7 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
         pinned: a.pinned,
         mutualTopN: strength === "mutual",
         strength,
+        counterpartWithdrawn: withdrawnIds.has(a.buyerId) || withdrawnIds.has(a.supplierId),
       };
     })
     .sort(
@@ -185,6 +237,20 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
         compareNames(roster.names.get(a.supplierId) ?? "", roster.names.get(b.supplierId) ?? "") ||
         compareNames(roster.names.get(a.buyerId) ?? "", roster.names.get(b.buyerId) ?? ""),
     );
+
+  const name = (id: string) => roster.names.get(id) ?? id;
+  const withdrawn: WithdrawnEntry[] = views
+    .filter((a) => a.counterpartWithdrawn)
+    .map((a) => ({
+      appointmentId: a.id,
+      slot: a.slot,
+      buyerId: a.buyerId,
+      supplierId: a.supplierId,
+      buyerName: name(a.buyerId),
+      supplierName: name(a.supplierId),
+      withdrawnIds: [a.buyerId, a.supplierId].filter((id) => withdrawnIds.has(id)),
+    }));
+  const manualChanges = run ? await countManualChanges(db, eventId, run.id) : 0;
 
   return {
     event: roster.event,
@@ -206,7 +272,9 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
       buyersBelowMin: toHealth(stats?.buyersBelowMin, roster.names),
       buyersAboveMax: toHealth(stats?.buyersAboveMax, roster.names),
       suppliersOffTarget: toHealth(stats?.suppliersOffTarget, roster.names),
+      withdrawn,
     },
+    manualChanges,
   };
 }
 
@@ -218,6 +286,11 @@ export type PersonSlotAppointment = {
   counterpartName: string;
   /** The supplier's desk, whichever side is viewing. */
   desk: number | null;
+  /**
+   * The other side withdrew after this was booked. Admin view only, so staff
+   * can fix it; a participant sees the slot as OPEN instead.
+   */
+  counterpartWithdrawn?: boolean;
   /** Absent when built for a participant; nothing on that page shows rankings. */
   buyerRank?: number | null;
   supplierRank?: number | null;
@@ -270,10 +343,18 @@ export async function getPersonSchedule(
   const bySlot = new Map(mine.map((a) => [a.slot, a]));
   const n = roster.event.settings.mutualTopN;
 
+  const statusById = new Map<string, string>([
+    ...roster.participants.map((p): [string, string] => [p.id, p.status]),
+    ...roster.suppliers.map((x): [string, string] => [x.id, x.status]),
+  ]);
+
   const slots: PersonScheduleSlot[] = slotsFor(roster.event).map((s) => {
     const a = bySlot.get(s.slot);
     if (!a) return { slot: s.slot, start: s.start, end: s.end, appointment: null };
     const counterpartId = ref.type === "buyer" ? a.supplierId : a.buyerId;
+    const counterpartWithdrawn = statusById.get(counterpartId) === "withdrawn";
+    // Nobody will be at that meeting, so the participant sees a free slot.
+    if (counterpartWithdrawn && ref.forParticipant) return { slot: s.slot, start: s.start, end: s.end, appointment: null };
     const appointment: PersonSlotAppointment = {
       id: a.id,
       counterpartId,
@@ -281,6 +362,7 @@ export async function getPersonSchedule(
       desk: supplierById.get(a.supplierId)?.deskNumber ?? null,
     };
     if (!ref.forParticipant) {
+      appointment.counterpartWithdrawn = counterpartWithdrawn;
       appointment.buyerRank = a.buyerRank;
       appointment.supplierRank = a.supplierRank;
       appointment.strength = matchStrength(a.buyerRank, a.supplierRank, n);

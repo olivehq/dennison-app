@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   imports,
@@ -19,9 +19,10 @@ import {
   type ImportValidationReport,
   type RankingKind,
 } from "@/lib/schemas/import";
-import { getFile, importFileKey, putFile } from "@/lib/storage";
+import { deleteFile, getFile, importFileKey, putFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
 import { advanceStatus } from "@/server/events/status";
+import { fullNameFor } from "@/server/roster/display-name";
 import { loadEditableEvent } from "@/server/roster/editable";
 import { revokeTokens } from "@/server/roster/roster";
 import {
@@ -75,12 +76,46 @@ function contentTypeFor(filename: string): string {
 }
 
 export async function loadContext(db: Db, eventId: string): Promise<ValidationContext> {
-  const [participantRows, supplierRows, aliasRows] = await Promise.all([
+  const [participantRows, supplierRows, aliasRows, globalRows] = await Promise.all([
     db.select().from(participants).where(eq(participants.eventId, eventId)),
     db.select().from(suppliers).where(eq(suppliers.eventId, eventId)),
     db.select().from(nameAliases).where(eq(nameAliases.eventId, eventId)),
+    db
+      .select({ rawText: nameAliases.rawText, entityType: nameAliases.entityType, canonicalName: nameAliases.canonicalName })
+      .from(nameAliases)
+      .where(and(isNull(nameAliases.eventId), isNotNull(nameAliases.canonicalName))),
   ]);
-  return { participants: participantRows, suppliers: supplierRows, aliases: aliasRows };
+  return {
+    participants: participantRows,
+    suppliers: supplierRows,
+    aliases: aliasRows,
+    globalAliases: globalRows.map((row) => ({ ...row, canonicalName: row.canonicalName! })),
+  };
+}
+
+type GlobalAliasInput = {
+  rawText: string;
+  entityType: EntityType;
+  entityId: string;
+  canonicalName: string;
+  source: "manual" | "auto";
+};
+
+/**
+ * Keeps the cross-year copy of an alias (D76): `event_id` null, keyed by entity
+ * type and lower-cased raw text, pointing at the entity's current name. A
+ * manual mapping replaces an earlier one; an auto alias never overwrites.
+ */
+async function upsertGlobalAlias(db: Db, alias: GlobalAliasInput): Promise<void> {
+  const conflict =
+    alias.source === "manual"
+      ? sql`do update set entity_id = excluded.entity_id, canonical_name = excluded.canonical_name, source = excluded.source`
+      : sql`do nothing`;
+  await db.execute(sql`
+    insert into ${nameAliases} (raw_text, entity_type, entity_id, canonical_name, source)
+    values (${alias.rawText}, ${alias.entityType}, ${alias.entityId}, ${alias.canonicalName}, ${alias.source})
+    on conflict (entity_type, lower(raw_text)) where event_id is null ${conflict}
+  `);
 }
 
 type Evaluation =
@@ -180,14 +215,22 @@ export type SaveAliasesInput = { eventId: string; aliases: AliasMapping[]; admin
 
 type RevalidatedImport = { importId: string; kind: ImportKind; state: ImportState };
 
-async function entityExists(db: Db, eventId: string, entityType: EntityType, entityId: string): Promise<boolean> {
-  const table = entityType === "buyer" ? participants : suppliers;
+/** The entity's current roster name (supplier name, buyer full name), or null when it isn't on this event's roster. */
+async function entityCanonicalName(db: Db, eventId: string, entityType: EntityType, entityId: string): Promise<string | null> {
+  if (entityType === "buyer") {
+    const [row] = await db
+      .select({ firstName: participants.firstName, lastName: participants.lastName })
+      .from(participants)
+      .where(and(eq(participants.id, entityId), eq(participants.eventId, eventId)))
+      .limit(1);
+    return row ? fullNameFor(row) : null;
+  }
   const [row] = await db
-    .select({ id: table.id })
-    .from(table)
-    .where(and(eq(table.id, entityId), eq(table.eventId, eventId)))
+    .select({ name: suppliers.name })
+    .from(suppliers)
+    .where(and(eq(suppliers.id, entityId), eq(suppliers.eventId, eventId)))
     .limit(1);
-  return row !== undefined;
+  return row?.name ?? null;
 }
 
 /**
@@ -204,15 +247,18 @@ export async function saveAliases(
   if (input.aliases.length === 0) return fail("validation", "Choose at least one name to map.");
   const aliases = input.aliases.map((alias) => ({ ...alias, raw: alias.raw.trim() }));
   if (aliases.some((alias) => alias.raw === "")) return fail("validation", "The raw name is empty.", { raw: ["Required."] });
+  const canonicalNames: string[] = [];
   for (const alias of aliases) {
-    if (!(await entityExists(db, input.eventId, alias.entityType, alias.entityId))) {
+    const canonicalName = await entityCanonicalName(db, input.eventId, alias.entityType, alias.entityId);
+    if (canonicalName === null) {
       return fail("not_found", `The person chosen for "${alias.raw}" is not on this event's roster.`);
     }
+    canonicalNames.push(canonicalName);
   }
 
   const aliasIds = await db.transaction(async (tx) => {
     const ids: string[] = [];
-    for (const alias of aliases) {
+    for (const [i, alias] of aliases.entries()) {
       const [row] = await tx
         .insert(nameAliases)
         .values({ eventId: input.eventId, rawText: alias.raw, entityType: alias.entityType, entityId: alias.entityId, source: "manual" })
@@ -221,6 +267,13 @@ export async function saveAliases(
           set: { entityId: alias.entityId, source: "manual" },
         })
         .returning();
+      await upsertGlobalAlias(tx, {
+        rawText: alias.raw,
+        entityType: alias.entityType,
+        entityId: alias.entityId,
+        canonicalName: canonicalNames[i],
+        source: "manual",
+      });
       await recordAudit(tx, {
         eventId: input.eventId,
         adminId: input.adminId,
@@ -383,7 +436,10 @@ async function applyRankings(
   return { rankingsDeleted: deleted.length, rankingsWritten: values.length, optedIn, optedOut };
 }
 
-/** Names that resolved only through normalisation become auto aliases, so the next file hits them exactly. */
+/**
+ * Names that resolved only through normalisation become auto aliases, so the
+ * next file hits them exactly, this year and (through the global copy) later.
+ */
 async function saveAutoAliases(db: Db, eventId: string, inexact: RankingAnalysis["inexact"]): Promise<number> {
   if (inexact.length === 0) return 0;
   const rows = await db
@@ -391,6 +447,15 @@ async function saveAutoAliases(db: Db, eventId: string, inexact: RankingAnalysis
     .values(inexact.map((entry) => ({ eventId, rawText: entry.raw, entityType: entry.entityType, entityId: entry.entityId, source: "auto" as const })))
     .onConflictDoNothing()
     .returning({ id: nameAliases.id });
+  for (const entry of inexact) {
+    await upsertGlobalAlias(db, {
+      rawText: entry.raw,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      canonicalName: entry.canonicalName,
+      source: "auto",
+    });
+  }
   return rows.length;
 }
 
@@ -428,48 +493,64 @@ export async function applyImport(
   }
 
   const event = loaded.event;
-  const summary = await db.transaction(async (tx) => {
-    const result: ApplySummary = {
-      kind: row.kind,
-      created: 0,
-      updated: 0,
-      rankingsDeleted: 0,
-      rankingsWritten: 0,
-      optedIn: 0,
-      optedOut: 0,
-      aliasesSaved: 0,
-      eventAdvanced: false,
-    };
-    if (parsed.kind === "participants") {
-      Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
-    } else if (parsed.kind === "suppliers") {
-      Object.assign(result, await applySuppliers(tx, event.id, parsed.rows));
-    } else if (analysis && isRankingKind(row.kind)) {
-      Object.assign(result, await applyRankings(tx, event, row.id, row.kind, analysis));
-      result.aliasesSaved = await saveAutoAliases(tx, event.id, analysis.inexact);
-    }
-    await tx
-      .update(imports)
-      .set({ status: "applied", appliedAt: new Date(), validation: report, rowCount: report.counts.rows })
-      .where(eq(imports.id, row.id));
-    result.eventAdvanced = await advanceStatus(tx, event.id, "draft", "imported");
-    await recordAudit(tx, {
-      eventId: event.id,
-      adminId: input.adminId,
-      action: "import.apply",
-      entityType: "import",
-      entityId: row.id,
-      before: { status: row.status },
-      after: { status: "applied", ...result },
+  let summary: ApplySummary;
+  try {
+    summary = await db.transaction(async (tx) => {
+      const result: ApplySummary = {
+        kind: row.kind,
+        created: 0,
+        updated: 0,
+        rankingsDeleted: 0,
+        rankingsWritten: 0,
+        optedIn: 0,
+        optedOut: 0,
+        aliasesSaved: 0,
+        eventAdvanced: false,
+      };
+      if (parsed.kind === "participants") {
+        Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
+      } else if (parsed.kind === "suppliers") {
+        Object.assign(result, await applySuppliers(tx, event.id, parsed.rows));
+      } else if (analysis && isRankingKind(row.kind)) {
+        Object.assign(result, await applyRankings(tx, event, row.id, row.kind, analysis));
+        result.aliasesSaved = await saveAutoAliases(tx, event.id, analysis.inexact);
+      }
+      // Compare-and-set on the status read above: a second apply (or a delete)
+      // that got here first makes this match nothing, and the throw rolls back
+      // every roster and ranking write above.
+      const marked = await tx
+        .update(imports)
+        .set({ status: "applied", appliedAt: new Date(), validation: report, rowCount: report.counts.rows })
+        .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
+        .returning({ id: imports.id });
+      if (marked.length === 0) throw new ImportStatusChanged();
+      result.eventAdvanced = await advanceStatus(tx, event.id, "draft", "imported");
+      await recordAudit(tx, {
+        eventId: event.id,
+        adminId: input.adminId,
+        action: "import.apply",
+        entityType: "import",
+        entityId: row.id,
+        before: { status: row.status },
+        after: { status: "applied", ...result },
+      });
+      return result;
     });
-    return result;
-  });
+  } catch (error) {
+    if (error instanceof ImportStatusChanged) {
+      return fail("conflict", "This import was applied or changed by someone else. Reload the page.");
+    }
+    throw error;
+  }
   // A roster change can resolve (or break) names in ranking files waiting to be applied.
   if (!isRankingKind(row.kind)) await revalidatePending(db, event.id);
   return ok({ importId: row.id, summary });
 }
 
-/** Removes the import and the rankings it wrote. The stored file is left in place. */
+/** Thrown inside the apply transaction to roll it back when the import's status moved underneath it. */
+class ImportStatusChanged extends Error {}
+
+/** Removes the import and the rankings it wrote, then its stored file. */
 export async function deleteImportRecord(
   db: Db,
   input: { importId: string; adminId: string },
@@ -492,5 +573,11 @@ export async function deleteImportRecord(
     });
     return deleted.length;
   });
+  // After the commit, so a failed delete never leaves a row pointing at no file.
+  try {
+    await deleteFile(row.fileKey);
+  } catch (error) {
+    console.warn(`[imports] import ${row.id}: the stored file was not deleted: ${error instanceof Error ? error.message : String(error)}`);
+  }
   return ok({ importId: row.id, rankingsDeleted });
 }

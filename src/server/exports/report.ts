@@ -88,6 +88,27 @@ function recommendations(stats: QualityStats): string[] {
   return lines;
 }
 
+/**
+ * Section D's bands. The engine counts "both within 2N" first, so with a
+ * cutoff at or below 2N the "2N+1 to cutoff" band is always empty and "above
+ * the cutoff" really starts after 2N. The labels follow what was counted
+ * instead of printing a backwards range such as "21-15".
+ */
+export function neitherBandLines(stats: QualityStats): string[] {
+  const n = stats.thresholds.mutualTopN;
+  const cutoff = stats.thresholds.hotelRankCutoff;
+  const neither = stats.neitherTopN;
+  const count = (value: number) => plural(value, "appointment", "appointments");
+  const upper = Math.max(cutoff, 2 * n);
+  const lines = [`  * Mutual ranks ${n + 1}-${2 * n}: ${count(neither.bothWithin2N)}`];
+  if (cutoff > 2 * n) lines.push(`  * Mutual ranks ${2 * n + 1}-${cutoff}: ${count(neither.bothWithinCutoff)}`);
+  lines.push(
+    `  * Mutual ranks >${upper}: ${count(neither.bothAboveCutoff)}`,
+    `  * Mixed rankings (one side ${n + 1}-${upper}, other higher/lower): ${count(neither.mixed)}`,
+  );
+  return lines;
+}
+
 export type ReportEvent = Pick<Event, "name" | "eventDate" | "timezone"> & { settings: { slotCount: number } };
 
 export function qualityReportText(view: Pick<ExportView, "buyers">, stats: QualityStats, event: ReportEvent): string {
@@ -128,10 +149,7 @@ export function qualityReportText(view: Pick<ExportView, "buyers">, stats: Quali
     `D. NEITHER SIDE TOP-${n}`,
     `- Total: ${countPct(stats.neitherTopN)} where both ranked each other but neither in top ${n}`,
     "- Detailed breakdown:",
-    `  * Mutual ranks ${n + 1}-${2 * n}: ${plural(stats.neitherTopN.bothWithin2N, "appointment", "appointments")}`,
-    `  * Mutual ranks ${2 * n + 1}-${t.hotelRankCutoff}: ${plural(stats.neitherTopN.bothWithinCutoff, "appointment", "appointments")}`,
-    `  * Mutual ranks >${t.hotelRankCutoff}: ${plural(stats.neitherTopN.bothAboveCutoff, "appointment", "appointments")}`,
-    `  * Mixed rankings (one side ${n + 1}-${t.hotelRankCutoff}, other higher/lower): ${plural(stats.neitherTopN.mixed, "appointment", "appointments")}`,
+    ...neitherBandLines(stats),
     "",
     "E. BLANK RANKINGS",
     `- Total: ${countPct(stats.blankRankings)}`,

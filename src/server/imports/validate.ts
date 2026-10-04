@@ -8,7 +8,7 @@ import type {
   UnknownName,
 } from "@/lib/schemas/import";
 import { displayNameFor, fullNameFor } from "@/server/roster/display-name";
-import { resolveNames, type AliasRow, type ResolvableEntity } from "./resolve";
+import { resolveNames, type AliasRow, type GlobalAliasRow, type ResolvableEntity } from "./resolve";
 import type {
   ParsedFile,
   ParsedParticipant,
@@ -40,11 +40,16 @@ export type ContextSupplier = {
 
 export type ContextAlias = { rawText: string; entityType: EntityType; entityId: string };
 
+/** A cross-year alias (`event_id` null, D76). */
+export type ContextGlobalAlias = { rawText: string; entityType: EntityType; canonicalName: string };
+
 /** The event's current roster and alias table, loaded once per validation. */
 export type ValidationContext = {
   participants: ContextParticipant[];
   suppliers: ContextSupplier[];
   aliases: ContextAlias[];
+  /** Cross-year aliases, matched to this roster by canonical name. */
+  globalAliases?: ContextGlobalAlias[];
 };
 
 export type RankingRow = {
@@ -61,7 +66,7 @@ export type RankingAnalysis = {
   /** Rankers with at least one ranked choice. Drives biztech opt-in (D1). */
   rankersWithChoices: Set<string>;
   /** Names that resolved only through normalisation; saved as auto aliases on apply. */
-  inexact: { raw: string; entityType: EntityType; entityId: string }[];
+  inexact: { raw: string; entityType: EntityType; entityId: string; canonicalName: string }[];
   report: ImportValidationReport;
 };
 
@@ -77,6 +82,7 @@ function participantEntities(participants: ContextParticipant[]): Entities[] {
     return {
       id: person.id,
       label,
+      canonicalName: full,
       names: [...names].filter((name) => name !== ""),
       emails: [person.email],
       active: person.status === "active",
@@ -88,6 +94,7 @@ function supplierEntities(suppliers: ContextSupplier[]): Entities[] {
   return suppliers.map((supplier) => ({
     id: supplier.id,
     label: supplier.name,
+    canonicalName: supplier.name,
     names: [supplier.name],
     emails: [supplier.adminContactEmail, supplier.attendeeContactEmail].filter(
       (email): email is string => email !== null,
@@ -286,6 +293,12 @@ function aliasesFor(context: ValidationContext, entityType: EntityType): AliasRo
     .map(({ rawText, entityId }) => ({ rawText, entityId }));
 }
 
+function globalAliasesFor(context: ValidationContext, entityType: EntityType): GlobalAliasRow[] {
+  return (context.globalAliases ?? [])
+    .filter((alias) => alias.entityType === entityType)
+    .map(({ rawText, canonicalName }) => ({ rawText, canonicalName }));
+}
+
 function unknownNameEntries(
   unresolved: { raw: string; suggestions: UnknownName["suggestions"] }[],
   entityType: EntityType,
@@ -329,8 +342,14 @@ export function analyzeRankings(
     rankerNames.map((row) => row.rankerName),
     rankers,
     aliasesFor(context, rankerType),
+    globalAliasesFor(context, rankerType),
   );
-  for (const [raw, entityId] of rankerResolution.inexact) inexact.push({ raw, entityType: rankerType, entityId });
+  const canonicalOf = new Map(
+    [...rankers, ...targets].map((entity) => [entity.id, entity.canonicalName ?? entity.label]),
+  );
+  for (const [raw, entityId] of rankerResolution.inexact) {
+    inexact.push({ raw, entityType: rankerType, entityId, canonicalName: canonicalOf.get(entityId) ?? raw });
+  }
 
   const rankerIdByRow = new Map<number, string>();
   const unknownRankerRows = new Map<string, number[]>();
@@ -384,8 +403,15 @@ export function analyzeRankings(
       targetRows.set(raw, [...(targetRows.get(raw) ?? []), row.row]);
     }
   }
-  const targetResolution = resolveNames(targetRows.keys(), targets, aliasesFor(context, targetType));
-  for (const [raw, entityId] of targetResolution.inexact) inexact.push({ raw, entityType: targetType, entityId });
+  const targetResolution = resolveNames(
+    targetRows.keys(),
+    targets,
+    aliasesFor(context, targetType),
+    globalAliasesFor(context, targetType),
+  );
+  for (const [raw, entityId] of targetResolution.inexact) {
+    inexact.push({ raw, entityType: targetType, entityId, canonicalName: canonicalOf.get(entityId) ?? raw });
+  }
   report.unknownNames.push(
     ...unknownNameEntries(targetResolution.unresolved, targetType, "target", targetRows),
   );

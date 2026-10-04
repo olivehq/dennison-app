@@ -20,6 +20,35 @@ export const DEMO_EVENT_NAME = "AW 2025 Appointment Show";
 export const DEMO_TIMEZONE = "America/Los_Angeles";
 export const DEMO_ADMIN = { email: "admin@example.com", name: "Demo Admin", password: "demo-password-1234" };
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Why the demo seed must not run here, or null when it may. The seed creates
+ * admin@example.com with a password printed in this repo, so it refuses a
+ * production NODE_ENV and any database not on this machine, unless
+ * SEED_ALLOW_REMOTE=1 says that is intended (for example a preview branch).
+ */
+export function seedTargetRefusal(env: {
+  NODE_ENV?: string;
+  DATABASE_URL?: string;
+  SEED_ALLOW_REMOTE?: string;
+}): string | null {
+  if (env.SEED_ALLOW_REMOTE === "1") return null;
+  const override = "Set SEED_ALLOW_REMOTE=1 if you really mean to seed it.";
+  if (env.NODE_ENV === "production") {
+    return `NODE_ENV is production. The demo seed adds an admin with a published password. ${override}`;
+  }
+  if (!env.DATABASE_URL) return null;
+  let host: string;
+  try {
+    host = new URL(env.DATABASE_URL).hostname;
+  } catch {
+    return `DATABASE_URL is not a URL, so it can't be confirmed as a local database. ${override}`;
+  }
+  if (LOCAL_HOSTS.has(host)) return null;
+  return `DATABASE_URL points at ${host}, not localhost. The demo seed adds an admin with a published password. ${override}`;
+}
+
 export type SeedSummary = {
   eventId: string;
   adminId: string;

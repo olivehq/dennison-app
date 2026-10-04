@@ -25,7 +25,7 @@ Admin workspace and participant schedule pages for the AW appointment show, buil
 | Generate a migration after a schema change | `pnpm db:generate` |
 | Apply migrations | `pnpm db:migrate` |
 | Seed a demo event with 2025 data | `pnpm db:seed` |
-| Create the first admin (no invite needed) | `pnpm create-admin <email> "<name>" <password>` |
+| Create the first admin (no invite needed) | `pnpm create-admin <email> "<name>"` (prompts for the password, or reads `ADMIN_PASSWORD`; a password argument is refused) |
 | Build | `pnpm build` |
 | All checks | `pnpm check` (typecheck, lint, test) |
 | Browser smoke tests (Playwright, dev server on port 3400, own PGlite in `.data-e2e`) | `pnpm e2e` (first time: `pnpm exec playwright install chromium`) |
@@ -42,7 +42,7 @@ Next.js 16 App Router, React 19, TypeScript strict. shadcn/ui (Radix base, Nova 
 ```
 src/app/            Routes only. Pages are thin: load data through src/server, render components.
   (auth)/           Login, forgot and reset password, invite acceptance
-  (admin)/          Everything behind login. Layout checks the session.
+  (admin)/          Everything behind login. The layout and every page call requireSession() first.
   s/[token]/        Participant schedule page, public, token-gated
   api/              Route handlers: auth, exports, webhooks, cron
 src/engine/         Pure matching engine. No imports from next, react, or src/db. Enforced by eslint.
@@ -79,7 +79,7 @@ A change is done when `pnpm check` passes, new behavior has a test (engine and s
 
 ## Invariants that are easy to break
 
-- A locked event rejects every mutation except unlock, exports, and email sends. Check `event.status` in the action, not only in the UI.
+- A locked event rejects every mutation except unlock, exports, email sends, and participant link actions (regenerate and revoke a link). An archived event rejects all of them except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`claimEditableEvent`, `advanceStatus`).
 - Withdrawn people are excluded from matching input and from "free in slot" lists, but their rankings and past appointments stay in the database.
 - `match_runs.version` increments on every save. A save with a stale version returns the conflict error, never overwrites.
 - The engine must be deterministic for the same input. No `Math.random`, no `Date.now()` inside `src/engine`.

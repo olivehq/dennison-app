@@ -6,7 +6,9 @@ import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas/event-settings";
 import { listAudit } from "@/server/audit/audit";
 import { assertEventEditable } from "./editable";
-import { createEvent, deleteEvent, setRetainData, updateEvent, updateEventSettings } from "./events";
+import { archiveEvent, createEvent, deleteEvent, setRetainData, updateEvent, updateEventSettings } from "./events";
+import { EVENT_CHANGED_MESSAGE } from "./editable";
+import { raceBeforeTransaction } from "./test-race";
 import { getEvent, getEventCounts, listEvents } from "./queries";
 
 const ACTOR = "admin-test";
@@ -177,6 +179,72 @@ describe("deleteEvent", () => {
     const result = await deleteEvent(db, id, ACTOR);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("conflict");
+  });
+});
+
+describe("compare-and-set on status (a status change between read and write)", () => {
+  const lockNow = (id: string) => () => db.update(events).set({ status: "locked" }).where(eq(events.id, id));
+
+  it("updateEvent and updateEventSettings refuse with the event-changed conflict and write nothing", async () => {
+    const id = await makeEvent("Race edit");
+    const before = await getEvent(id, db);
+    const raced = raceBeforeTransaction(db, lockNow(id));
+    const result = await updateEvent(raced, id, { name: "Renamed", eventDate: "2026-11-10", timezone: "America/Los_Angeles" }, ACTOR);
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await getEvent(id, db))?.name).toBe(before?.name);
+
+    const id2 = await makeEvent("Race settings");
+    const settings = await updateEventSettings(raceBeforeTransaction(db, lockNow(id2)), id2, { ...defaultEventSettings, buyerMin: 6 }, ACTOR);
+    expect(settings.ok || settings.error.code).toBe("conflict");
+    expect((await getEvent(id2, db))?.settings.buyerMin).toBe(defaultEventSettings.buyerMin);
+    expect((await listAudit({ eventId: id2, filters: { action: "event.settings" } }, db)).total).toBe(0);
+  });
+
+  it("deleteEvent refuses when the draft moved on", async () => {
+    const id = await makeEvent("Race delete");
+    const raced = raceBeforeTransaction(db, () => db.update(events).set({ status: "imported" }).where(eq(events.id, id)));
+    const result = await deleteEvent(raced, id, ACTOR);
+    expect(result.ok || result.error.code).toBe("conflict");
+    expect(await getEvent(id, db)).not.toBeNull();
+  });
+
+  it("setRetainData refuses when the event was archived in between", async () => {
+    const id = await makeEvent("Race retain");
+    const raced = raceBeforeTransaction(db, () => db.update(events).set({ status: "archived" }).where(eq(events.id, id)));
+    const result = await setRetainData(raced, id, true, ACTOR);
+    expect(result.ok || result.error.code).toBe("conflict");
+    expect((await getEvent(id, db))?.settings.retainData ?? false).toBe(false);
+  });
+});
+
+describe("archiveEvent", () => {
+  it("archives from any status, audits it, and then every edit refuses", async () => {
+    const id = await makeEvent("Archive me");
+    await db.update(events).set({ status: "locked" }).where(eq(events.id, id));
+    const result = await archiveEvent(db, { eventId: id, adminId: ACTOR });
+    expect(result.ok).toBe(true);
+    expect((await getEvent(id, db))?.status).toBe("archived");
+    const audit = await listAudit({ eventId: id, filters: { action: "event.archive" } }, db);
+    expect(audit.rows[0]?.before).toEqual({ status: "locked" });
+    expect(audit.rows[0]?.after).toEqual({ status: "archived" });
+
+    const edit = await updateEventSettings(db, id, defaultEventSettings, ACTOR);
+    expect(edit.ok || edit.error.code).toBe("locked");
+    const again = await archiveEvent(db, { eventId: id, adminId: ACTOR });
+    expect(again.ok || again.error.code).toBe("conflict");
+  });
+
+  it("refuses when the status changed between read and write", async () => {
+    const id = await makeEvent("Archive race");
+    const raced = raceBeforeTransaction(db, () => db.update(events).set({ status: "imported" }).where(eq(events.id, id)));
+    const result = await archiveEvent(raced, { eventId: id, adminId: ACTOR });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await getEvent(id, db))?.status).toBe("imported");
+  });
+
+  it("returns not_found for an unknown id", async () => {
+    const result = await archiveEvent(db, { eventId: "00000000-0000-0000-0000-000000000000", adminId: ACTOR });
+    expect(result.ok || result.error.code).toBe("not_found");
   });
 });
 

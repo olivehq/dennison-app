@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   admins,
@@ -10,13 +10,13 @@ import {
   type EmailMessageStatus,
   type Event,
 } from "@/db/schema";
-import { sendBatch, sendEmail, type EmailMessage as OutgoingEmail } from "@/lib/email/adapter";
+import { isEmailConfigured, sendBatch, sendEmail, type EmailMessage as OutgoingEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { campaignFieldsSchema, recipientKey, type CampaignFieldsInput } from "@/lib/schemas/email";
 import { recordAudit } from "@/server/audit/audit";
+import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
-import { loadEvent } from "@/server/matching/common";
 import { findUnknownFields, renderTemplate, renderText, SAMPLE_MERGE_VALUES, type MergeValues } from "./merge";
 import { listAudienceContacts, resolveAudience, withLinks, type Recipient } from "./recipients";
 import { hashForContact, scheduleHashesForEvent } from "./schedule-hash";
@@ -34,6 +34,16 @@ export const SEND_CHUNK_SIZE = 100;
 const SENDABLE_EVENT_STATUSES: readonly Event["status"][] = ["locked", "sent"];
 
 export const NOT_LOCKED_MESSAGE = "Lock the schedule before sending so every link is final.";
+
+export const EMAIL_NOT_CONFIGURED_MESSAGE = "Email is not configured for this deployment. Add RESEND_API_KEY.";
+
+/**
+ * In production the logger adapter would "send" to the server log and mark
+ * every message sent, so a campaign refuses instead. Tests pass `isProduction`.
+ */
+function emailNotConfigured(isProduction: boolean): boolean {
+  return isProduction && !isEmailConfigured();
+}
 
 export const DEFAULT_SUBJECTS: Record<EmailCampaignKind, string> = {
   initial: "Your appointment schedule for {{event_name}}",
@@ -105,7 +115,7 @@ export async function createCampaign(
   db: Db,
   input: { eventId: string; adminId: string; kind?: "initial" | "update" },
 ): Promise<ActionResult<EmailCampaign>> {
-  const event = await loadEvent(db, input.eventId);
+  const event = await getEvent(input.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   if (event.status === "archived") return fail("locked", "This event is archived.");
   const kind = input.kind ?? "initial";
@@ -177,7 +187,7 @@ export async function duplicateCampaign(
 ): Promise<ActionResult<EmailCampaign>> {
   const source = await loadCampaign(db, input.campaignId);
   if (!source) return fail("not_found", "That campaign no longer exists.");
-  const event = await loadEvent(db, source.eventId);
+  const event = await getEvent(source.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   if (event.status === "archived") return fail("locked", "This event is archived.");
   const isUpdate = input.kind === "update";
@@ -274,13 +284,23 @@ export async function previewCampaign(
   });
 }
 
-/** Sends the saved campaign to one admin address with a sample recipient's values. */
+export const TEST_SEND_ADMINS_ONLY = "Test emails go only to active admins. Use your own address or a colleague's from the Team page.";
+
+/** Sends the saved campaign to one active admin's address with a sample recipient's values. */
 export async function sendTest(
   db: Db,
   input: { campaignId: string; toEmail: string; adminId: string; recipient?: string },
 ): Promise<ActionResult<{ toEmail: string; recipientName: string | null }>> {
   const campaign = await loadCampaign(db, input.campaignId);
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
+  // A test carries a real participant's link and merge values, so it may only
+  // go to someone who could see them in the app anyway.
+  const [admin] = await db
+    .select({ id: admins.id })
+    .from(admins)
+    .where(and(sql`lower(${admins.email}) = ${input.toEmail.trim().toLowerCase()}`, isNull(admins.disabledAt)))
+    .limit(1);
+  if (!admin) return fail("validation", TEST_SEND_ADMINS_ONLY, { toEmail: [TEST_SEND_ADMINS_ONLY] });
   const sample = await sampleRecipient(db, campaign, input.recipient);
   if (!sample.ok) return sample;
   const rendered = render(campaign.subject, campaign.htmlBody, sample.data.values);
@@ -407,7 +427,7 @@ async function loadSendable(
 ): Promise<ActionResult<{ campaign: EmailCampaign; event: Event }>> {
   const campaign = await loadCampaign(db, campaignId);
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
-  const event = await loadEvent(db, campaign.eventId);
+  const event = await getEvent(campaign.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   if (!SENDABLE_EVENT_STATUSES.includes(event.status)) return fail("locked", NOT_LOCKED_MESSAGE);
   return ok({ campaign, event });
@@ -420,7 +440,11 @@ async function loadSendable(
 export async function sendCampaign(
   db: Db,
   input: { campaignId: string; adminId: string },
+  options: { isProduction?: boolean } = {},
 ): Promise<ActionResult<SendResult>> {
+  if (emailNotConfigured(options.isProduction ?? env.isProduction)) {
+    return fail("internal", EMAIL_NOT_CONFIGURED_MESSAGE);
+  }
   const loaded = await loadSendable(db, input.campaignId);
   if (!loaded.ok) return loaded;
   const { campaign, event } = loaded.data;
@@ -459,7 +483,37 @@ export async function sendCampaign(
     );
   }
 
-  const { sent, failed } = await deliver(db, claimed, recipients);
+  let delivered: { sent: number; failed: number };
+  try {
+    delivered = await deliver(db, claimed, recipients);
+  } catch (error) {
+    // Never leave the campaign in "sending": mark it failed so "Resend to
+    // bounced" can pick up everyone who didn't get it. The campaign row has no
+    // column for the reason, so the audit row keeps it.
+    const failureReason = errorText(error);
+    console.error(`[email] campaign ${campaign.id}: delivery stopped: ${failureReason}`);
+    await db
+      .update(emailCampaigns)
+      .set({ status: "failed", sentAt: new Date(), sentBy: input.adminId, recipientCount: recipients.length })
+      .where(eq(emailCampaigns.id, campaign.id));
+    await recordAudit(db, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "email.send",
+      entityType: "email_campaign",
+      entityId: campaign.id,
+      before: { status: "draft", eventStatus: event.status },
+      after: {
+        status: "failed",
+        kind: claimed.kind,
+        audience: claimed.audience,
+        recipients: recipients.length,
+        failureReason,
+      },
+    });
+    return fail("internal", `Sending stopped before it finished: ${failureReason} Use Resend to bounced to retry.`);
+  }
+  const { sent, failed } = delivered;
   const sentAt = new Date();
   await db
     .update(emailCampaigns)
@@ -491,12 +545,17 @@ export const RESENDABLE_STATUSES: readonly EmailMessageStatus[] = ["bounced", "f
 
 /**
  * Sends the campaign again to recipients whose latest message in it bounced
- * or failed, at their current address (an admin may have fixed it).
+ * or failed, at their current address (an admin may have fixed it). For a
+ * failed campaign it also covers recipients the send never reached.
  */
 export async function resendToBounced(
   db: Db,
   input: { campaignId: string; adminId: string },
+  options: { isProduction?: boolean } = {},
 ): Promise<ActionResult<SendResult>> {
+  if (emailNotConfigured(options.isProduction ?? env.isProduction)) {
+    return fail("internal", EMAIL_NOT_CONFIGURED_MESSAGE);
+  }
   const loaded = await loadSendable(db, input.campaignId);
   if (!loaded.ok) return loaded;
   const { campaign, event } = loaded.data;
@@ -512,9 +571,21 @@ export async function resendToBounced(
     .from(emailMessages)
     .where(eq(emailMessages.campaignId, campaign.id))
     .orderBy(emailMessages.contactType, emailMessages.entityId, desc(emailMessages.createdAt));
+  // A failed campaign may have stopped mid-way: messages still queued never
+  // went out, and audience members without a message were never reached.
+  const retryStatuses: readonly EmailMessageStatus[] =
+    campaign.status === "failed" ? [...RESENDABLE_STATUSES, "queued"] : RESENDABLE_STATUSES;
   const keys = latest
-    .filter((m) => RESENDABLE_STATUSES.includes(m.status))
+    .filter((m) => retryStatuses.includes(m.status))
     .map((m) => recipientKey(m.contactType, m.entityId));
+  if (campaign.status === "failed") {
+    const audience = await resolveAudience(db, event.id, campaign.audience, campaign.selectedRecipients, {
+      links: "existing",
+    });
+    if (!audience.ok) return audience;
+    const messaged = new Set(latest.map((m) => recipientKey(m.contactType, m.entityId)));
+    keys.push(...audience.data.filter((r) => !messaged.has(r.key)).map((r) => r.key));
+  }
   if (keys.length === 0) return fail("validation", "No message in this campaign bounced or failed.");
 
   const resolved = await resolveAudience(db, event.id, "selected", keys, { links: "issue" });

@@ -5,6 +5,7 @@ import type {
   ScheduleBuyer,
   ScheduleSlot,
   ScheduleSupplier,
+  WithdrawnEntry,
 } from "@/server/schedule/queries";
 
 /**
@@ -226,6 +227,10 @@ export type WorkspaceData = {
   suppliers: ScheduleSupplier[];
   buyers: ScheduleBuyer[];
   appointments: ScheduleAppointment[];
+  /** Appointments that still name someone who withdrew. Lock refuses until they are fixed. */
+  withdrawn: WithdrawnEntry[];
+  /** Manual saves on the active run still in effect (`getScheduleView`). */
+  manualChanges: number;
 };
 
 const LOCKED_STATUSES: ReadonlySet<WorkspaceData["status"]> = new Set(["locked", "sent", "archived"]);
@@ -234,3 +239,43 @@ const LOCKED_STATUSES: ReadonlySet<WorkspaceData["status"]> = new Set(["locked",
 export function isLockedStatus(status: WorkspaceData["status"]): boolean {
   return LOCKED_STATUSES.has(status);
 }
+
+/** One schedule edit, before it is saved: what the preview panel and the remove confirm describe. */
+export type EditDraft = {
+  supplierId: string;
+  slot: number;
+  /** The buyer leaving the slot (replace and remove). */
+  removeBuyerId?: string;
+  /** The buyer joining the slot (replace and add), with the counts the picker computed. */
+  add?: { buyerId: string; name: string; count: number; countAfter: number };
+};
+
+export type EditPreview = {
+  /** "Remove X from Hyatt, slot 4", "Add Y to Hyatt, slot 4". */
+  lines: string[];
+  /** Meeting counts before and after for everyone the edit touches, buyers first. */
+  counts: { personId: string; name: string; before: number; after: number }[];
+};
+
+/** Describes an edit from the client model, so admins see what changes before Save. */
+export function describeEdit(model: ScheduleModel, draft: EditDraft): EditPreview {
+  const supplier = model.personById.get(draft.supplierId);
+  const supplierName = supplier ? personLabel(supplier).primary : "the supplier";
+  const lines: string[] = [];
+  const counts: EditPreview["counts"] = [];
+  const removed = draft.removeBuyerId ? model.personById.get(draft.removeBuyerId) : undefined;
+  if (removed) {
+    lines.push(`Remove ${personLabel(removed).primary} from ${supplierName}, slot ${draft.slot}`);
+    counts.push({ personId: removed.id, name: personLabel(removed).primary, before: removed.count, after: removed.count - 1 });
+  }
+  if (draft.add) {
+    lines.push(`Add ${draft.add.name} to ${supplierName}, slot ${draft.slot}`);
+    counts.push({ personId: draft.add.buyerId, name: draft.add.name, before: draft.add.count, after: draft.add.countAfter });
+  }
+  if (supplier) {
+    const delta = (draft.add ? 1 : 0) - (removed ? 1 : 0);
+    if (delta !== 0) counts.push({ personId: supplier.id, name: supplierName, before: supplier.count, after: supplier.count + delta });
+  }
+  return { lines, counts };
+}
+

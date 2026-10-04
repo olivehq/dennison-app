@@ -33,10 +33,40 @@ if (!parsed.success) {
 }
 const raw = parsed.data;
 
+type ParsedEnv = z.infer<typeof envSchema>;
+
+/**
+ * What a production deployment is missing. Production needs a real database,
+ * its public URL, Blob storage, and both secrets; RESEND_API_KEY stays
+ * optional (previews may not send mail, and `sendCampaign` refuses instead).
+ */
+export function productionEnvProblems(values: ParsedEnv): string[] {
+  const problems: string[] = [];
+  if (!values.DATABASE_URL) problems.push("DATABASE_URL must be set in production.");
+  if (values.APP_URL.startsWith("http://localhost")) {
+    problems.push("APP_URL must be the public URL of this deployment, not http://localhost.");
+  }
+  if (!values.BLOB_READ_WRITE_TOKEN) problems.push("BLOB_READ_WRITE_TOKEN must be set in production.");
+  if (!values.BETTER_AUTH_SECRET) problems.push("BETTER_AUTH_SECRET must be set in production.");
+  if (!values.TOKEN_PEPPER) problems.push("TOKEN_PEPPER must be set in production.");
+  return problems;
+}
+
+// Fail fast when a production server starts without what it needs. `next
+// build` also runs with NODE_ENV=production but sets NEXT_PHASE, and must
+// compile without secrets present; the browser bundle never has them either.
+const isProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
+if (raw.NODE_ENV === "production" && !isProductionBuild && typeof window === "undefined") {
+  const problems = productionEnvProblems(raw);
+  if (problems.length > 0) {
+    throw new Error(`Invalid production environment:\n${problems.join("\n")}`);
+  }
+}
+
 /**
  * Secrets fall back to a fixed dev value outside production. In production a
- * missing secret throws on first use rather than at import, so `next build`
- * can compile without secrets present.
+ * running server already refused to start without them (above); during `next
+ * build` a missing secret throws on first use rather than at import.
  */
 function requiredInProduction(name: "BETTER_AUTH_SECRET" | "TOKEN_PEPPER"): string {
   const value = raw[name];

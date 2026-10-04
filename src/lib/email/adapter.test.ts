@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearLoggedEmails, getLoggedEmails, sendBatch, sendEmail } from "./adapter";
+import { clearLoggedEmails, getLoggedEmails, recipientDomain, sendBatch, sendEmail } from "./adapter";
 
 beforeEach(() => {
   clearLoggedEmails();
@@ -29,5 +29,13 @@ describe("email adapter (logger)", () => {
     expect(ids).toHaveLength(3);
     expect(getLoggedEmails().map((m) => m.subject)).toEqual(["a", "b", "c"]);
     expect(await sendBatch([])).toEqual([]);
+  });
+});
+
+describe("recipientDomain", () => {
+  it("keeps only the domain, for logs", () => {
+    expect(recipientDomain("Ann.Lee@Example.COM")).toBe("example.com");
+    expect(recipientDomain("Ann <ann@example.org>")).toBe("example.org");
+    expect(recipientDomain("no-at-sign")).toBe("unknown");
   });
 });

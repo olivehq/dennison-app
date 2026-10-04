@@ -8,7 +8,7 @@ import { masterScheduleCsv } from "@/server/exports/master";
 import { scheduleZipEntries } from "@/server/exports/schedules";
 import { planDesks } from "@/server/schedule/lock";
 import { getScheduleView } from "@/server/schedule/views";
-import { DEMO_EVENT_NAME, seedDemo, type SeedSummary } from "./demo";
+import { DEMO_EVENT_NAME, seedDemo, seedTargetRefusal, type SeedSummary } from "./demo";
 import { loadFixture } from "./fixture";
 
 let db: Db;
@@ -69,4 +69,21 @@ describe("seedDemo", () => {
     const orphaned = await db.select().from(auditEvents).where(eq(auditEvents.eventId, first.eventId));
     expect(orphaned).toHaveLength(0);
   }, 60_000);
+});
+
+describe("seedTargetRefusal", () => {
+  it("allows PGlite and a local Postgres", () => {
+    expect(seedTargetRefusal({})).toBeNull();
+    expect(seedTargetRefusal({ DATABASE_URL: "postgres://aw:aw@localhost:5432/aw" })).toBeNull();
+    expect(seedTargetRefusal({ DATABASE_URL: "postgres://aw:aw@127.0.0.1:5432/aw" })).toBeNull();
+  });
+
+  it("refuses production and remote databases unless SEED_ALLOW_REMOTE=1", () => {
+    expect(seedTargetRefusal({ NODE_ENV: "production" })).toMatch(/NODE_ENV is production/);
+    const remote = seedTargetRefusal({ DATABASE_URL: "postgres://u:secret@ep-x.neon.tech/aw" });
+    expect(remote).toMatch(/points at ep-x\.neon\.tech/);
+    expect(remote).not.toContain("secret");
+    expect(seedTargetRefusal({ DATABASE_URL: "postgres://u:p@ep-x.neon.tech/aw", SEED_ALLOW_REMOTE: "1" })).toBeNull();
+    expect(seedTargetRefusal({ NODE_ENV: "production", SEED_ALLOW_REMOTE: "1" })).toBeNull();
+  });
 });

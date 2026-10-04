@@ -8,10 +8,16 @@
  * admin is created only once.
  */
 import { closeDb, getDb, PGLITE_DATA_DIR } from "@/db/client";
-import { DEMO_ADMIN, DEMO_EVENT_NAME, seedDemo } from "./seed/demo";
+import { DEMO_ADMIN, DEMO_EVENT_NAME, seedDemo, seedTargetRefusal } from "./seed/demo";
 import { loadFixture } from "./seed/fixture";
 
 async function main() {
+  const refusal = seedTargetRefusal(process.env);
+  if (refusal) {
+    console.error(`Not seeding: ${refusal}`);
+    process.exitCode = 1;
+    return;
+  }
   const target = process.env.DATABASE_URL ? "DATABASE_URL" : `PGlite (${PGLITE_DATA_DIR})`;
   console.log(`Seeding the demo event into ${target}`);
   const summary = await seedDemo(getDb(), loadFixture());

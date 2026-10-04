@@ -61,4 +61,29 @@ describe("resolveNames", () => {
     expect(result.resolved.size).toBe(0);
     expect(result.unresolved).toHaveLength(1);
   });
+
+  it("uses this event's alias first, then a cross-year alias by canonical name, before matching names", () => {
+    const result = resolveNames(
+      ["Hyatt Monterey", "MONTEREY HYATT", "Plaza", "eShow", "Gone"],
+      entities,
+      [{ rawText: "Hyatt Monterey", entityId: "plaza" }],
+      [
+        { rawText: "hyatt monterey", canonicalName: "Hyatt Regency Monterey Hotel & Spa" },
+        { rawText: "Monterey Hyatt", canonicalName: "hyatt regency monterey hotel & spa" },
+        { rawText: "Plaza", canonicalName: "Monterey Plaza Hotel & Spa" },
+        { rawText: "eShow", canonicalName: "Visit SLO CAL" },
+        { rawText: "Gone", canonicalName: "A hotel that closed" },
+      ],
+    );
+    // The event alias wins over the global one for the same raw text.
+    expect(result.resolved.get("Hyatt Monterey")).toBe("plaza");
+    // Global aliases match raw text and canonical name ignoring case.
+    expect(result.resolved.get("MONTEREY HYATT")).toBe("hyatt");
+    expect(result.resolved.get("Plaza")).toBe("plaza");
+    // A global alias comes before an exact name match.
+    expect(result.resolved.get("eShow")).toBe("slo");
+    // A canonical name no entity here has is skipped.
+    expect(result.resolved.has("Gone")).toBe(false);
+    expect(result.inexact.size).toBe(0);
+  });
 });

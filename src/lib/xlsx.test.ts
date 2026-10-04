@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { readSheetRows, writeSheet } from "./xlsx";
+import * as XLSX from "xlsx";
+import { readSheetRows, SPREADSHEET_LIMITS, SpreadsheetTooLargeError, writeSheet } from "./xlsx";
 
 describe("xlsx", () => {
   it("round-trips headers and rows, trims cells, and drops empty rows", () => {
@@ -45,5 +46,23 @@ describe("xlsx", () => {
     expect(sheets[0].headers.slice(0, 4)).toEqual(["FIRST_NAME", "LAST_NAME", "FULL_NAME", "CHOICE #1"]);
     expect(sheets[0].headers).toHaveLength(43);
     expect(sheets[0].rows).toHaveLength(2);
+  });
+
+  it("rejects a sheet over the row or column limit, and too many sheets", () => {
+    const tall = writeSheet(["Email"], Array.from({ length: SPREADSHEET_LIMITS.rows }, (_, i) => [`p${i}@example.com`]));
+    expect(() => readSheetRows(tall)).toThrow(SpreadsheetTooLargeError);
+    expect(() => readSheetRows(tall)).toThrow(/more than 10,000 rows/);
+    const justFits = writeSheet(["Email"], Array.from({ length: SPREADSHEET_LIMITS.rows - 1 }, (_, i) => [`p${i}@example.com`]));
+    expect(readSheetRows(justFits)[0].rows).toHaveLength(SPREADSHEET_LIMITS.rows - 1);
+
+    const wide = writeSheet(Array.from({ length: SPREADSHEET_LIMITS.columns + 1 }, (_, i) => `C${i}`), [["x"]]);
+    expect(() => readSheetRows(wide)).toThrow(/more than 300 columns/);
+
+    const workbook = XLSX.utils.book_new();
+    for (let i = 0; i <= SPREADSHEET_LIMITS.sheets; i += 1) {
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["A"], ["1"]]), `S${i}`);
+    }
+    const many = Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Uint8Array);
+    expect(() => readSheetRows(many)).toThrow(/21 sheets/);
   });
 });

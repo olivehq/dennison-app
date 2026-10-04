@@ -25,6 +25,19 @@ describe("masterScheduleRows", () => {
     expect(rows[1]).toMatchObject({ desk: "eShow", buyerRank: "", supplierRank: 2 });
     expect(rows[3]).toMatchObject({ buyerRank: 7, supplierRank: "" });
   });
+
+  it("leaves out appointments that involve a withdrawn person", () => {
+    const view = {
+      ...smallView,
+      appointments: [
+        ...smallView.appointments,
+        { slot: 4, buyerId: "b-gone", supplierId: "s-hotel", buyerRank: 3, supplierRank: 4 },
+      ],
+    };
+    const rows = masterScheduleRows(view);
+    expect(rows).toHaveLength(smallView.appointments.length);
+    expect(rows.some((r) => r.buyer === "Gone Org - Planner")).toBe(false);
+  });
 });
 
 describe("masterScheduleCsv", () => {

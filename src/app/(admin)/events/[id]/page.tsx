@@ -5,9 +5,11 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventStatus } from "@/lib/schemas/event";
+import { requireSession } from "@/server/auth/session";
 import { getEmailSummary } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { EVENT_STATUS_LABELS } from "../event-status-badge";
+import { ArchiveEventButton } from "./archive-event-button";
 import { DeleteEventButton } from "./delete-event-button";
 import { SendUpdateButton } from "./emails/campaign-buttons";
 import { people } from "./emails/labels";
@@ -102,6 +104,7 @@ function CountCard({ label, value, href }: { label: string; value: number; href:
 }
 
 export default async function EventOverviewPage({ params }: { params: Promise<{ id: string }> }) {
+  await requireSession();
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();
@@ -149,7 +152,11 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
           ) : null}
         </CardFooter>
       </Card>
-      {canDelete ? <DeleteEventButton eventId={event.id} eventName={event.name} /> : null}
+      {canDelete ? (
+        <DeleteEventButton eventId={event.id} eventName={event.name} />
+      ) : event.status !== "archived" ? (
+        <ArchiveEventButton eventId={event.id} eventName={event.name} />
+      ) : null}
     </>
   );
 }

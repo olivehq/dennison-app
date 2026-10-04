@@ -23,6 +23,7 @@ import {
 } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import {
+  NOT_ACTIVE_RUN_MESSAGE,
   VERSION_CONFLICT_MESSAGE,
   type AddAppointmentInput,
   type RemoveAppointmentInput,
@@ -31,7 +32,13 @@ import {
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { compareNames } from "@/lib/names";
-import { assertEventEditable } from "@/server/events/editable";
+import {
+  assertEventEditable,
+  claimEditableEvent,
+  EVENT_CHANGED_MESSAGE,
+  EventChangedError,
+} from "@/server/events/editable";
+import { isUniqueViolation } from "@/server/matching/common";
 import {
   loadRoster,
   toEngineBuyers,
@@ -40,6 +47,7 @@ import {
   type Roster,
 } from "@/server/matching/input";
 import { findRun } from "@/server/matching/runs";
+import { undoNote } from "./undo-note";
 import { matchStrength, type MatchStrength } from "./views";
 
 /**
@@ -138,6 +146,8 @@ async function loadContext(db: Db, runId: string): Promise<ActionResult<EditCont
   if (!roster) return fail("not_found", "That event no longer exists.");
   const locked = assertEventEditable(roster.event);
   if (locked) return locked;
+  // D33: only the active run is edited, so a colleague's activation stops stale editors.
+  if (!run.isActive) return fail("conflict", NOT_ACTIVE_RUN_MESSAGE);
   const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));
   const index = buildRankingIndex(toEngineRankings(roster.rankings));
   return ok({
@@ -248,12 +258,6 @@ function affectedPeople(
 
 class VersionConflict extends Error {}
 
-function isUniqueViolation(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = (error as { code?: unknown }).code;
-  return code === "23505" || /duplicate key|unique constraint/i.test(error.message);
-}
-
 type Change = {
   deleteIds: string[];
   insert: Omit<EngineAppointment, "source"> | null;
@@ -268,8 +272,9 @@ type Change = {
 };
 
 /**
- * One transaction: bump the version only if it still matches (the real
- * optimistic lock), apply the row changes, store fresh stats, audit.
+ * One transaction: claim the event as still editable, bump the version only
+ * if it still matches and the run is still active (the real optimistic
+ * lock), apply the row changes, store fresh stats, audit.
  */
 async function commit(
   db: Db,
@@ -288,10 +293,11 @@ async function commit(
 
   try {
     const { version, auditEventId } = await db.transaction(async (tx) => {
+      await claimEditableEvent(tx, ctx.event.id);
       const [bumped] = await tx
         .update(matchRuns)
         .set({ version: ctx.run.version + 1, stats })
-        .where(and(eq(matchRuns.id, ctx.run.id), eq(matchRuns.version, ctx.run.version)))
+        .where(and(eq(matchRuns.id, ctx.run.id), eq(matchRuns.version, ctx.run.version), eq(matchRuns.isActive, true)))
         .returning({ version: matchRuns.version });
       if (!bumped) throw new VersionConflict();
 
@@ -329,7 +335,11 @@ async function commit(
     });
     return ok({ runId: ctx.run.id, eventId: ctx.event.id, version, affected, auditEventId });
   } catch (error) {
-    if (error instanceof VersionConflict) return fail("conflict", VERSION_CONFLICT_MESSAGE);
+    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
+    if (error instanceof VersionConflict) {
+      const current = await findRun(db, ctx.run.id);
+      return fail("conflict", current?.isActive ? VERSION_CONFLICT_MESSAGE : NOT_ACTIVE_RUN_MESSAGE);
+    }
     if (isUniqueViolation(error)) {
       return fail("conflict", "Another change got there first and this one would double book. Reload and try again.");
     }
@@ -549,9 +559,7 @@ export async function swapCandidates(db: Db, input: SwapCandidatesInput): Promis
   return ok(candidates);
 }
 
-export function undoNote(auditEventId: string): string {
-  return `Undo of audit event ${auditEventId}`;
-}
+export { undoNote };
 
 function parseSnapshot(value: unknown): AppointmentSnapshot | null {
   if (value === null || value === undefined) return null;
@@ -563,10 +571,12 @@ function parseSnapshot(value: unknown): AppointmentSnapshot | null {
  * Replays `before` of a schedule edit through the same edit functions, so the
  * hard rules and the version bump apply (D12). Refused when the run is no
  * longer active, the event is locked, or the change was already undone.
+ * `version` is the run version the client read; when sent, a stale one is the
+ * usual version conflict (D11). Optional for one release.
  */
 export async function undoAudit(
   db: Db,
-  input: { auditEventId: string; adminId: string },
+  input: { auditEventId: string; adminId: string; version?: number },
 ): Promise<ActionResult<EditResult>> {
   const [row] = await db.select().from(auditEvents).where(eq(auditEvents.id, input.auditEventId)).limit(1);
   if (!row) return fail("not_found", "That activity entry no longer exists.");
@@ -581,6 +591,7 @@ export async function undoAudit(
   const run = await findRun(db, runId);
   if (!run) return fail("not_found", "That run no longer exists.");
   if (!run.isActive) return fail("conflict", "That change belongs to a run that is no longer active.");
+  if (input.version !== undefined && input.version !== run.version) return fail("conflict", VERSION_CONFLICT_MESSAGE);
 
   const [alreadyUndone] = await db
     .select({ id: auditEvents.id })

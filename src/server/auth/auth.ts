@@ -8,7 +8,7 @@ import { accounts, adminInvites, admins, rateLimits, sessions, verifications } f
 import { sendEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
 import { recordAudit } from "@/server/audit/audit";
-import { findPendingInvite } from "./admins";
+import { findPendingInviteByToken } from "./admins";
 
 const ONE_HOUR = 60 * 60;
 const TEN_MINUTES = 60 * 10;
@@ -80,13 +80,20 @@ export function createAuth(db: Db) {
     databaseHooks: {
       user: {
         create: {
-          // No self-signup: the email must hold a pending, unexpired invite.
-          before: async (user) => {
+          // No self-signup: the sign-up request body must carry `inviteToken`,
+          // the token of a pending, unexpired invite for this email. It is read
+          // from the request, not declared as a user field, so it is never
+          // stored. A user created outside a request (no context) is refused.
+          before: async (user, context) => {
             const email = user.email.toLowerCase();
-            const invite = await findPendingInvite(db, email);
+            const token = (context?.body as { inviteToken?: unknown } | undefined)?.inviteToken;
+            const invite =
+              typeof token === "string" && token.length > 0
+                ? await findPendingInviteByToken(db, email, token)
+                : null;
             if (!invite) {
               throw new APIError("FORBIDDEN", {
-                message: "Sign up needs an invitation. Ask a colleague to invite you.",
+                message: "Sign up needs a valid invitation link. Ask a colleague to invite you.",
               });
             }
             return { data: { ...user, email, invitedBy: invite.invitedBy } };

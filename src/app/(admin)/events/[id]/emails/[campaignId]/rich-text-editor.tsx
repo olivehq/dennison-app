@@ -66,12 +66,9 @@ function LinkButton({ editor }: { editor: Editor }) {
         </Toggle>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80">
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            apply(href);
-          }}
-        >
+        {/* Not a <form>: React bubbles a submit through the portal to the
+            campaign form around the editor, which would save the campaign. */}
+        <div>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor={inputId}>Link address</FieldLabel>
@@ -82,11 +79,16 @@ function LinkButton({ editor }: { editor: Editor }) {
                 placeholder="https://"
                 autoComplete="off"
                 autoFocus
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  apply(href);
+                }}
               />
               <FieldDescription>Select text first to turn it into a link.</FieldDescription>
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button type="submit" size="sm">
+              <Button type="button" size="sm" onClick={() => apply(href)}>
                 Apply
               </Button>
               <Button type="button" size="sm" variant="outline" onClick={() => apply(SCHEDULE_LINK)}>
@@ -99,7 +101,7 @@ function LinkButton({ editor }: { editor: Editor }) {
               ) : null}
             </div>
           </FieldGroup>
-        </form>
+        </div>
       </PopoverContent>
     </Popover>
   );

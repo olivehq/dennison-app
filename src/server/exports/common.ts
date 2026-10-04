@@ -22,12 +22,28 @@ export function eventYear(eventDate: string): string {
   return eventDate.slice(0, 4);
 }
 
+/** First characters that make Excel or Sheets read a cell as a formula. */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/**
+ * Neutralises CSV formula injection: a text cell that starts like a formula
+ * gets a leading single quote, so a name such as `=HYPERLINK(...)` shows as
+ * text. Numbers are left alone.
+ */
+export function csvCell(value: string | number): string | number {
+  return typeof value === "string" && FORMULA_START.test(value) ? `'${value}` : value;
+}
+
 /**
  * CSV text with a header row. Starts with a UTF-8 byte order mark so Excel,
- * which D&A opens these in, reads accented names correctly.
+ * which D&A opens these in, reads accented names correctly. Every export
+ * writes through here, so every cell goes through `csvCell`.
  */
 export function toCsv(columns: string[], rows: (string | number)[][]): string {
-  return stringify(rows, { header: true, columns, bom: true });
+  return stringify(
+    rows.map((row) => row.map(csvCell)),
+    { header: true, columns: columns.map((c) => String(csvCell(c))), bom: true },
+  );
 }
 
 export const BOM = "﻿";

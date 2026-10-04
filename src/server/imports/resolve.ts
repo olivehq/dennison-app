@@ -7,9 +7,18 @@ export type ResolvableEntity = {
   label: string;
   /** Every spelling the entity is known by: name, display name, "Organization - Title". */
   names: string[];
+  /**
+   * The roster name a cross-year alias records (supplier name, buyer full
+   * name). Defaults to `label`.
+   */
+  canonicalName?: string;
 };
 
+/** An alias saved for this event: raw text to an entity id. */
 export type AliasRow = { rawText: string; entityId: string };
+
+/** A cross-year alias (D76): raw text to the roster name it meant in an earlier event. */
+export type GlobalAliasRow = { rawText: string; canonicalName: string };
 
 export type Unresolved = { raw: string; suggestions: NameSuggestion[] };
 
@@ -61,6 +70,8 @@ export function similarity(a: string, b: string): number {
 
 type Index = {
   byAlias: Map<string, string>;
+  /** Lower-cased raw text of a cross-year alias to the entities of this event with its canonical name. */
+  byGlobalAlias: Map<string, Set<string>>;
   byLower: Map<string, Set<string>>;
   byNormalised: Map<string, Set<string>>;
 };
@@ -72,13 +83,20 @@ function addTo(map: Map<string, Set<string>>, key: string, id: string): void {
   map.set(key, set);
 }
 
-function buildIndex(entities: ResolvableEntity[], aliases: AliasRow[]): Index {
+function buildIndex(entities: ResolvableEntity[], aliases: AliasRow[], globalAliases: GlobalAliasRow[]): Index {
   const byAlias = new Map<string, string>();
+  const byGlobalAlias = new Map<string, Set<string>>();
   const byLower = new Map<string, Set<string>>();
   const byNormalised = new Map<string, Set<string>>();
   const known = new Set(entities.map((entity) => entity.id));
   for (const alias of aliases) {
     if (known.has(alias.entityId)) byAlias.set(alias.rawText.trim(), alias.entityId);
+  }
+  const byCanonical = new Map<string, Set<string>>();
+  for (const entity of entities) addTo(byCanonical, (entity.canonicalName ?? entity.label).trim().toLowerCase(), entity.id);
+  for (const alias of globalAliases) {
+    const ids = byCanonical.get(alias.canonicalName.trim().toLowerCase());
+    if (ids) byGlobalAlias.set(alias.rawText.trim().toLowerCase(), ids);
   }
   for (const entity of entities) {
     for (const name of entity.names) {
@@ -86,7 +104,7 @@ function buildIndex(entities: ResolvableEntity[], aliases: AliasRow[]): Index {
       addTo(byNormalised, normaliseName(name), entity.id);
     }
   }
-  return { byAlias, byLower, byNormalised };
+  return { byAlias, byGlobalAlias, byLower, byNormalised };
 }
 
 function suggestionsFor(raw: string, entities: ResolvableEntity[]): NameSuggestion[] {
@@ -108,16 +126,19 @@ function only(set: Set<string> | undefined): string | null {
 }
 
 /**
- * Matches raw names to entities: exact alias, exact case-insensitive name,
- * normalised name, then fuzzy suggestions for the admin to confirm. A name
- * that matches two entities equally is left unresolved with both suggested.
+ * Matches raw names to entities: this event's alias, then a cross-year alias
+ * whose canonical name is exactly (ignoring case) one entity's name here, then
+ * exact case-insensitive name, normalised name, then fuzzy suggestions for the
+ * admin to confirm. A name that matches two entities equally is left
+ * unresolved with both suggested.
  */
 export function resolveNames(
   raws: Iterable<string>,
   entities: ResolvableEntity[],
   aliases: AliasRow[],
+  globalAliases: GlobalAliasRow[] = [],
 ): Resolution {
-  const index = buildIndex(entities, aliases);
+  const index = buildIndex(entities, aliases, globalAliases);
   const resolved = new Map<string, string>();
   const inexact = new Map<string, string>();
   const unresolved: Unresolved[] = [];
@@ -129,6 +150,11 @@ export function resolveNames(
     const byAlias = index.byAlias.get(key);
     if (byAlias) {
       resolved.set(key, byAlias);
+      continue;
+    }
+    const byGlobalAlias = only(index.byGlobalAlias.get(key.toLowerCase()));
+    if (byGlobalAlias) {
+      resolved.set(key, byGlobalAlias);
       continue;
     }
     const byLower = only(index.byLower.get(key.toLowerCase()));

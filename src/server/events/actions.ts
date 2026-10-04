@@ -5,6 +5,7 @@ import { getDb } from "@/db/client";
 import type { ActionResult } from "@/lib/errors";
 import { requireAdmin } from "@/server/auth/session";
 import {
+  archiveEvent as archiveEventRecord,
   createEvent as createEventRecord,
   deleteEvent as deleteEventRecord,
   updateEvent as updateEventRecord,
@@ -51,5 +52,12 @@ export async function deleteEvent(id: unknown): Promise<ActionResult<{ id: strin
   const actor = await requireAdmin();
   const result = await deleteEventRecord(getDb(), id, actor.id);
   if (result.ok) revalidatePath(EVENTS_PATH);
+  return result;
+}
+
+export async function archiveEventAction(id: unknown): Promise<ActionResult<{ id: string }>> {
+  const actor = await requireAdmin();
+  const result = await archiveEventRecord(getDb(), { eventId: id, adminId: actor.id });
+  if (result.ok) revalidateEvent(result.data.id);
   return result;
 }

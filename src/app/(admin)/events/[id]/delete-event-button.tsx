@@ -12,7 +12,7 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
   return (
     <div className="flex flex-col gap-2 border-t pt-6">
       <p className="text-sm text-muted-foreground">
-        A draft with no participants can be deleted. Once files are imported, archive it instead.
+        A draft with no participants can be deleted. Events with data can be archived from the overview instead.
       </p>
       <ConfirmDialog
         title="Delete this event?"

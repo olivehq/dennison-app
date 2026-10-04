@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import { admins, auditEvents } from "@/db/schema";
 import { isEventEditable } from "@/server/events/editable";
-import { loadEvent } from "@/server/matching/common";
+import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { eventYear } from "./common";
 import { EXPORT_KINDS, exportAuditAction, exportFilename, type ExportKind } from "./kinds";
@@ -51,7 +51,7 @@ function readRunRef(after: unknown): { runId: string | null; runVersion: number 
 
 /** What the exports page can offer, when each was last generated, and whether the schedule moved since. */
 export async function exportAvailability(eventId: string, db: Db = getDb()): Promise<ExportAvailability | null> {
-  const event = await loadEvent(db, eventId);
+  const event = await getEvent(eventId, db);
   if (!event) return null;
   const [run, rows] = await Promise.all([
     findActiveRun(db, eventId),

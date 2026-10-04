@@ -15,6 +15,13 @@
       "when": 1791139539539,
       "tag": "0001_fat_the_call",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791144194766,
+      "tag": "0002_nebulous_captain_universe",
+      "breakpoints": true
     }
   ]
 }

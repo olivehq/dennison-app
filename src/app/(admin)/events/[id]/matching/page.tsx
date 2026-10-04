@@ -9,8 +9,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatTimestamp } from "@/lib/time";
 import { isEventEditable } from "@/server/events/editable";
+import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
-import { compareWithActiveRun, getMatchingReadiness, listRuns, type RunSummary } from "@/server/matching/queries";
+import {
+  activationPreviews,
+  compareRunForPage,
+  listRuns,
+  type ActivationPreview,
+  type CompareTarget,
+  type RunComparisonView,
+  type RunSummary,
+} from "@/server/matching/queries";
+import { getMatchingGate } from "@/server/matching/readiness";
 import type { RunComparison } from "@/server/matching/runs";
 import { eventSectionHref } from "../event-sections";
 import { ActivateRunButton, RunMatchingButtons } from "./run-actions";
@@ -29,34 +39,39 @@ function duration(ms: number | null): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+const COMPARE_LABEL: Record<CompareTarget, string> = {
+  parent: "the run it kept from",
+  active: "the active run",
+};
+
 export default async function MatchingPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ compare?: string | string[] }>;
+  searchParams: Promise<{ compare?: string | string[]; against?: string | string[] }>;
 }) {
-  const [{ id }, { compare }] = await Promise.all([params, searchParams]);
+  await requireSession();
+  const [{ id }, { compare, against }] = await Promise.all([params, searchParams]);
   const event = await getEvent(id);
   if (!event) notFound();
-  const [readiness, runs] = await Promise.all([getMatchingReadiness(event.id), listRuns(event.id)]);
+  const [gate, runs, previews] = await Promise.all([getMatchingGate(event.id), listRuns(event.id), activationPreviews(event.id)]);
+  const readiness = gate.counts;
   const active = runs.find((r) => r.isActive) ?? null;
   const compareId =
     typeof compare === "string" && runs.some((r) => r.id === compare && !r.isActive && r.status === "completed") ? compare : null;
-  const comparison = compareId ? await compareWithActiveRun(event.id, compareId) : null;
+  const target: CompareTarget | undefined = against === "active" || against === "parent" ? against : undefined;
+  const comparison = compareId ? await compareRunForPage(event.id, compareId, target) : null;
   const editable = isEventEditable(event);
   const topN = event.settings.mutualTopN;
   const base = eventSectionHref(event.id, "matching");
-
-  const missingRankings = readiness.buyerRankings === 0 || readiness.supplierRankings === 0;
-  const missingPeople = readiness.buyers === 0 || readiness.suppliers === 0;
 
   return (
     <>
       <PageHeader
         title="Matching"
         description="The engine builds a schedule from the rankings. Every run is kept, so you can compare and pick the one to use."
-        actions={<RunMatchingButtons eventId={event.id} hasActiveRun={active !== null} disabled={!editable || missingPeople} />}
+        actions={<RunMatchingButtons eventId={event.id} hasActiveRun={active !== null} disabled={!editable || !gate.ready} />}
       />
 
       {!editable ? (
@@ -102,14 +117,16 @@ export default async function MatchingPage({
               </Link>
             ))}
           </div>
-          {missingPeople || missingRankings ? (
+          {!gate.ready ? (
             <Alert variant="destructive">
               <AlertTriangleIcon />
-              <AlertTitle>{missingPeople ? "The roster is empty" : "Rankings are missing"}</AlertTitle>
+              <AlertTitle>Not ready to match</AlertTitle>
               <AlertDescription>
-                {missingPeople
-                  ? "Matching needs at least one buyer and one supplier. "
-                  : "Without both sides' rankings every meeting would be a blank match. "}
+                <ul className="flex list-disc flex-col gap-1 pl-5">
+                  {gate.reasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
                 <Link className="font-semibold underline underline-offset-4" href={eventSectionHref(event.id, "imports")}>
                   Go to imports
                 </Link>
@@ -154,8 +171,8 @@ export default async function MatchingPage({
                       key={run.id}
                       run={run}
                       expanded={expanded}
-                      comparison={expanded && comparison?.ok ? comparison.data : null}
-                      comparisonError={expanded && comparison && !comparison.ok ? comparison.error.message : null}
+                      comparison={expanded ? comparison : null}
+                      base={base}
                       created={formatTimestamp(run.createdAt, event.timezone)}
                       cells={[
                         duration(run.durationMs),
@@ -165,8 +182,9 @@ export default async function MatchingPage({
                         s ? `${s.mutualTopNPct}%` : "–",
                       ]}
                       compareHref={expanded ? base : `${base}?compare=${run.id}`}
-                      canCompare={active !== null && !run.isActive && run.status === "completed"}
+                      canCompare={(active !== null || run.parentRunId !== null) && !run.isActive && run.status === "completed"}
                       canActivate={editable && !run.isActive && run.status === "completed"}
+                      preview={previews.get(run.id) ?? null}
                     />
                   );
                 })}
@@ -183,22 +201,24 @@ function RunRows({
   run,
   expanded,
   comparison,
-  comparisonError,
+  base,
   created,
   cells,
   compareHref,
   canCompare,
   canActivate,
+  preview,
 }: {
   run: RunSummary;
   expanded: boolean;
-  comparison: RunComparison | null;
-  comparisonError: string | null;
+  comparison: RunComparisonView | null;
+  base: string;
   created: string;
   cells: string[];
   compareHref: string;
   canCompare: boolean;
   canActivate: boolean;
+  preview: ActivationPreview | null;
 }) {
   return (
     <>
@@ -230,23 +250,42 @@ function RunRows({
               <Button size="sm" variant="ghost" asChild>
                 <Link href={compareHref} scroll={false} aria-expanded={expanded}>
                   {expanded ? <ChevronUpIcon data-icon="inline-start" /> : <ChevronDownIcon data-icon="inline-start" />}
-                  {expanded ? "Hide comparison" : "Compare with active"}
+                  {expanded ? "Hide comparison" : "Compare"}
                 </Link>
               </Button>
             ) : null}
-            {canActivate ? <ActivateRunButton runId={run.id} disabled={false} /> : null}
+            {canActivate ? <ActivateRunButton runId={run.id} disabled={false} preview={preview} /> : null}
           </div>
         </TableCell>
       </TableRow>
       {expanded ? (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={9} className="bg-muted/40 p-4 whitespace-normal">
-            {comparisonError ? (
-              <p className="text-sm text-destructive">{comparisonError}</p>
-            ) : comparison ? (
-              <ComparisonPanel comparison={comparison} />
+            {comparison ? (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Compared with {COMPARE_LABEL[comparison.against]}.</span>
+                  {comparison.options
+                    .filter((option) => option !== comparison.against)
+                    .map((option) => (
+                      <Link
+                        key={option}
+                        href={`${base}?compare=${run.id}&against=${option}`}
+                        scroll={false}
+                        className="font-semibold underline underline-offset-4"
+                      >
+                        Compare with {COMPARE_LABEL[option]} instead
+                      </Link>
+                    ))}
+                </div>
+                {comparison.result.ok ? (
+                  <ComparisonPanel comparison={comparison.result.data} against={comparison.against} />
+                ) : (
+                  <p className="text-sm text-destructive">{comparison.result.error.message}</p>
+                )}
+              </div>
             ) : (
-              <p className="text-sm text-muted-foreground">There is no active run to compare with.</p>
+              <p className="text-sm text-muted-foreground">There is no other run to compare with.</p>
             )}
           </TableCell>
         </TableRow>
@@ -255,17 +294,24 @@ function RunRows({
   );
 }
 
-function ComparisonPanel({ comparison }: { comparison: RunComparison }) {
+function ComparisonPanel({ comparison, against }: { comparison: RunComparison; against: CompareTarget }) {
   const { added, removed, countChanges } = comparison;
   if (added.length === 0 && removed.length === 0) {
-    return <p className="text-sm">Same appointments as the active run. Activating it changes nothing anyone sees.</p>;
+    return (
+      <p className="text-sm">
+        {against === "active"
+          ? "Same appointments as the active run. Activating it changes nothing anyone sees."
+          : "Same appointments as the run it kept from."}
+      </p>
+    );
   }
   const more = (n: number) => (n > COMPARE_LIMIT ? <li className="text-muted-foreground">and {n - COMPARE_LIMIT} more</li> : null);
   return (
     <div className="flex max-w-5xl flex-col gap-4 text-sm">
       <p className="font-semibold">
-        Activating this run adds {added.length} and removes {removed.length} appointments, and changes the count of{" "}
-        {countChanges.length} {countChanges.length === 1 ? "person" : "people"}.
+        {against === "active" ? "Activating this run adds" : "Against the run it kept from, this run adds"} {added.length} and
+        removes {removed.length} appointments, and changes the count of {countChanges.length}{" "}
+        {countChanges.length === 1 ? "person" : "people"}.
       </p>
       <div className="grid gap-4 md:grid-cols-3">
         <div className="flex flex-col gap-1.5">

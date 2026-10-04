@@ -24,8 +24,8 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@electric-sql/pglite"],
   experimental: {
     serverActions: {
-      // uploadImport accepts files up to 5 MB (IMPORT_MAX_FILE_BYTES); leave room for multipart overhead.
-      bodySizeLimit: "6mb",
+      // uploadImport accepts files up to 4 MB (IMPORT_MAX_FILE_BYTES); 4.5 MB is Vercel's request body cap.
+      bodySizeLimit: "4.5mb",
     },
   },
   async headers() {
