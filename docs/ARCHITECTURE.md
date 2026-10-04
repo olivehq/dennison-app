@@ -21,7 +21,7 @@ components/app  ->  components/ui (shadcn)
 
 | Module | Owns | Key exports |
 |---|---|---|
-| `auth` | Better Auth instance, session helpers, team management, invites | `auth`, `requireSession()`, `inviteAdmin`, `disableAdmin` |
+| `auth` | Better Auth instance, session helpers, team management, invites | `getAuth()`, `createAuth(db)`, `getSession()`, `requireSession()`, `requireAdmin()`, `inviteAdmin`, `resendInvite`, `disableAdmin`, `enableAdmin`, `listAdmins`, `getInviteByToken` |
 | `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `getEvent`, `updateSettings`, `lockSchedule`, `unlockSchedule`, `assignDesks` |
 | `roster` | Participants and suppliers: list, add, edit, withdraw, restore | `listParticipants`, `upsertParticipant`, `withdrawParticipant`, same for suppliers |
 | `imports` | File upload, parsing (list and matrix formats), validation report, alias mapping, applying rankings | `createImport`, `validateImport`, `saveAlias`, `applyImport` |
