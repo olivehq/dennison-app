@@ -1,11 +1,12 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens, appointments, events, matchRuns, participants, suppliers, type Appointment } from "@/db/schema";
+import { accessTokens, appointments, emailCampaigns, events, matchRuns, participants, suppliers, type Appointment } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { NOT_ACTIVE_RUN_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { getActiveRun } from "@/server/matching/queries";
 import { activateRun, setPinned, startRun } from "@/server/matching/runs";
@@ -726,5 +727,36 @@ describe("manualChanges", () => {
     if (!next.ok) throw new Error(next.error.message);
     await activateRun(db, { runId: next.data.runId, adminId: seeded.adminId });
     expect((await getScheduleView(seeded.eventId, db))!.manualChanges).toBe(0);
+  });
+});
+
+describe("unlock while an email send is in progress", () => {
+  it("refuses and keeps the schedule locked until the send finishes", async () => {
+    const event = await seedEvent(db, { buyers: 4 });
+    const run = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    expect((await lockSchedule(db, { eventId: event.eventId, adminId: event.adminId })).ok).toBe(true);
+    const [campaign] = await db
+      .insert(emailCampaigns)
+      .values({
+        eventId: event.eventId,
+        name: "Your schedule",
+        fromName: "D&A",
+        fromEmail: "schedule@example.com",
+        replyTo: "staff@example.com",
+        subject: "Your schedule",
+        htmlBody: "<p>Hi</p>",
+        audience: "all",
+        kind: "initial",
+        status: "sending",
+      })
+      .returning();
+    const input = { eventId: event.eventId, adminId: event.adminId, reason: "Late change" };
+    expect(await unlockSchedule(db, input)).toEqual({ ok: false, error: { code: "conflict", message: SEND_IN_PROGRESS_MESSAGE } });
+    expect((await db.select().from(events).where(eq(events.id, event.eventId)))[0].status).toBe("locked");
+    expect((await listAudit({ eventId: event.eventId, filters: { action: "schedule.unlock" } }, db)).total).toBe(0);
+
+    await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
+    expect((await unlockSchedule(db, input)).ok).toBe(true);
   });
 });

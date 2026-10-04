@@ -65,4 +65,18 @@ describe("xlsx", () => {
     const many = Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Uint8Array);
     expect(() => readSheetRows(many)).toThrow(/21 sheets/);
   });
+
+  it("checks rows against the full range, not the range cut short by sheetRows", () => {
+    // Data starting at row 6: the cut range (rows 6 to 10,001) is under the limit, the real one is not.
+    const rows = SPREADSHEET_LIMITS.rows + 1;
+    const sheet: XLSX.WorkSheet = {};
+    XLSX.utils.sheet_add_aoa(sheet, [["Email"], ...Array.from({ length: rows - 1 }, (_, i) => [`p${i}@example.com`])], {
+      origin: "A6",
+    });
+    sheet["!ref"] = `A6:A${5 + rows}`;
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Offset");
+    const buffer = Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Uint8Array);
+    expect(() => readSheetRows(buffer)).toThrow(/more than 10,000 rows/);
+  });
 });

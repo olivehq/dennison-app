@@ -128,6 +128,33 @@ describe('runMatching pinned appointments', () => {
     expect(result.warnings.some((w) => w.startsWith('Dropped pinned appointment'))).toBe(true);
   });
 
+  it('drops a pinned row whose pair is no longer eligible, naming the reason', () => {
+    const [rejected, optedOut] = first.appointments.filter((a) =>
+      input.suppliers.find((s) => s.id === a.supplierId)?.type === 'business',
+    );
+    const rankings = [
+      ...input.rankings.filter((r) => !(r.rankerType === 'buyer' && r.rankerId === rejected.buyerId && r.targetId === rejected.supplierId)),
+      { rankerType: 'buyer' as const, rankerId: rejected.buyerId, targetType: 'supplier' as const, targetId: rejected.supplierId, rank: null, isRejection: true },
+    ];
+    const buyers = input.buyers.map((b) => (b.id === optedOut.buyerId ? { ...b, biztechOptIn: false } : b));
+    const result = runMatching({
+      ...input,
+      settings: { ...input.settings, biztechOptInRule: 'from_biztech_file' },
+      buyers,
+      rankings,
+      pinned: [rejected, optedOut].map((a) => ({ ...a, pinned: true })),
+    });
+    const has = (a: Appointment) => result.appointments.some((x) => x.buyerId === a.buyerId && x.supplierId === a.supplierId);
+    expect(has(rejected)).toBe(false);
+    expect(has(optedOut)).toBe(false);
+    expect(result.warnings).toContain(
+      `Dropped pinned appointment slot ${rejected.slot} ${rejected.buyerId} x ${rejected.supplierId}: ${rejected.buyerId} marked ${rejected.supplierId} as N/A`,
+    );
+    expect(result.warnings).toContain(
+      `Dropped pinned appointment slot ${optedOut.slot} ${optedOut.buyerId} x ${optedOut.supplierId}: ${optedOut.buyerId} is not opted in to business meetings`,
+    );
+  });
+
   it('drops the later of two pinned rows that double book, with a warning', () => {
     const [a, b] = first.appointments.filter((x) => x.slot === 1).slice(0, 2);
     const clash: Appointment = { ...b, buyerId: a.buyerId, pinned: true };

@@ -14,6 +14,7 @@ import {
   upsertSupplier,
   withdrawParticipant,
   withdrawSupplier,
+  type SupplierStatusResult,
 } from "./roster";
 
 const idSchema = z.uuid();
@@ -68,10 +69,10 @@ export async function saveSupplier(input: unknown): Promise<IdResult> {
   return result;
 }
 
-async function supplierAction(
+async function supplierAction<T extends { id: string }>(
   rawId: unknown,
-  run: (input: { id: string; adminId: string }) => Promise<IdResult>,
-): Promise<IdResult> {
+  run: (input: { id: string; adminId: string }) => Promise<ActionResult<T>>,
+): Promise<ActionResult<T>> {
   const actor = await requireAdmin();
   const parsed = idSchema.safeParse(rawId);
   if (!parsed.success) return fromZod(parsed.error);
@@ -83,10 +84,11 @@ async function supplierAction(
   return result;
 }
 
-export async function withdrawSupplierAction(id: unknown): Promise<IdResult> {
+export async function withdrawSupplierAction(id: unknown): Promise<ActionResult<SupplierStatusResult>> {
   return supplierAction(id, (input) => withdrawSupplier(getDb(), input));
 }
 
-export async function restoreSupplierAction(id: unknown): Promise<IdResult> {
+/** The result's `note` says when the supplier's old desk was taken and cleared. */
+export async function restoreSupplierAction(id: unknown): Promise<ActionResult<SupplierStatusResult>> {
   return supplierAction(id, (input) => restoreSupplier(getDb(), input));
 }

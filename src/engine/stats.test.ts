@@ -67,7 +67,8 @@ describe('computeStats against the real 2025 results', () => {
     const sum =
       stats.mutualTopN.count + stats.oneSideTopN.count + stats.neitherTopN.count + stats.blankRankings.count;
     expect(sum).toBe(stats.totalAppointments);
-    expect(stats.atLeastOneSideTopN).toEqual({ count: 456, pct: 90.5 });
+    // 456 rows with both ranks, plus 8 with a blank buyer rank and a supplier rank in the top 10.
+    expect(stats.atLeastOneSideTopN).toEqual({ count: 464, pct: 92.1 });
   });
 
   it('lists people off target with their counts', () => {
@@ -78,6 +79,27 @@ describe('computeStats against the real 2025 results', () => {
 });
 
 describe('computeStats edge cases', () => {
+  it('counts a row with one blank rank in atLeastOneSideTopN when the other rank is within N', () => {
+    const row = (buyerRank: number | null, supplierRank: number | null, slot: number): Appointment => ({
+      slot,
+      buyerId: 'b',
+      supplierId: 's',
+      buyerRank,
+      supplierRank,
+      source: 'engine',
+      pinned: false,
+    });
+    const n = defaultSettings.mutualTopN;
+    const stats = computeStats([row(null, 1, 1), row(2, null, 2), row(null, n + 1, 3), row(null, null, 4)], {
+      settings: defaultSettings,
+      buyers: [{ id: 'b', biztechOptIn: true }],
+      suppliers: [{ id: 's', type: 'hotel' }],
+    });
+    expect(stats.blankRankings.count).toBe(4);
+    expect(stats.atLeastOneSideTopN.count).toBe(2);
+  });
+
+
   it('handles an empty schedule without dividing by zero', () => {
     const stats = computeStats([], { settings: defaultSettings, buyers: [{ id: 'b', biztechOptIn: true }], suppliers: [] });
     expect(stats.mutualTopN).toEqual({ count: 0, pct: 0 });

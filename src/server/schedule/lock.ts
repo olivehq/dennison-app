@@ -12,7 +12,7 @@ import {
   EventChangedError,
 } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
-import { advanceStatus } from "@/server/events/status";
+import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { findActiveRun } from "@/server/matching/runs";
 import { issueTokensForEvent } from "@/server/tokens/tokens";
 
@@ -155,7 +155,11 @@ export async function lockSchedule(
   }
 }
 
-/** Reopens the editor. Needs a reason, which goes in the activity log. A compare-and-set from the status read. */
+/**
+ * Reopens the editor. Needs a reason, which goes in the activity log. A
+ * compare-and-set from the status read. Refused while a campaign is sending,
+ * so the emails in flight match the schedule they describe.
+ */
 export async function unlockSchedule(
   db: Db,
   input: { eventId: string; adminId: string; reason: string },
@@ -167,20 +171,27 @@ export async function unlockSchedule(
   if (event.status !== "locked" && event.status !== "sent") {
     return fail("validation", "The schedule is not locked.");
   }
-  return inTransaction(db, async (tx) => {
-    if (!(await advanceStatus(tx, event.id, event.status, "matched"))) throw new EventChangedError();
-    await recordAudit(tx, {
-      eventId: event.id,
-      adminId: input.adminId,
-      action: "schedule.unlock",
-      entityType: "event",
-      entityId: event.id,
-      before: { status: event.status },
-      after: { status: "matched" },
-      note: reason,
+  try {
+    return await inTransaction(db, async (tx) => {
+      if (!(await advanceStatus(tx, event.id, event.status, "matched"))) throw new EventChangedError();
+      // Checked under the row lock the status change took; throwing rolls it back.
+      if (await hasSendInProgress(tx, event.id)) throw new Refused(fail("conflict", SEND_IN_PROGRESS_MESSAGE));
+      await recordAudit(tx, {
+        eventId: event.id,
+        adminId: input.adminId,
+        action: "schedule.unlock",
+        entityType: "event",
+        entityId: event.id,
+        before: { status: event.status },
+        after: { status: "matched" },
+        note: reason,
+      });
+      return ok({ eventId: event.id });
     });
-    return ok({ eventId: event.id });
-  });
+  } catch (error) {
+    if (error instanceof Refused) return error.result;
+    throw error;
+  }
 }
 
 /** Re-runs the D17 desk rule while unlocked. Overrides are kept. */

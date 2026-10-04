@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BOM } from "./common";
+import { BOM, type ExportView } from "./common";
 import {
   buyerScheduleCsv,
   personSchedulesFromView,
@@ -46,6 +46,30 @@ describe("person schedule CSVs", () => {
       expect(entry.csv).not.toMatch(/rank/i);
       expect(lines(entry.csv)).toHaveLength(smallView.slots.length + 1);
     }
+  });
+});
+
+describe("appointments with someone who withdrew", () => {
+  // Gone Org (withdrawn buyer) still holds slot 3 at the Hilton, and a
+  // withdrawn supplier still holds slot 2 with Acme: both slots are OPEN.
+  const view: ExportView = {
+    ...smallView,
+    suppliers: [...smallView.suppliers, { id: "s-gone", name: "Gone Hotel", desk: 14, withdrawn: true }],
+    appointments: [
+      ...smallView.appointments,
+      { slot: 3, buyerId: "b-gone", supplierId: "s-hotel", buyerRank: 2, supplierRank: 3 },
+      { slot: 2, buyerId: "b-acme", supplierId: "s-gone", buyerRank: 4, supplierRank: 5 },
+    ],
+  };
+
+  it("shows them as OPEN in the buyer and supplier files", () => {
+    const { buyers, suppliers } = personSchedulesFromView(view);
+    expect(buyers.map((b) => b.name)).toEqual(["Acme, Inc - Director", "Zed Org - Planner"]);
+    expect(suppliers.map((s) => s.name)).toEqual(["eShow", "Hilton Irvine/Orange County Airport"]);
+    expect(lines(buyerScheduleCsv(buyers[0]))[2]).toBe("3:21 PM,3:31 PM,2,OPEN");
+    expect(lines(supplierScheduleCsv(suppliers[1]))[3]).toBe("3:32 PM,3:42 PM,3,OPEN");
+    const csvs = scheduleZipEntries(view).map((e) => e.csv).join("\n");
+    expect(csvs).not.toContain("Gone");
   });
 });
 

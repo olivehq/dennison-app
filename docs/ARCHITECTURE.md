@@ -44,7 +44,7 @@ MatchInput = {
   buyers: Buyer[]                   // id, biztechOptIn
   suppliers: Supplier[]             // id, type: 'business' | 'hotel'
   rankings: Ranking[]               // rankerType, rankerId, targetType, targetId, rank | null, isRejection
-  pinned: Appointment[]             // kept as placed
+  pinned: Appointment[]             // kept as placed; dropped with a warning if a person withdrew, the pair is no longer eligible, or it clashes (D102)
 }
 MatchResult = {
   appointments: Appointment[]       // slot, buyerId, supplierId, buyerRank, supplierRank, source, pinned

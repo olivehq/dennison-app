@@ -36,6 +36,8 @@ export function computeStats(appointments: Appointment[], input: StatsInput): Qu
   let buyerBlank = 0;
   let supplierBlank = 0;
   let blank = 0;
+  // A row with one rank blank still counts as "at least one side top N" when the other rank is.
+  let blankOneSideTop = 0;
 
   for (const a of appointments) {
     const b = a.buyerRank;
@@ -44,6 +46,7 @@ export function computeStats(appointments: Appointment[], input: StatsInput): Qu
     if (s === null) supplierBlank++;
     if (b === null || s === null) {
       blank++;
+      if (isTopN(b, n) || isTopN(s, n)) blankOneSideTop++;
       continue;
     }
     const bTop = isTopN(b, n);
@@ -83,7 +86,7 @@ export function computeStats(appointments: Appointment[], input: StatsInput): Qu
     blankRankings: { ...pct(blank), buyerBlank, supplierBlank },
     withBuyerRank: pct(total - buyerBlank),
     withSupplierRank: pct(total - supplierBlank),
-    atLeastOneSideTopN: pct(mutual + buyerOnly + supplierOnly),
+    atLeastOneSideTopN: pct(mutual + buyerOnly + supplierOnly + blankOneSideTop),
     buyersBelowMin: offTarget(buyerCounts, (c) => c < settings.buyerMin),
     buyersAboveMax: offTarget(buyerCounts, (c) => c > settings.buyerMax),
     suppliersOffTarget: offTarget(supplierCounts, (c) => c !== settings.supplierTarget),

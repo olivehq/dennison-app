@@ -7,7 +7,8 @@ import { getMatchingReadiness, type MatchingCounts } from "./queries";
  * Whether matching may run (scope 2.3: the ranking files are green). Ready
  * needs at least one active buyer and supplier, at least one buyer-side and
  * one supplier-side ranking row, and no import left half done: the latest
- * import of each kind must not be waiting for name mapping, fixes, or Apply.
+ * import of each kind must not be waiting for name mapping, fixes, or Apply,
+ * and must not have failed validation.
  * Rankings loaded without an import (the seed) are fine.
  */
 export type MatchingReadiness = {
@@ -38,6 +39,8 @@ export async function matchingReadiness(db: Db, eventId: string): Promise<Matchi
     if (summary.state === "needs_mapping") reasons.push(`The ${label} file has unknown names. Map them, then apply the file.`);
     else if (summary.state === "needs_fixes") reasons.push(`The ${label} file has errors. Fix it and upload it again.`);
     else if (summary.state === "ready") reasons.push(`The ${label} file is checked but not applied. Apply it.`);
+    // Even with older rankings in place: the newest file is what staff meant to use.
+    else if (summary.state === "failed") reasons.push(`The latest ${label} upload failed validation. Fix or delete it.`);
   }
   return { ready: reasons.length === 0, reasons, counts };
 }

@@ -8,7 +8,9 @@ import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
 import { getFile, useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
-import { applyImport, createImport, deleteImportRecord, saveAlias, saveAliases } from "./imports";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { raceBeforeTransaction } from "@/server/events/test-race";
+import { applyImport, createImport, deleteImportRecord, revalidateImport, saveAlias, saveAliases } from "./imports";
 import { getImport, getImportStatusByKind, listImports, readinessForMatching } from "./queries";
 
 let db: Db;
@@ -514,5 +516,60 @@ describe("locked events", () => {
     const stillApplied = await db.select().from(imports).where(eq(imports.status, "applied"));
     // One applied import (supplier rankings) was deleted above; its apply row stays in the log.
     expect(applyRows.length).toBe(stillApplied.length + 1);
+  });
+});
+
+describe("applies and revalidation under the event row lock (D85)", () => {
+  let raceEvent: string;
+
+  beforeAll(async () => {
+    const [event] = await db
+      .insert(events)
+      .values({ name: "AW race", eventDate: "2026-11-10", timezone: "America/Los_Angeles", settings: defaultEventSettings, status: "imported" })
+      .returning();
+    raceEvent = event.id;
+    await db.insert(participants).values({ eventId: raceEvent, email: "ann@race.example.com", firstName: "Ann", lastName: "Lee" });
+    await db.insert(suppliers).values([
+      { eventId: raceEvent, name: "Hotel One", type: "hotel" },
+      { eventId: raceEvent, name: "Hotel Two", type: "hotel" },
+    ]);
+  });
+
+  const hotelFile = (choices: string[]) =>
+    upload("buyer_hotel_rankings", listSheet([{ name: "Ann Lee", email: "ann@race.example.com", choices }]), "hotels.xlsx", raceEvent);
+
+  it("two ranking applies at once leave only the later one's rankings", async () => {
+    const first = await expectOk(await hotelFile(["Hotel One", "Hotel Two"]));
+    const second = await expectOk(await hotelFile(["Hotel Two"]));
+    expect([first.state, second.state]).toEqual(["ready", "ready"]);
+    const results = await Promise.all([
+      applyImport(db, { importId: first.importId, adminId }),
+      applyImport(db, { importId: second.importId, adminId }),
+    ]);
+    expect(results.every((r) => r.ok)).toBe(true);
+    const applied = await db.select().from(imports).where(eq(imports.eventId, raceEvent));
+    const later = [...applied].sort((a, b) => b.appliedAt!.getTime() - a.appliedAt!.getTime())[0];
+    const left = await db.select().from(rankings).where(eq(rankings.eventId, raceEvent));
+    expect(left.length).toBeGreaterThan(0);
+    expect(new Set(left.map((r) => r.importId))).toEqual(new Set([later.id]));
+  });
+
+  it("an apply refuses when the event was locked after its check, and writes nothing", async () => {
+    const pending = await expectOk(await hotelFile(["Hotel One"]));
+    const before = await db.select().from(rankings).where(eq(rankings.eventId, raceEvent));
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, raceEvent));
+    const result = await applyImport(raceBeforeTransaction(db, lock), { importId: pending.importId, adminId });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await getImport(pending.importId, db))?.status).toBe("validated");
+    expect(await db.select().from(rankings).where(eq(rankings.eventId, raceEvent))).toEqual(before);
+    await db.update(events).set({ status: "imported" }).where(eq(events.id, raceEvent));
+  });
+
+  it("revalidation leaves an import applied since it was read alone", async () => {
+    const pending = await expectOk(await hotelFile(["Hotel Two", "Hotel One"]));
+    const [stale] = await db.select().from(imports).where(eq(imports.id, pending.importId));
+    await expectOk(await applyImport(db, { importId: pending.importId, adminId }));
+    expect(await revalidateImport(db, stale)).toBeNull();
+    expect((await getImport(pending.importId, db))?.status).toBe("applied");
   });
 });

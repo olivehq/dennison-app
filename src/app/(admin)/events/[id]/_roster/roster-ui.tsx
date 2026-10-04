@@ -139,14 +139,14 @@ export function StatusFilterToggle({ value, onChange }: { value: StatusFilter; o
 export function useRunAction() {
   const router = useRouter();
   return React.useCallback(
-    async <T,>(work: () => Promise<ActionResult<T>>, success: string): Promise<ActionResult<T>> => {
+    async <T,>(work: () => Promise<ActionResult<T>>, success: string | ((data: T) => string)): Promise<ActionResult<T>> => {
       const result = await work();
       if (!result.ok) {
         toast.error(result.error.message);
         if (result.error.code === "locked") router.refresh();
         return result;
       }
-      toast.success(success);
+      toast.success(typeof success === "string" ? success : success(result.data));
       router.refresh();
       return result;
     },
@@ -200,6 +200,11 @@ function NewLinkDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** The `note` a roster action may return (a restore that cleared a desk), else "". */
+function noteOf(data: unknown): string {
+  return data !== null && typeof data === "object" && "note" in data && typeof data.note === "string" ? data.note : "";
 }
 
 export type RowLink = {
@@ -258,7 +263,7 @@ export function RosterRowActions({ name, withdrawn, lockedReason, onEdit, withdr
           confirmLabel: "Restore",
           destructive: false,
           onConfirm: async () => {
-            await run(restore, `${name} is active again.`);
+            await run(restore, (data) => [`${name} is active again.`, noteOf(data)].filter(Boolean).join(" "));
           },
         };
       case "regenerate":

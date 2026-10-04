@@ -76,4 +76,17 @@ describe("matchingReadiness (scope 2.3)", () => {
     await db.update(imports).set({ status: "applied" }).where(eq(imports.eventId, seeded.eventId));
     expect((await matchingReadiness(db, seeded.eventId)).ready).toBe(true);
   });
+
+  it("blocks on a latest import that failed validation, even with older rankings applied", async () => {
+    const seeded = await seedEvent(db, { buyers: 4 });
+    const base = { eventId: seeded.eventId, fileKey: "k", fileName: "f.csv", createdBy: seeded.adminId, kind: "supplier_rankings" as const };
+    await db.insert(imports).values({ ...base, status: "applied", createdAt: new Date(Date.now() - 60_000) });
+    await db.insert(imports).values({ ...base, status: "failed", validation: report([{ row: null, message: "Not a spreadsheet" }]) as unknown as ImportValidation });
+    const readiness = await matchingReadiness(db, seeded.eventId);
+    expect(readiness).toMatchObject({
+      ready: false,
+      reasons: ["The latest supplier rankings upload failed validation. Fix or delete it."],
+    });
+  });
 });
+

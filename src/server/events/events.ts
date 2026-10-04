@@ -1,12 +1,13 @@
-import { and, count, eq, ne, notInArray } from "drizzle-orm";
+import { and, count, eq, max, ne, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
-import { events, participants, type Event } from "@/db/schema";
+import { appointments, events, matchRuns, participants, type Event } from "@/db/schema";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { eventSchema } from "@/lib/schemas/event";
-import { defaultEventSettings, eventSettingsSchema } from "@/lib/schemas/event-settings";
+import { defaultEventSettings, eventSettingsSchema, type EventSettings } from "@/lib/schemas/event-settings";
 import { recordAudit } from "@/server/audit/audit";
 import { assertEventEditable, EventChangedError, eventChangedResult, READ_ONLY_STATUSES } from "./editable";
+import { hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "./status";
 
 const idSchema = z.uuid();
 
@@ -15,15 +16,33 @@ function editableEvent(id: string) {
   return and(eq(events.id, id), notInArray(events.status, [...READ_ONLY_STATUSES]));
 }
 
-/** Runs `work` in a transaction, turning `EventChangedError` into the conflict result. */
+/** Thrown inside a transaction to roll it back and return `result`. */
+class Refused extends Error {
+  constructor(readonly result: ActionResult<never>) {
+    super(result.ok ? "" : result.error.message);
+  }
+}
+
+/** Runs `work` in a transaction, turning `EventChangedError` into the conflict result and `Refused` into its result. */
 async function inTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
   try {
     return ok(await db.transaction(work));
   } catch (error) {
+    if (error instanceof Refused) return error.result;
     const changed = eventChangedResult(error);
     if (changed) return changed;
     throw error;
   }
+}
+
+/** The highest slot number used by the event's active run, or null without one. */
+async function highestActiveSlot(db: Db, eventId: string): Promise<number | null> {
+  const [row] = await db
+    .select({ value: max(appointments.slot) })
+    .from(appointments)
+    .innerJoin(matchRuns, eq(matchRuns.id, appointments.runId))
+    .where(and(eq(matchRuns.eventId, eventId), eq(matchRuns.isActive, true)));
+  return row?.value ?? null;
 }
 
 async function loadEvent(db: Db, id: unknown): Promise<ActionResult<Event>> {
@@ -108,17 +127,31 @@ export async function updateEventSettings(
   if (!parsed.success) return fromZod(parsed.error);
 
   // retainData only changes through setRetainData, so a stale settings form can't flip it.
-  const settings = { ...parsed.data, retainData: event.settings.retainData ?? false };
+  const submitted: Partial<EventSettings> = { ...parsed.data };
+  delete submitted.retainData;
   const done = await inTransaction(db, async (tx) => {
-    const changed = await tx.update(events).set({ settings }).where(editableEvent(event.id)).returning({ id: events.id });
-    if (changed.length === 0) throw new EventChangedError();
+    // Lock the row while it is still editable and merge into what is stored now,
+    // so a concurrent setRetainData is kept.
+    const [current] = await tx.select({ settings: events.settings }).from(events).where(editableEvent(event.id)).for("update");
+    if (!current) throw new EventChangedError();
+    // Fewer slots than the active schedule uses would orphan its appointments.
+    const highest = await highestActiveSlot(tx, event.id);
+    if (highest !== null && submitted.slotCount! < highest) {
+      throw new Refused(
+        fail("validation", `The active schedule uses slot ${highest}. Keep at least ${highest} slots, or remove those appointments first.`, {
+          slotCount: [`The active schedule uses slot ${highest}.`],
+        }),
+      );
+    }
+    const settings: EventSettings = { ...current.settings, ...submitted };
+    await tx.update(events).set({ settings }).where(eq(events.id, event.id));
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
       action: "event.settings",
       entityType: "event",
       entityId: event.id,
-      before: event.settings,
+      before: current.settings,
       after: settings,
     });
   });
@@ -149,19 +182,24 @@ export async function setRetainData(
   if (current === parsed.data) return ok({ id: event.id, retainData: current });
 
   const done = await inTransaction(db, async (tx) => {
-    const changed = await tx
-      .update(events)
-      .set({ settings: { ...event.settings, retainData: parsed.data } })
+    // The only writer of retainData: lock the row and change that one key of
+    // the stored settings, so a concurrent settings save is kept.
+    const [row] = await tx
+      .select({ settings: events.settings })
+      .from(events)
       .where(and(eq(events.id, event.id), ne(events.status, "archived")))
-      .returning({ id: events.id });
-    if (changed.length === 0) throw new EventChangedError();
+      .for("update");
+    if (!row) throw new EventChangedError();
+    const stored = row.settings.retainData ?? false;
+    if (stored === parsed.data) return;
+    await tx.update(events).set({ settings: { ...row.settings, retainData: parsed.data } }).where(eq(events.id, event.id));
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
       action: "event.retention",
       entityType: "event",
       entityId: event.id,
-      before: { retainData: current },
+      before: { retainData: stored },
       after: { retainData: parsed.data },
     });
   });
@@ -233,6 +271,8 @@ export async function archiveEvent(
       .where(and(eq(events.id, event.id), eq(events.status, event.status)))
       .returning({ id: events.id });
     if (changed.length === 0) throw new EventChangedError();
+    // Under the row lock the update took: a send mid-flight must finish first.
+    if (await hasSendInProgress(tx, event.id)) throw new Refused(fail("conflict", SEND_IN_PROGRESS_MESSAGE));
     await recordAudit(tx, {
       eventId: event.id,
       adminId: input.adminId,

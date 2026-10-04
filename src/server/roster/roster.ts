@@ -11,7 +11,7 @@ import {
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
-import { loadEditableEvent } from "./editable";
+import { inEditableTransaction, loadEditableEvent, Refused } from "./editable";
 
 type Actor = { adminId: string };
 
@@ -100,7 +100,7 @@ export async function upsertParticipant(
   }
 
   const values = participantValues(input.data);
-  const saved = await db.transaction(async (tx) => {
+  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
     if (!existing) {
       const [row] = await tx.insert(participants).values({ eventId: input.eventId, ...values }).returning();
       await recordAudit(tx, {
@@ -130,7 +130,8 @@ export async function upsertParticipant(
     });
     return row;
   });
-  return ok({ id: saved.id });
+  if (!saved.ok) return saved;
+  return ok({ id: saved.data.id });
 }
 
 async function setParticipantStatus(
@@ -145,8 +146,14 @@ async function setParticipantStatus(
   if (existing.status === status) return ok({ id: existing.id });
 
   // Rankings and appointments stay; the schedule flags the gaps and restore reverses it.
-  await db.transaction(async (tx) => {
-    const [row] = await tx.update(participants).set({ status }).where(eq(participants.id, existing.id)).returning();
+  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+    // Compare-and-set on the status read, so a double click audits once.
+    const [row] = await tx
+      .update(participants)
+      .set({ status })
+      .where(and(eq(participants.id, existing.id), eq(participants.status, existing.status)))
+      .returning();
+    if (!row) return;
     await recordAudit(tx, {
       eventId: existing.eventId,
       adminId: input.adminId,
@@ -157,6 +164,7 @@ async function setParticipantStatus(
       after: { status: row.status },
     });
   });
+  if (!done.ok) return done;
   return ok({ id: existing.id });
 }
 
@@ -178,7 +186,7 @@ export async function setBiztechOptIn(
   if (!loaded.ok) return loaded.error;
   if (existing.biztechOptIn === input.optIn) return ok({ id: existing.id });
 
-  await db.transaction(async (tx) => {
+  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
     await tx.update(participants).set({ biztechOptIn: input.optIn }).where(eq(participants.id, existing.id));
     await recordAudit(tx, {
       eventId: existing.eventId,
@@ -190,6 +198,7 @@ export async function setBiztechOptIn(
       after: { biztechOptIn: input.optIn },
     });
   });
+  if (!done.ok) return done;
   return ok({ id: existing.id });
 }
 
@@ -273,13 +282,13 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
   }
 
   const desk = deskChange(existing, input.data.deskNumber);
-  if (desk) {
-    const taken = await deskTakenBy(db, input.eventId, desk.deskNumber, existing?.id);
-    if (taken) return deskConflict(desk.deskNumber as number, taken);
-  }
-
   const values = { ...supplierValues(input.data), ...desk };
-  const saved = await db.transaction(async (tx) => {
+  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+    // Under the event row lock, so two desk saves can't both see the desk free.
+    if (desk) {
+      const taken = await deskTakenBy(tx, input.eventId, desk.deskNumber, existing?.id);
+      if (taken) throw new Refused(deskConflict(desk.deskNumber as number, taken));
+    }
     if (!existing) {
       const [row] = await tx.insert(suppliers).values({ eventId: input.eventId, ...values }).returning();
       await recordAudit(tx, {
@@ -309,40 +318,69 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
     });
     return row;
   });
-  return ok({ id: saved.id });
+  if (!saved.ok) return saved;
+  return ok({ id: saved.data.id });
 }
+
+export type SupplierStatusResult = {
+  id: string;
+  /** Set when a restore cleared a desk another active supplier took meanwhile. */
+  note?: string;
+};
 
 async function setSupplierStatus(
   db: Db,
   input: ByIdInput,
   status: Supplier["status"],
-): Promise<ActionResult<{ id: string }>> {
+): Promise<ActionResult<SupplierStatusResult>> {
   const existing = await findSupplier(db, input.id);
   if (!existing) return fail("not_found", "That supplier no longer exists.");
   const loaded = await loadEditableEvent(db, existing.eventId);
   if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
-  await db.transaction(async (tx) => {
-    const [row] = await tx.update(suppliers).set({ status }).where(eq(suppliers.id, existing.id)).returning();
+  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+    // A restored supplier can't share a desk: if another active supplier holds
+    // its number now, the desk is cleared and lock assigns one again (D17).
+    let note: string | undefined;
+    let desk: { deskNumber: null; deskOverride: false } | undefined;
+    if (status === "active" && existing.deskNumber !== null) {
+      const holder = await deskTakenBy(tx, existing.eventId, existing.deskNumber, existing.id);
+      if (holder) {
+        desk = { deskNumber: null, deskOverride: false };
+        note = `Desk ${existing.deskNumber} is now assigned to ${holder}, so the desk was cleared. Reassign desks or set one by hand.`;
+      }
+    }
+    // Compare-and-set on the status read, so a double click audits once.
+    const [row] = await tx
+      .update(suppliers)
+      .set({ status, ...desk })
+      .where(and(eq(suppliers.id, existing.id), eq(suppliers.status, existing.status)))
+      .returning();
+    if (!row) return undefined;
     await recordAudit(tx, {
       eventId: existing.eventId,
       adminId: input.adminId,
       action: status === "withdrawn" ? "supplier.withdraw" : "supplier.restore",
       entityType: "supplier",
       entityId: row.id,
-      before: { status: existing.status },
-      after: { status: row.status },
+      before: desk
+        ? { status: existing.status, deskNumber: existing.deskNumber, deskOverride: existing.deskOverride }
+        : { status: existing.status },
+      after: desk ? { status: row.status, ...desk } : { status: row.status },
+      note: note ?? null,
     });
+    return note;
   });
-  return ok({ id: existing.id });
+  if (!done.ok) return done;
+  return ok(done.data ? { id: existing.id, note: done.data } : { id: existing.id });
 }
 
-export function withdrawSupplier(db: Db, input: ByIdInput): Promise<ActionResult<{ id: string }>> {
+export function withdrawSupplier(db: Db, input: ByIdInput): Promise<ActionResult<SupplierStatusResult>> {
   return setSupplierStatus(db, input, "withdrawn");
 }
 
-export function restoreSupplier(db: Db, input: ByIdInput): Promise<ActionResult<{ id: string }>> {
+export function restoreSupplier(db: Db, input: ByIdInput): Promise<ActionResult<SupplierStatusResult>> {
   return setSupplierStatus(db, input, "active");
 }
 
@@ -359,11 +397,10 @@ export async function setSupplierDesk(
   const loaded = await loadEditableEvent(db, existing.eventId);
   if (!loaded.ok) return loaded.error;
 
-  const taken = await deskTakenBy(db, existing.eventId, input.deskNumber, existing.id);
-  if (taken) return deskConflict(input.deskNumber as number, taken);
-
   const values = { deskNumber: input.deskNumber, deskOverride: input.deskNumber !== null };
-  await db.transaction(async (tx) => {
+  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+    const taken = await deskTakenBy(tx, existing.eventId, input.deskNumber, existing.id);
+    if (taken) throw new Refused(deskConflict(input.deskNumber as number, taken));
     await tx.update(suppliers).set(values).where(eq(suppliers.id, existing.id));
     await recordAudit(tx, {
       eventId: existing.eventId,
@@ -375,5 +412,6 @@ export async function setSupplierDesk(
       after: values,
     });
   });
+  if (!done.ok) return done;
   return ok({ id: existing.id });
 }

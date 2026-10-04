@@ -74,7 +74,9 @@ function checkLimits(workbook: XLSX.WorkBook): void {
     );
   }
   for (const sheetName of workbook.SheetNames) {
-    const ref = workbook.Sheets[sheetName]?.["!ref"];
+    // With `sheetRows`, `!ref` is cut at that row; `!fullref` is the sheet's real range.
+    const sheet = workbook.Sheets[sheetName];
+    const ref = sheet?.["!fullref"] ?? sheet?.["!ref"];
     if (!ref) continue;
     const range = XLSX.utils.decode_range(ref);
     if (range.e.r - range.s.r + 1 > rows) {

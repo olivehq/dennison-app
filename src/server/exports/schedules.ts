@@ -44,14 +44,18 @@ export function supplierScheduleCsv(person: Pick<ExportPerson, "slots">): string
 
 /**
  * Every active buyer's and supplier's slots, built from one view so the ZIP
- * needs one query instead of one per person. Withdrawn people get no file.
+ * needs one query instead of one per person. Withdrawn people get no file,
+ * and an appointment with someone who withdrew is OPEN on the other side's
+ * file, as on the participant page (D87).
  */
 export function personSchedulesFromView(view: ExportView): { buyers: ExportPerson[]; suppliers: ExportPerson[] } {
   const buyerNames = new Map(view.buyers.map((b) => [b.id, b.name]));
   const suppliers = new Map(view.suppliers.map((s) => [s.id, s]));
+  const withdrawn = new Set([...view.buyers, ...view.suppliers].filter((p) => p.withdrawn).map((p) => p.id));
   const byBuyer = new Map<string, Map<number, ExportView["appointments"][number]>>();
   const bySupplier = new Map<string, Map<number, ExportView["appointments"][number]>>();
   for (const a of view.appointments) {
+    if (withdrawn.has(a.buyerId) || withdrawn.has(a.supplierId)) continue;
     if (!byBuyer.has(a.buyerId)) byBuyer.set(a.buyerId, new Map());
     if (!bySupplier.has(a.supplierId)) bySupplier.set(a.supplierId, new Map());
     byBuyer.get(a.buyerId)!.set(a.slot, a);

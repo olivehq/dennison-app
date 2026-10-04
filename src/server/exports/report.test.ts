@@ -98,7 +98,7 @@ describe("qualityReportText against the 2025 results", () => {
   });
 
   it("computes the key insights from the numbers", () => {
-    expect(text).toContain("- 90.5% of appointments (456 of 504) have at least one party in the other's top 10.");
+    expect(text).toContain("- 92.1% of appointments (464 of 504) have at least one party in the other's top 10.");
     expect(text).toContain("filling every supplier to exactly 9 (56 of 56 reached it)");
     expect(text).toContain("keeping buyers between 7 and 9 (62 of 65 are)");
     expect(text).toContain("25 of the 31 are mixed rankings");

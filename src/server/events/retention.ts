@@ -79,8 +79,16 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
   const candidates = (await db.select().from(events).where(lt(events.eventDate, cutoff))).filter((e) => isDue(e, now));
 
   const results: RetentionResult[] = [];
-  for (const event of candidates) {
+  for (const candidate of candidates) {
     const outcome = await db.transaction(async (tx) => {
+      // Lock the row and decide again: retainData may have been set, or the
+      // date moved, since the list above was read. setRetainData and settings
+      // saves take the same row lock, so they wait for this or go first.
+      const [event] = await tx.select().from(events).where(eq(events.id, candidate.id)).for("update");
+      if (!event || !isDue(event, now)) {
+        console.info(`[retention] event ${candidate.id}: skipped, it no longer qualifies (retainData set, date changed, or deleted).`);
+        return null;
+      }
       const files = await tx.select({ key: imports.fileKey }).from(imports).where(eq(imports.eventId, event.id));
       const gone = async (rows: Promise<{ id: string }[]>) => (await rows).length;
       const counts: RetentionCounts = {
@@ -143,7 +151,7 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
         before: { status: event.status },
         after: { status: "archived", deleted: counts, deadline: retentionDeadline(event).toISOString() },
       });
-      return { counts, keys: files.map((f) => f.key) };
+      return { counts, name: event.name, keys: files.map((f) => f.key) };
     });
     if (!outcome) continue;
 
@@ -155,7 +163,7 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
         fileErrors.push(key);
       }
     }
-    results.push({ eventId: event.id, name: event.name, deleted: outcome.counts, fileErrors });
+    results.push({ eventId: candidate.id, name: outcome.name, deleted: outcome.counts, fileErrors });
   }
   return results;
 }

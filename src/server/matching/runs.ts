@@ -1,7 +1,7 @@
 import { and, eq, lt, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { appointments, matchRuns, type MatchRun } from "@/db/schema";
-import { runMatching, type Appointment, type QualityStats } from "@/engine";
+import { buildRankingIndex, runMatching, type Appointment, type QualityStats } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import { compareNames } from "@/lib/names";
 import { NOT_ACTIVE_RUN_MESSAGE, VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
@@ -15,7 +15,7 @@ import {
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { isUniqueViolation, nameWarning } from "./common";
-import { buildMatchInput, loadRoster, type Roster } from "./input";
+import { buildMatchInput, loadRoster, toEngineRankings, type Roster } from "./input";
 import { matchingReadiness } from "./readiness";
 
 export type StartRunInput = {
@@ -103,69 +103,98 @@ export async function failRunsOlderThan(db: Db, minutes: number, now: Date = new
 }
 
 /**
- * Appointments of the active run that survive a re-run (D10): anything that
+ * Appointments of the active run that a new run keeps. Every run keeps the
+ * rows an admin pinned; "keep existing" (D10) keeps every row. Anything that
  * names a withdrawn buyer or supplier is dropped so its slots can be refilled.
+ * Ranks are stamped again from the current rankings, so a re-import since the
+ * run shows in the kept rows and the stats; the engine drops pairs that are no
+ * longer eligible.
  */
 async function loadPinnedFromActiveRun(
   db: Db,
   roster: Roster,
   activeRunId: string,
+  options: { keepAll: boolean },
 ): Promise<Appointment[]> {
   const withdrawn = new Set<string>([
     ...roster.participants.filter((p) => p.status === "withdrawn").map((p) => p.id),
     ...roster.suppliers.filter((s) => s.status === "withdrawn").map((s) => s.id),
   ]);
-  const rows = await db.select().from(appointments).where(eq(appointments.runId, activeRunId));
+  const index = buildRankingIndex(toEngineRankings(roster.rankings));
+  const rows = await db
+    .select()
+    .from(appointments)
+    .where(options.keepAll ? eq(appointments.runId, activeRunId) : and(eq(appointments.runId, activeRunId), eq(appointments.pinned, true)));
   return rows
     .filter((r) => !withdrawn.has(r.buyerId) && !withdrawn.has(r.supplierId))
     .map((r) => ({
       slot: r.slot,
       buyerId: r.buyerId,
       supplierId: r.supplierId,
-      buyerRank: r.buyerRank,
-      supplierRank: r.supplierRank,
+      buyerRank: index.buyerRank(r.buyerId, r.supplierId),
+      supplierRank: index.supplierRank(r.supplierId, r.buyerId),
       source: r.source,
       pinned: true,
     }));
+}
+
+/** Thrown inside the run's setup transaction to return `result` (nothing is written yet). */
+class RunRefused extends Error {
+  constructor(readonly result: ActionResult<never>) {
+    super(result.ok ? "" : result.error.message);
+  }
 }
 
 /**
  * Runs the engine and stores the result as a new `match_runs` row. The first
  * completed run of an event becomes active on its own; later runs wait for
  * `activateRun` so an admin can compare first (scope 2.2 re-run addition).
+ *
+ * The readiness gate, the roster, rankings, and pinned rows, and the running
+ * row are read and written in one transaction that holds the event row
+ * (`claimEditableEvent`), so an import apply, which takes the same row, lands
+ * wholly before or wholly after the inputs. The engine runs after it commits.
  */
 export async function startRun(db: Db, input: StartRunInput): Promise<ActionResult<StartRunResult>> {
-  const roster = await loadRoster(db, input.eventId);
-  if (!roster) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(roster.event);
+  const event = await getEvent(input.eventId, db);
+  if (!event) return fail("not_found", "That event no longer exists.");
+  const locked = assertEventEditable(event);
   if (locked) return locked;
-  const readiness = await matchingReadiness(db, input.eventId);
-  if (!readiness.ready) return fail("validation", readiness.reasons.join(" "));
 
-  let pinned: Appointment[] = [];
-  let parentRunId: string | null = null;
-  if (input.keepExisting) {
-    const active = await findActiveRun(db, input.eventId);
-    if (!active) {
-      return fail(
-        "validation",
-        "There is no active run to keep. Run matching without keeping existing appointments.",
-      );
-    }
-    parentRunId = active.id;
-    pinned = await loadPinnedFromActiveRun(db, roster, active.id);
+  let setup: { roster: Roster; pinned: Appointment[]; parentRunId: string | null; run: MatchRun };
+  try {
+    setup = await db.transaction(async (tx) => {
+      await claimEditableEvent(tx, input.eventId);
+      const readiness = await matchingReadiness(tx, input.eventId);
+      if (!readiness.ready) throw new RunRefused(fail("validation", readiness.reasons.join(" ")));
+      const roster = (await loadRoster(tx, input.eventId))!;
+      const active = await findActiveRun(tx, input.eventId);
+      if (input.keepExisting && !active) {
+        throw new RunRefused(
+          fail("validation", "There is no active run to keep. Run matching without keeping existing appointments."),
+        );
+      }
+      // Every run keeps the active run's pinned rows; keep existing keeps them all.
+      const pinned = active ? await loadPinnedFromActiveRun(tx, roster, active.id, { keepAll: input.keepExisting }) : [];
+      const parentRunId = input.keepExisting && active ? active.id : null;
+      const [run] = await tx
+        .insert(matchRuns)
+        .values({
+          eventId: input.eventId,
+          status: "running",
+          settingsSnapshot: roster.event.settings,
+          parentRunId,
+          createdBy: input.adminId,
+        })
+        .returning();
+      return { roster, pinned, parentRunId, run };
+    });
+  } catch (error) {
+    if (error instanceof RunRefused) return error.result;
+    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
+    throw error;
   }
-
-  const [run] = await db
-    .insert(matchRuns)
-    .values({
-      eventId: input.eventId,
-      status: "running",
-      settingsSnapshot: roster.event.settings,
-      parentRunId,
-      createdBy: input.adminId,
-    })
-    .returning();
+  const { roster, pinned, parentRunId, run } = setup;
 
   try {
     const started = performance.now();

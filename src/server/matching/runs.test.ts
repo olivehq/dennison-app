@@ -1,12 +1,13 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { appointments, events, matchRuns, participants } from "@/db/schema";
+import { appointments, events, matchRuns, participants, rankings } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
+import { displayNameFor } from "@/server/roster/display-name";
 import { isUniqueViolation, nameWarning } from "./common";
 import { activationPreviews, compareRunForPage, getActiveRun, getRun, listRuns } from "./queries";
 import { activateRun, compareRuns, failRunsOlderThan, setPinned, startRun } from "./runs";
@@ -247,7 +248,7 @@ describe("one active run per event", () => {
         .returning();
       return row;
     };
-    const result = await startRun(raceBeforeTransaction(db, winner), {
+    const result = await startRun(raceBeforeTransaction(db, winner, 2), {
       eventId: other.eventId,
       adminId: other.adminId,
       keepExisting: false,
@@ -271,10 +272,19 @@ describe("one active run per event", () => {
     expect((await getActiveRun(other.eventId, db))?.id).toBe(first.data.runId);
   });
 
-  it("startRun marks its run failed when the event is locked while the engine runs", async () => {
+  it("startRun refuses with no run row when the event is locked before its setup transaction", async () => {
     const other = await seedEvent(db, { buyers: 4 });
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
     const result = await startRun(raceBeforeTransaction(db, lock), { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(await listRuns(other.eventId, db)).toHaveLength(0);
+  });
+
+  it("startRun marks its run failed when the event is locked while the engine runs", async () => {
+    const other = await seedEvent(db, { buyers: 4 });
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
+    // The second transaction is the one that stores the result.
+    const result = await startRun(raceBeforeTransaction(db, lock, 2), { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
     expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
     const runs = await listRuns(other.eventId, db);
     expect(runs).toHaveLength(1);
@@ -349,5 +359,85 @@ describe("nameWarning", () => {
       "Supplier Hyatt Regency Monterey filled only 8 of 9",
     );
     expect(nameWarning("Supplier unknown filled only 8 of 9", names)).toBe("Supplier unknown filled only 8 of 9");
+  });
+});
+
+describe("pinned rows carried into a new run", () => {
+  async function activeRows(eventId: string) {
+    const active = await getActiveRun(eventId, db);
+    return db.select().from(appointments).where(eq(appointments.runId, active!.id));
+  }
+
+  it("keep existing re-stamps ranks from the current rankings", async () => {
+    const event = await seedEvent(db);
+    const first = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: false });
+    if (!first.ok) throw new Error(first.error.message);
+    const [row] = await activeRows(event.eventId);
+    // The buyer's file was re-imported with this supplier at 42.
+    await db
+      .insert(rankings)
+      .values({ eventId: event.eventId, rankerType: "buyer", rankerId: row.buyerId, targetType: "supplier", targetId: row.supplierId, rank: 42, isRejection: false })
+      .onConflictDoUpdate({
+        target: [rankings.eventId, rankings.rankerType, rankings.rankerId, rankings.targetType, rankings.targetId],
+        set: { rank: 42, isRejection: false },
+      });
+    const rerun = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: true });
+    if (!rerun.ok) throw new Error(rerun.error.message);
+    const [kept] = await db
+      .select()
+      .from(appointments)
+      .where(and(eq(appointments.runId, rerun.data.runId), eq(appointments.buyerId, row.buyerId), eq(appointments.supplierId, row.supplierId)));
+    expect(kept).toMatchObject({ slot: row.slot, pinned: true, buyerRank: 42 });
+  });
+
+  it("an ordinary run keeps the rows an admin pinned, and only those", async () => {
+    const event = await seedEvent(db);
+    const first = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: false });
+    if (!first.ok) throw new Error(first.error.message);
+    const [row] = await activeRows(event.eventId);
+    await db.update(appointments).set({ pinned: true }).where(eq(appointments.id, row.id));
+    const rerun = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: false });
+    if (!rerun.ok) throw new Error(rerun.error.message);
+    expect(rerun.data.pinnedCount).toBe(1);
+    const rows = await db.select().from(appointments).where(eq(appointments.runId, rerun.data.runId));
+    expect(rows.filter((r) => r.pinned)).toMatchObject([{ slot: row.slot, buyerId: row.buyerId, supplierId: row.supplierId }]);
+    expect((await getRun(rerun.data.runId, db))?.parentRunId ?? null).toBeNull();
+  });
+
+  it("drops pinned rows whose pair became ineligible, with named warnings", async () => {
+    const event = await seedEvent(db);
+    const first = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: false });
+    if (!first.ok) throw new Error(first.error.message);
+    const rows = await activeRows(event.eventId);
+    const supplierById = new Map(event.suppliers.map((s) => [s.id, s]));
+    const buyerById = new Map(event.buyers.map((b) => [b.id, b]));
+    const business = rows.filter((r) => supplierById.get(r.supplierId)!.type === "business");
+    const rejected = rows.find((r) => supplierById.get(r.supplierId)!.type === "hotel")!;
+    const optedOut = business.find((r) => r.buyerId !== rejected.buyerId)!;
+    // A re-import: one buyer now marks the hotel N/A, another opts out of biztech.
+    await db
+      .update(rankings)
+      .set({ rank: null, isRejection: true })
+      .where(and(eq(rankings.eventId, event.eventId), eq(rankings.rankerId, rejected.buyerId), eq(rankings.targetId, rejected.supplierId)));
+    await db
+      .insert(rankings)
+      .values({ eventId: event.eventId, rankerType: "buyer", rankerId: rejected.buyerId, targetType: "supplier", targetId: rejected.supplierId, rank: null, isRejection: true })
+      .onConflictDoNothing();
+    await db.update(participants).set({ biztechOptIn: false }).where(eq(participants.id, optedOut.buyerId));
+
+    const rerun = await startRun(db, { eventId: event.eventId, adminId: event.adminId, keepExisting: true });
+    if (!rerun.ok) throw new Error(rerun.error.message);
+    const name = (id: string) => displayNameFor(buyerById.get(id)!);
+    const supplierName = (id: string) => supplierById.get(id)!.name;
+    expect(rerun.data.warnings).toContain(
+      `Dropped pinned appointment slot ${rejected.slot} ${name(rejected.buyerId)} x ${supplierName(rejected.supplierId)}: ${name(rejected.buyerId)} marked ${supplierName(rejected.supplierId)} as N/A`,
+    );
+    expect(rerun.data.warnings).toContain(
+      `Dropped pinned appointment slot ${optedOut.slot} ${name(optedOut.buyerId)} x ${supplierName(optedOut.supplierId)}: ${name(optedOut.buyerId)} is not opted in to business meetings`,
+    );
+    const stored = await db.select().from(appointments).where(eq(appointments.runId, rerun.data.runId));
+    const has = (r: { buyerId: string; supplierId: string }) => stored.some((s) => s.buyerId === r.buyerId && s.supplierId === r.supplierId);
+    expect(has(rejected)).toBe(false);
+    expect(has(optedOut)).toBe(false);
   });
 });

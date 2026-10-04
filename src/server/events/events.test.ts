@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { admins, events, participants } from "@/db/schema";
+import { admins, emailCampaigns, events, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas/event-settings";
 import { listAudit } from "@/server/audit/audit";
@@ -10,6 +10,9 @@ import { archiveEvent, createEvent, deleteEvent, setRetainData, updateEvent, upd
 import { EVENT_CHANGED_MESSAGE } from "./editable";
 import { raceBeforeTransaction } from "./test-race";
 import { getEvent, getEventCounts, listEvents } from "./queries";
+import { startRun } from "@/server/matching/runs";
+import { seedEvent } from "@/server/matching/test-seed";
+import { SEND_IN_PROGRESS_MESSAGE } from "./status";
 
 const ACTOR = "admin-test";
 let db: Db;
@@ -262,5 +265,81 @@ describe("queries", () => {
 
     const counts = await getEventCounts(id, db);
     expect(counts).toEqual({ participants: 1, suppliers: 0, appointments: 0, activeRunId: null });
+  });
+});
+
+describe("settings writes merge into the stored settings (D95)", () => {
+  it("a settings save keeps a retainData set between its read and its write", async () => {
+    const id = await makeEvent("Merge retain");
+    const raced = raceBeforeTransaction(db, () => setRetainData(db, id, true, ACTOR));
+    const saved = await updateEventSettings(raced, id, { ...defaultEventSettings, retainData: false, buyerMin: 6 }, ACTOR);
+    expect(saved.ok).toBe(true);
+    expect((await getEvent(id, db))?.settings).toMatchObject({ retainData: true, buyerMin: 6 });
+  });
+
+  it("setRetainData keeps a settings save made between its read and its write", async () => {
+    const id = await makeEvent("Merge settings");
+    const raced = raceBeforeTransaction(db, () => updateEventSettings(db, id, { ...defaultEventSettings, buyerMin: 5 }, ACTOR));
+    const saved = await setRetainData(raced, id, true, ACTOR);
+    expect(saved.ok).toBe(true);
+    expect((await getEvent(id, db))?.settings).toMatchObject({ retainData: true, buyerMin: 5 });
+  });
+
+  it("refuses fewer slots than the active run uses, naming the highest used slot", async () => {
+    const seeded = await seedEvent(db, { buyers: 6 });
+    const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const event = (await getEvent(seeded.eventId, db))!;
+    const settings = event.settings;
+    const fewer = {
+      ...settings,
+      slotCount: settings.slotCount - 1,
+      slots: settings.slots.slice(0, -1),
+      supplierTarget: Math.min(settings.supplierTarget, settings.slotCount - 1),
+      buyerMax: Math.min(settings.buyerMax, settings.slotCount - 1),
+    };
+    fewer.buyerIdeal = Math.min(fewer.buyerIdeal, fewer.buyerMax);
+    fewer.buyerMin = Math.min(fewer.buyerMin, fewer.buyerIdeal);
+    const result = await updateEventSettings(db, seeded.eventId, fewer, ACTOR);
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "validation",
+        message: `The active schedule uses slot ${settings.slotCount}. Keep at least ${settings.slotCount} slots, or remove those appointments first.`,
+        fieldErrors: { slotCount: [`The active schedule uses slot ${settings.slotCount}.`] },
+      },
+    });
+    expect((await getEvent(seeded.eventId, db))?.settings.slotCount).toBe(settings.slotCount);
+    // The same count still saves.
+    expect((await updateEventSettings(db, seeded.eventId, settings, ACTOR)).ok).toBe(true);
+  });
+});
+
+describe("archiveEvent while an email send is in progress", () => {
+  it("refuses and leaves the status alone", async () => {
+    const id = await makeEvent("Archive while sending");
+    await db.update(events).set({ status: "locked" }).where(eq(events.id, id));
+    const [campaign] = await db
+      .insert(emailCampaigns)
+      .values({
+        eventId: id,
+        name: "Your schedule",
+        fromName: "D&A",
+        fromEmail: "schedule@example.com",
+        replyTo: "staff@example.com",
+        subject: "Your schedule",
+        htmlBody: "<p>Hi</p>",
+        audience: "all",
+        kind: "initial",
+        status: "sending",
+      })
+      .returning();
+    const result = await archiveEvent(db, { eventId: id, adminId: ACTOR });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: SEND_IN_PROGRESS_MESSAGE } });
+    expect((await getEvent(id, db))?.status).toBe("locked");
+    expect((await listAudit({ eventId: id, filters: { action: "event.archive" } }, db)).total).toBe(0);
+
+    await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
+    expect((await archiveEvent(db, { eventId: id, adminId: ACTOR })).ok).toBe(true);
   });
 });

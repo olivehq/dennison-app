@@ -4,6 +4,7 @@ import {
   admins,
   emailCampaigns,
   emailMessages,
+  events,
   type EmailCampaign,
   type EmailCampaignKind,
   type EmailDeliveryEvent,
@@ -76,6 +77,14 @@ export function parseSender(value: string): { fromName: string; fromEmail: strin
 async function loadCampaign(db: Db, campaignId: string): Promise<EmailCampaign | null> {
   const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaignId)).limit(1);
   return row ?? null;
+}
+
+/** The refusal for a missing or archived event, else null. Same wording as create and duplicate. */
+async function refuseArchived(db: Db, eventId: string): Promise<ActionResult<never> | null> {
+  const event = await getEvent(eventId, db);
+  if (!event) return fail("not_found", "That event no longer exists.");
+  if (event.status === "archived") return fail("locked", "This event is archived.");
+  return null;
 }
 
 function campaignSnapshot(c: EmailCampaign) {
@@ -153,6 +162,8 @@ export async function updateCampaign(
   if (!parsed.success) return fromZod(parsed.error);
   const campaign = await loadCampaign(db, input.campaignId);
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
+  const archived = await refuseArchived(db, campaign.eventId);
+  if (archived) return archived;
   if (campaign.status !== "draft") return fail("conflict", "This campaign was already sent and can't be edited. Duplicate it instead.");
   const fields = parsed.data;
   const [row] = await db
@@ -293,6 +304,8 @@ export async function sendTest(
 ): Promise<ActionResult<{ toEmail: string; recipientName: string | null }>> {
   const campaign = await loadCampaign(db, input.campaignId);
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
+  const archived = await refuseArchived(db, campaign.eventId);
+  if (archived) return archived;
   // A test carries a real participant's link and merge values, so it may only
   // go to someone who could see them in the app anyway.
   const [admin] = await db
@@ -346,16 +359,48 @@ function errorText(error: unknown): string {
   return text.slice(0, 300);
 }
 
+/** Tries to save a sent chunk's provider ids: the first write plus up to three retries. */
+export const PROVIDER_ID_WRITE_ATTEMPTS = 4;
+const PROVIDER_ID_RETRY_DELAY_MS = 100;
+
+type Delivered = {
+  sent: number;
+  failed: number;
+  /** Messages the provider accepted whose provider ids could not be saved (D95). */
+  sentWithoutIds: number;
+  providerIdError?: string;
+};
+
+/** One UPDATE for the chunk: provider ids, `sent` unless a webhook already moved it on, and the send time. */
+async function saveProviderIds(db: Db, ids: string[], providerIds: (string | null)[], sentAt: Date): Promise<void> {
+  const providerId = sql.join(
+    [
+      sql`case ${emailMessages.id}`,
+      ...ids.map((id, i) => sql`when ${id}::uuid then ${providerIds[i] ?? null}::text`),
+      sql`end`,
+    ],
+    sql` `,
+  );
+  await db
+    .update(emailMessages)
+    .set({
+      providerMessageId: providerId,
+      // A webhook matched by tag may already have moved it past sent.
+      status: sql`case when ${emailMessages.status} = 'queued' then 'sent'::email_message_status else ${emailMessages.status} end`,
+      sentAt,
+    })
+    .where(inArray(emailMessages.id, ids));
+}
+
 /**
  * Writes one queued message per recipient with the hash of the schedule it
  * describes, then sends in chunks of 100. A chunk the provider refuses marks
- * its messages failed; the rest still go.
+ * its messages failed; the rest still go. A chunk the provider accepted is
+ * never marked failed: if its provider ids can't be saved after retries, its
+ * messages become `sent` without ids (D95), since "Resend to bounced" would
+ * otherwise mail them twice.
  */
-async function deliver(
-  db: Db,
-  campaign: EmailCampaign,
-  recipients: Recipient[],
-): Promise<{ sent: number; failed: number }> {
+async function deliver(db: Db, campaign: EmailCampaign, recipients: Recipient[]): Promise<Delivered> {
   const hashes = await scheduleHashesForEvent(db, campaign.eventId);
   const rows = await db.transaction(async (tx) =>
     tx
@@ -378,6 +423,8 @@ async function deliver(
   const from = `${campaign.fromName} <${campaign.fromEmail}>`;
   let sent = 0;
   let failed = 0;
+  let sentWithoutIds = 0;
+  let providerIdError: string | undefined;
   for (let start = 0; start < recipients.length; start += SEND_CHUNK_SIZE) {
     const chunk = recipients.slice(start, start + SEND_CHUNK_SIZE);
     const ids = rows.slice(start, start + SEND_CHUNK_SIZE).map((r) => r.id);
@@ -389,21 +436,9 @@ async function deliver(
       // Lets the webhook find the message even before its provider id is saved.
       tags: { aw_message: ids[i] },
     }));
+    let results: Awaited<ReturnType<typeof sendBatch>>;
     try {
-      const results = await sendBatch(outgoing);
-      const sentAt = new Date();
-      for (let i = 0; i < ids.length; i++) {
-        await db
-          .update(emailMessages)
-          .set({
-            providerMessageId: results[i]?.id ?? null,
-            // A webhook matched by tag may already have moved it past sent.
-            status: sql`case when ${emailMessages.status} = 'queued' then 'sent'::email_message_status else ${emailMessages.status} end`,
-            sentAt,
-          })
-          .where(eq(emailMessages.id, ids[i]));
-      }
-      sent += ids.length;
+      results = await sendBatch(outgoing);
     } catch (error) {
       const event: EmailDeliveryEvent = { type: "failed", at: new Date().toISOString(), detail: errorText(error) };
       await db
@@ -416,9 +451,77 @@ async function deliver(
         .where(inArray(emailMessages.id, ids));
       failed += ids.length;
       console.error(`[email] campaign ${campaign.id}: a batch of ${ids.length} was not sent: ${event.detail}`);
+      continue;
     }
+
+    // The provider accepted the chunk: from here on these messages are sent.
+    const sentAt = new Date();
+    const providerIds = ids.map((_, i) => results[i]?.id ?? null);
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= PROVIDER_ID_WRITE_ATTEMPTS; attempt++) {
+      try {
+        await saveProviderIds(db, ids, providerIds, sentAt);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < PROVIDER_ID_WRITE_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, PROVIDER_ID_RETRY_DELAY_MS * attempt));
+        }
+      }
+    }
+    if (lastError) {
+      // The webhook still finds these messages by their aw_message tag (D63).
+      providerIdError = errorText(lastError);
+      console.error(
+        `[email] campaign ${campaign.id}: a batch of ${ids.length} was sent but its provider ids were not saved: ${providerIdError}`,
+      );
+      await db
+        .update(emailMessages)
+        .set({
+          status: sql`case when ${emailMessages.status} = 'queued' then 'sent'::email_message_status else ${emailMessages.status} end`,
+          sentAt,
+        })
+        .where(inArray(emailMessages.id, ids));
+      sentWithoutIds += ids.length;
+    }
+    sent += ids.length;
   }
-  return { sent, failed };
+  return { sent, failed, sentWithoutIds, ...(providerIdError ? { providerIdError } : {}) };
+}
+
+/** What the audit row says about provider ids that could not be saved, if any. */
+function providerIdProblem(d: Delivered) {
+  return d.sentWithoutIds > 0 ? { sentWithoutIds: d.sentWithoutIds, providerIdError: d.providerIdError } : {};
+}
+
+/**
+ * Claims the campaign for a send: inside one transaction, locks the event row
+ * and rechecks that it is locked or sent, then moves the campaign from `from`
+ * to `sending` with a compare-and-set (D95). Unlock and archive refuse while a
+ * campaign is `sending`, so the event can't leave locked or sent mid-send.
+ */
+async function claimCampaign(
+  db: Db,
+  campaign: EmailCampaign,
+  from: EmailCampaign["status"],
+): Promise<ActionResult<EmailCampaign>> {
+  return db.transaction(async (tx) => {
+    const [event] = await tx
+      .select({ status: events.status })
+      .from(events)
+      .where(eq(events.id, campaign.eventId))
+      .for("update");
+    if (!event) return fail("not_found", "That event no longer exists.");
+    if (!SENDABLE_EVENT_STATUSES.includes(event.status)) return fail("locked", NOT_LOCKED_MESSAGE);
+    const [claimed] = await tx
+      .update(emailCampaigns)
+      .set({ status: "sending" })
+      .where(and(eq(emailCampaigns.id, campaign.id), eq(emailCampaigns.status, from)))
+      .returning();
+    if (!claimed) return fail("conflict", "This campaign is already being sent.");
+    return ok(claimed);
+  });
 }
 
 async function loadSendable(
@@ -457,12 +560,9 @@ export async function sendCampaign(
   }
 
   // Claim the campaign so a double click or a second admin can't send it twice.
-  const [claimed] = await db
-    .update(emailCampaigns)
-    .set({ status: "sending" })
-    .where(and(eq(emailCampaigns.id, campaign.id), eq(emailCampaigns.status, "draft")))
-    .returning();
-  if (!claimed) return fail("conflict", "This campaign is already being sent.");
+  const claim = await claimCampaign(db, campaign, "draft");
+  if (!claim.ok) return claim;
+  const claimed = claim.data;
 
   let recipients: Recipient[];
   try {
@@ -483,7 +583,7 @@ export async function sendCampaign(
     );
   }
 
-  let delivered: { sent: number; failed: number };
+  let delivered: Delivered;
   try {
     delivered = await deliver(db, claimed, recipients);
   } catch (error) {
@@ -535,6 +635,7 @@ export async function sendCampaign(
       sent,
       failed,
       eventAdvanced,
+      ...providerIdProblem(delivered),
     },
   });
   return ok({ campaignId: campaign.id, eventId: event.id, recipients: recipients.length, sent, failed, eventAdvanced });
@@ -559,52 +660,64 @@ export async function resendToBounced(
   const loaded = await loadSendable(db, input.campaignId);
   if (!loaded.ok) return loaded;
   const { campaign, event } = loaded.data;
+  if (campaign.status === "sending") return fail("conflict", "This campaign is already being sent.");
   if (campaign.status !== "sent" && campaign.status !== "failed") {
     return fail("conflict", "Send the campaign before resending to bounced addresses.");
   }
-  const latest = await db
-    .selectDistinctOn([emailMessages.contactType, emailMessages.entityId], {
-      contactType: emailMessages.contactType,
-      entityId: emailMessages.entityId,
-      status: emailMessages.status,
-    })
-    .from(emailMessages)
-    .where(eq(emailMessages.campaignId, campaign.id))
-    .orderBy(emailMessages.contactType, emailMessages.entityId, desc(emailMessages.createdAt));
-  // A failed campaign may have stopped mid-way: messages still queued never
-  // went out, and audience members without a message were never reached.
-  const retryStatuses: readonly EmailMessageStatus[] =
-    campaign.status === "failed" ? [...RESENDABLE_STATUSES, "queued"] : RESENDABLE_STATUSES;
-  const keys = latest
-    .filter((m) => retryStatuses.includes(m.status))
-    .map((m) => recipientKey(m.contactType, m.entityId));
-  if (campaign.status === "failed") {
-    const audience = await resolveAudience(db, event.id, campaign.audience, campaign.selectedRecipients, {
-      links: "existing",
-    });
-    if (!audience.ok) return audience;
-    const messaged = new Set(latest.map((m) => recipientKey(m.contactType, m.entityId)));
-    keys.push(...audience.data.filter((r) => !messaged.has(r.key)).map((r) => r.key));
-  }
-  if (keys.length === 0) return fail("validation", "No message in this campaign bounced or failed.");
+  // Claim it like a first send, so two clicks can't both pick the same
+  // bounced recipients. The status goes back when this finishes.
+  const claim = await claimCampaign(db, campaign, campaign.status);
+  if (!claim.ok) return claim;
+  let restoreTo: EmailCampaign["status"] = campaign.status;
+  try {
+    const latest = await db
+      .selectDistinctOn([emailMessages.contactType, emailMessages.entityId], {
+        contactType: emailMessages.contactType,
+        entityId: emailMessages.entityId,
+        status: emailMessages.status,
+      })
+      .from(emailMessages)
+      .where(eq(emailMessages.campaignId, campaign.id))
+      .orderBy(emailMessages.contactType, emailMessages.entityId, desc(emailMessages.createdAt));
+    // A failed campaign may have stopped mid-way: messages still queued never
+    // went out, and audience members without a message were never reached.
+    const retryStatuses: readonly EmailMessageStatus[] =
+      campaign.status === "failed" ? [...RESENDABLE_STATUSES, "queued"] : RESENDABLE_STATUSES;
+    const keys = latest
+      .filter((m) => retryStatuses.includes(m.status))
+      .map((m) => recipientKey(m.contactType, m.entityId));
+    if (campaign.status === "failed") {
+      const audience = await resolveAudience(db, event.id, campaign.audience, campaign.selectedRecipients, {
+        links: "existing",
+      });
+      if (!audience.ok) return audience;
+      const messaged = new Set(latest.map((m) => recipientKey(m.contactType, m.entityId)));
+      keys.push(...audience.data.filter((r) => !messaged.has(r.key)).map((r) => r.key));
+    }
+    if (keys.length === 0) return fail("validation", "No message in this campaign bounced or failed.");
 
-  const resolved = await resolveAudience(db, event.id, "selected", keys, { links: "issue" });
-  if (!resolved.ok) return resolved;
-  if (resolved.data.length === 0) {
-    return fail("validation", "Everyone whose email bounced has since been withdrawn or has no email address.");
+    const resolved = await resolveAudience(db, event.id, "selected", keys, { links: "issue" });
+    if (!resolved.ok) return resolved;
+    if (resolved.data.length === 0) {
+      return fail("validation", "Everyone whose email bounced has since been withdrawn or has no email address.");
+    }
+    const delivered = await deliver(db, campaign, resolved.data);
+    const { sent, failed } = delivered;
+    if (sent > 0) restoreTo = "sent";
+    const eventAdvanced = sent > 0 ? await advanceStatus(db, event.id, "locked", "sent") : false;
+    await recordAudit(db, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "email.resend",
+      entityType: "email_campaign",
+      entityId: campaign.id,
+      after: { recipients: resolved.data.length, sent, failed, eventAdvanced, ...providerIdProblem(delivered) },
+    });
+    return ok({ campaignId: campaign.id, eventId: event.id, recipients: resolved.data.length, sent, failed, eventAdvanced });
+  } finally {
+    await db
+      .update(emailCampaigns)
+      .set({ status: restoreTo })
+      .where(and(eq(emailCampaigns.id, campaign.id), eq(emailCampaigns.status, "sending")));
   }
-  const { sent, failed } = await deliver(db, campaign, resolved.data);
-  if (sent > 0 && campaign.status === "failed") {
-    await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
-  }
-  const eventAdvanced = sent > 0 ? await advanceStatus(db, event.id, "locked", "sent") : false;
-  await recordAudit(db, {
-    eventId: event.id,
-    adminId: input.adminId,
-    action: "email.resend",
-    entityType: "email_campaign",
-    entityId: campaign.id,
-    after: { recipients: resolved.data.length, sent, failed, eventAdvanced },
-  });
-  return ok({ campaignId: campaign.id, eventId: event.id, recipients: resolved.data.length, sent, failed, eventAdvanced });
 }

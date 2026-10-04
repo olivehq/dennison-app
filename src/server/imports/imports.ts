@@ -21,9 +21,11 @@ import {
 } from "@/lib/schemas/import";
 import { deleteFile, getFile, importFileKey, putFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
+import { claimEditableEvent, EventChangedError, eventChangedResult } from "@/server/events/editable";
+import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { fullNameFor } from "@/server/roster/display-name";
-import { loadEditableEvent } from "@/server/roster/editable";
+import { inEditableTransaction, loadEditableEvent } from "@/server/roster/editable";
 import { revokeTokens } from "@/server/roster/roster";
 import {
   isStructuralFailure,
@@ -143,7 +145,7 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
 
   const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer);
   const state = importStateFor(evaluation.status, evaluation.report);
-  await db.transaction(async (tx) => {
+  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
     await tx.insert(imports).values({
       id: importId,
       eventId: input.eventId,
@@ -164,6 +166,11 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
       after: { kind: input.kind, fileName: input.filename, state, counts: evaluation.report.counts },
     });
   });
+  if (!saved.ok) {
+    // Locked or archived while the file was parsed: the row was never written, so the file goes too.
+    await deleteFile(key).catch(() => undefined);
+    return saved;
+  }
   return ok({ importId, state, report: evaluation.report });
 }
 
@@ -177,21 +184,27 @@ async function readStoredFile(row: Import): Promise<Buffer | null> {
   return stored?.body ?? null;
 }
 
-/** Re-parses the stored file against the current roster and aliases and updates the report. */
-export async function revalidateImport(db: Db, row: Import): Promise<ImportState> {
+/**
+ * Re-parses the stored file against the current roster and aliases and updates
+ * the report. A compare-and-set on the status read: an import applied or
+ * deleted meanwhile is left alone and the result is null.
+ */
+export async function revalidateImport(db: Db, row: Import): Promise<ImportState | null> {
   if (row.status === "applied") return "applied";
   const buffer = await readStoredFile(row);
   const evaluation: Evaluation = buffer
     ? await evaluate(db, row.eventId, row.kind, buffer)
     : { status: "failed", report: failedReport("The uploaded file is no longer in storage. Upload it again.") };
-  await db
+  const updated = await db
     .update(imports)
     .set({
       status: evaluation.status,
       validation: evaluation.report,
       rowCount: evaluation.status === "failed" ? null : evaluation.report.counts.rows,
     })
-    .where(eq(imports.id, row.id));
+    .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
+    .returning({ id: imports.id });
+  if (updated.length === 0) return null;
   return importStateFor(evaluation.status, evaluation.report);
 }
 
@@ -202,7 +215,8 @@ async function revalidatePending(db: Db, eventId: string): Promise<{ importId: s
     .where(and(eq(imports.eventId, eventId), eq(imports.status, "validated")));
   const results = [];
   for (const row of pending) {
-    results.push({ importId: row.id, kind: row.kind, state: await revalidateImport(db, row) });
+    const state = await revalidateImport(db, row);
+    if (state) results.push({ importId: row.id, kind: row.kind, state });
   }
   return results;
 }
@@ -256,7 +270,7 @@ export async function saveAliases(
     canonicalNames.push(canonicalName);
   }
 
-  const aliasIds = await db.transaction(async (tx) => {
+  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
     const ids: string[] = [];
     for (const [i, alias] of aliases.entries()) {
       const [row] = await tx
@@ -286,8 +300,9 @@ export async function saveAliases(
     }
     return ids;
   });
+  if (!saved.ok) return saved;
   const revalidated = await revalidatePending(db, input.eventId);
-  return ok({ aliasIds, imports: revalidated });
+  return ok({ aliasIds: saved.data, imports: revalidated });
 }
 
 /** Maps one raw name to an entity (source manual) and re-validates every pending import of the event. */
@@ -381,6 +396,8 @@ async function applyRankings(
   analysis: RankingAnalysis,
 ): Promise<Pick<ApplySummary, "rankingsDeleted" | "rankingsWritten" | "optedIn" | "optedOut">> {
   // Replace: everything written by earlier imports of this kind goes away first.
+  // The caller holds the event row lock, so another apply of this kind has
+  // either committed (and is in this list) or waits for this one.
   const previous = await db
     .select({ id: imports.id })
     .from(imports)
@@ -492,10 +509,14 @@ export async function applyImport(
     );
   }
 
-  const event = loaded.event;
   let summary: ApplySummary;
   try {
     summary = await db.transaction(async (tx) => {
+      // Lock the event row while it is editable (D85): a lock or archive since
+      // the check above is a conflict, and applies of one event run one at a time.
+      await claimEditableEvent(tx, row.eventId);
+      // Settings (the biztech rule) as they are under the lock.
+      const event = (await getEvent(row.eventId, tx))!;
       const result: ApplySummary = {
         kind: row.kind,
         created: 0,
@@ -540,10 +561,11 @@ export async function applyImport(
     if (error instanceof ImportStatusChanged) {
       return fail("conflict", "This import was applied or changed by someone else. Reload the page.");
     }
+    if (error instanceof EventChangedError) return eventChangedResult(error)!;
     throw error;
   }
   // A roster change can resolve (or break) names in ranking files waiting to be applied.
-  if (!isRankingKind(row.kind)) await revalidatePending(db, event.id);
+  if (!isRankingKind(row.kind)) await revalidatePending(db, row.eventId);
   return ok({ importId: row.id, summary });
 }
 
@@ -560,7 +582,7 @@ export async function deleteImportRecord(
   const loaded = await loadEditableEvent(db, row.eventId);
   if (!loaded.ok) return loaded.error;
 
-  const rankingsDeleted = await db.transaction(async (tx) => {
+  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
     const deleted = await tx.delete(rankings).where(eq(rankings.importId, row.id)).returning({ id: rankings.id });
     await tx.delete(imports).where(eq(imports.id, row.id));
     await recordAudit(tx, {
@@ -573,6 +595,8 @@ export async function deleteImportRecord(
     });
     return deleted.length;
   });
+  if (!done.ok) return done;
+  const rankingsDeleted = done.data;
   // After the commit, so a failed delete never leaves a row pointing at no file.
   try {
     await deleteFile(row.fileKey);

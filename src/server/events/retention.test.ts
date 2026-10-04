@@ -20,7 +20,9 @@ import { listAudit, recordAudit } from "@/server/audit/audit";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule } from "@/server/schedule/lock";
+import { setRetainData } from "./events";
 import { deleteExpiredParticipantData, retentionDeadline, retentionDeleteDate } from "./retention";
+import { raceBeforeTransaction } from "./test-race";
 
 let db: Db;
 
@@ -188,5 +190,18 @@ describe("deleteExpiredParticipantData", () => {
     const again = await listAudit({ eventId: due.eventId, filters: { action: "event.retention_delete" } }, db);
     expect(again.total).toBe(1);
     expect(again.rows[0].after).toMatchObject({ deleted: { participants: 12 } });
+  });
+
+  it("rechecks retainData under the row lock and skips an event that no longer qualifies", async () => {
+    const event = await fullEvent();
+    const before = await countFor(event.eventId);
+    // D&A's "keep the data" lands after the cron read the due list, before it deletes.
+    const raced = raceBeforeTransaction(db, () => setRetainData(db, event.eventId, true, event.adminId));
+    const results = await deleteExpiredParticipantData(raced, new Date("2027-02-10T09:00:00Z"));
+    expect(results.map((r) => r.eventId)).not.toContain(event.eventId);
+    expect(await countFor(event.eventId)).toEqual(before);
+    expect((await db.select().from(events).where(eq(events.id, event.eventId)))[0].status).toBe("locked");
+    expect(await getFile(event.fileKey)).not.toBeNull();
+    expect((await listAudit({ eventId: event.eventId, filters: { action: "event.retention_delete" } }, db)).total).toBe(0);
   });
 });

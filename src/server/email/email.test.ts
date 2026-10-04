@@ -1,9 +1,10 @@
 import { createHmac } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
 import { auditEvents, emailCampaigns, emailMessages, events, participants, type EmailCampaign } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
+import { getEvent } from "@/server/events/queries";
 import { clearLoggedEmails, getLoggedEmails, sendBatch } from "@/lib/email/adapter";
 import { campaignFieldsSchema, recipientKey, type CampaignFieldsInput } from "@/lib/schemas/email";
 import { getActiveRun } from "@/server/matching/queries";
@@ -15,7 +16,9 @@ import { verifyToken } from "@/server/tokens/tokens";
 import {
   createCampaign,
   duplicateCampaign,
+  NOT_LOCKED_MESSAGE,
   previewCampaign,
+  PROVIDER_ID_WRITE_ATTEMPTS,
   resendToBounced,
   sendCampaign,
   sendTest,
@@ -36,6 +39,11 @@ import { handleResendWebhook, recordDeliveryEvent } from "./webhook";
 vi.mock("@/lib/email/adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/email/adapter")>();
   return { ...actual, sendBatch: vi.fn(actual.sendBatch) };
+});
+
+vi.mock("@/server/events/queries", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/events/queries")>();
+  return { ...actual, getEvent: vi.fn(actual.getEvent) };
 });
 
 vi.mock("./schedule-hash", async (importOriginal) => {
@@ -131,6 +139,21 @@ describe("before lock", () => {
     expect(sent.ok).toBe(false);
     expect(!sent.ok && sent.error.code).toBe("locked");
     expect(await messagesOf(draft.id)).toHaveLength(0);
+  });
+
+  it("refuses when the event left locked between the check and the claim", async () => {
+    const draft = await newDraft();
+    const current = (await getEvent(seeded.eventId, db))!;
+    expect(current.status).toBe("matched");
+    // The pre-check reads a stale "locked"; the claim rereads the row under a lock.
+    vi.mocked(getEvent).mockResolvedValueOnce({ ...current, status: "locked" });
+    clearLoggedEmails();
+    const sent = await sendCampaign(db, { campaignId: draft.id, adminId: seeded.adminId });
+    expect(!sent.ok && sent.error).toMatchObject({ code: "locked", message: NOT_LOCKED_MESSAGE });
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.id));
+    expect(row.status).toBe("draft");
+    expect(await messagesOf(draft.id)).toHaveLength(0);
+    expect(getLoggedEmails()).toHaveLength(0);
   });
 
   it("previews without issuing links", async () => {
@@ -522,5 +545,160 @@ describe("webhook handler", () => {
     expect(warn).toHaveBeenCalledOnce();
     expect((await handleResendWebhook(db, request, { secret: undefined, isProduction: true })).status).toBe(500);
     warn.mockRestore();
+  });
+});
+
+/** A fresh locked event with one campaign sent to everyone. */
+async function sentCampaignOnNewEvent() {
+  const other = await seedEvent(db);
+  const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+  if (!run.ok) throw new Error(run.error.message);
+  const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+  if (!locked.ok) throw new Error(locked.error.message);
+  const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+  if (!created.ok) throw new Error(created.error.message);
+  const sent = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+  if (!sent.ok) throw new Error(sent.error.message);
+  return { other, campaign: created.data, recipients: sent.data.recipients };
+}
+
+async function campaignStatus(campaignId: string) {
+  const [row] = await db.select({ status: emailCampaigns.status }).from(emailCampaigns).where(eq(emailCampaigns.id, campaignId));
+  return row.status;
+}
+
+describe("archived events", () => {
+  it("refuses to edit or test-send a campaign", async () => {
+    const other = await seedEvent(db);
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, other.eventId));
+
+    const edit = await updateCampaign(db, {
+      campaignId: created.data.id,
+      adminId: other.adminId,
+      fields: fieldsOf(created.data, { subject: "Changed" }),
+    });
+    expect(!edit.ok && edit.error).toMatchObject({ code: "locked", message: "This event is archived." });
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, created.data.id));
+    expect(row.subject).toBe(created.data.subject);
+
+    clearLoggedEmails();
+    const test = await sendTest(db, { campaignId: created.data.id, toEmail: "admin@example.com", adminId: other.adminId });
+    expect(!test.ok && test.error).toMatchObject({ code: "locked", message: "This event is archived." });
+    expect(getLoggedEmails()).toHaveLength(0);
+  });
+});
+
+describe("resend to bounced claims the campaign", () => {
+  it("sends once when clicked twice at the same time", async () => {
+    const { campaign } = await sentCampaignOnNewEvent();
+    const [first, second] = await messagesOf(campaign.id);
+    await db.update(emailMessages).set({ status: "bounced" }).where(inArray(emailMessages.id, [first.id, second.id]));
+
+    clearLoggedEmails();
+    const results = await Promise.all([
+      resendToBounced(db, { campaignId: campaign.id, adminId: seeded.adminId }),
+      resendToBounced(db, { campaignId: campaign.id, adminId: seeded.adminId }),
+    ]);
+    const succeeded = results.filter((r) => r.ok);
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0].ok && succeeded[0].data).toMatchObject({ recipients: 2, sent: 2 });
+    const refused = results.find((r) => !r.ok);
+    expect(!refused?.ok && refused?.error.code).toBe("conflict");
+    expect(getLoggedEmails()).toHaveLength(2);
+    expect(await campaignStatus(campaign.id)).toBe("sent");
+  });
+
+  it("refuses when the event left locked or sent between the check and the claim", async () => {
+    const { other, campaign } = await sentCampaignOnNewEvent();
+    const [first] = await messagesOf(campaign.id);
+    await db.update(emailMessages).set({ status: "bounced" }).where(eq(emailMessages.id, first.id));
+    const current = (await getEvent(other.eventId, db))!;
+    expect(current.status).toBe("sent");
+    await db.update(events).set({ status: "matched" }).where(eq(events.id, other.eventId));
+    vi.mocked(getEvent).mockResolvedValueOnce(current);
+
+    clearLoggedEmails();
+    const result = await resendToBounced(db, { campaignId: campaign.id, adminId: other.adminId });
+    expect(!result.ok && result.error).toMatchObject({ code: "locked", message: NOT_LOCKED_MESSAGE });
+    expect(getLoggedEmails()).toHaveLength(0);
+    expect(await campaignStatus(campaign.id)).toBe("sent");
+  });
+});
+
+describe("a database failure after the provider accepted a batch", () => {
+  /** Makes the next `times` writes to email_messages throw; everything else goes through. */
+  function failMessageWrites(times: number) {
+    const original = db.update.bind(db);
+    let left = times;
+    return vi.spyOn(db, "update").mockImplementation(((table: Parameters<Db["update"]>[0]) => {
+      if (table !== emailMessages || left === 0) return original(table);
+      left--;
+      return { set: () => ({ where: () => Promise.reject(new Error("database went away")) }) };
+    }) as unknown as Db["update"]);
+  }
+
+  it("marks the messages sent without provider ids, records why, and resend skips them", async () => {
+    const { other } = await sentCampaignOnNewEvent();
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const update = failMessageWrites(PROVIDER_ID_WRITE_ATTEMPTS);
+    clearLoggedEmails();
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    update.mockRestore();
+    error.mockRestore();
+
+    expect(result.ok && result.data).toMatchObject({ sent: getLoggedEmails().length, failed: 0 });
+    const rows = await messagesOf(created.data.id);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((m) => m.status === "sent" && m.providerMessageId === null && m.sentAt)).toBe(true);
+    expect(await campaignStatus(created.data.id)).toBe("sent");
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
+    expect(audit.after).toMatchObject({ sentWithoutIds: rows.length, providerIdError: "database went away" });
+
+    const resend = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(!resend.ok && resend.error.code).toBe("validation");
+  });
+
+  it("saves the provider ids when a retry succeeds", async () => {
+    const { other } = await sentCampaignOnNewEvent();
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const update = failMessageWrites(PROVIDER_ID_WRITE_ATTEMPTS - 1);
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    update.mockRestore();
+
+    expect(result.ok && result.data.failed).toBe(0);
+    const rows = await messagesOf(created.data.id);
+    expect(rows.every((m) => m.status === "sent" && m.providerMessageId)).toBe(true);
+    expect(new Set(rows.map((m) => m.providerMessageId)).size).toBe(rows.length);
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
+    expect(audit.after).not.toHaveProperty("sentWithoutIds");
+  });
+
+  it("still marks a batch the provider refused as failed", async () => {
+    const { other } = await sentCampaignOnNewEvent();
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    vi.mocked(sendBatch).mockRejectedValueOnce(new Error("Resend is down"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    error.mockRestore();
+
+    expect(result.ok && result.data).toMatchObject({ sent: 0 });
+    const rows = await messagesOf(created.data.id);
+    expect(rows.every((m) => m.status === "failed" && m.providerMessageId === null)).toBe(true);
+    expect(await campaignStatus(created.data.id)).toBe("failed");
   });
 });

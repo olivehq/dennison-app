@@ -1,8 +1,9 @@
-import { and, desc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
+  events,
   participants,
   suppliers,
   type AccessToken,
@@ -290,6 +291,9 @@ const tokenIdSchema = z.uuid();
 
 type TokenContext = { row: AccessToken; event: Event };
 
+const ARCHIVED_MESSAGE = "This event is archived and can't be changed.";
+const WITHDRAWN_MESSAGE = "This person has withdrawn. Restore them before giving them a new link.";
+
 /**
  * Loads a token for a link action, refusing archived events and, unless
  * `allowWithdrawn`, people who withdrew. Links are allowed on locked and sent
@@ -306,11 +310,49 @@ async function loadTokenForChange(
   if (!row) return fail("not_found", "That link no longer exists.");
   const event = await getEvent(row.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  if (event.status === "archived") return fail("locked", "This event is archived and can't be changed.");
+  if (event.status === "archived") return fail("locked", ARCHIVED_MESSAGE);
   if (!options.allowWithdrawn && (await contactStatus(db, row)) !== "active") {
-    return fail("conflict", "This person has withdrawn. Restore them before giving them a new link.");
+    return fail("conflict", WITHDRAWN_MESSAGE);
   }
   return ok({ row, event });
+}
+
+/** Thrown inside a link transaction to roll it back and return `result`. */
+class LinkRefused extends Error {
+  constructor(readonly result: ActionResult<never>) {
+    super(result.ok ? "" : result.error.message);
+  }
+}
+
+/**
+ * The checks of `loadTokenForChange` again, inside the transaction: lock the
+ * event row while it is not archived (archive, and roster withdrawals through
+ * `claimEditableEvent`, take the same row), then re-read the person.
+ */
+async function recheckInTransaction(
+  tx: Db,
+  row: Pick<AccessToken, "eventId" | "contactType" | "entityId">,
+  options: { allowWithdrawn: boolean },
+): Promise<void> {
+  const [event] = await tx
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, row.eventId), ne(events.status, "archived")))
+    .for("update");
+  if (!event) throw new LinkRefused(fail("locked", ARCHIVED_MESSAGE));
+  if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
+    throw new LinkRefused(fail("conflict", WITHDRAWN_MESSAGE));
+  }
+}
+
+/** Runs a link transaction, turning `LinkRefused` into its result. */
+async function inLinkTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return ok(await db.transaction(work));
+  } catch (error) {
+    if (error instanceof LinkRefused) return error.result;
+    throw error;
+  }
 }
 
 async function contactStatus(db: Db, row: Pick<AccessToken, "contactType" | "entityId">): Promise<string | null> {
@@ -336,7 +378,8 @@ export async function revokeToken(
   if (!loaded.ok) return loaded;
   const { row } = loaded.data;
   if (row.revokedAt) return ok({ tokenId: row.id, eventId: row.eventId });
-  await db.transaction(async (tx) => {
+  const done = await inLinkTransaction(db, async (tx) => {
+    await recheckInTransaction(tx, row, { allowWithdrawn: true });
     const changed = await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })
@@ -352,6 +395,7 @@ export async function revokeToken(
       after: { contactType: row.contactType, entityId: row.entityId },
     });
   });
+  if (!done.ok) return done;
   return ok({ tokenId: row.id, eventId: row.eventId });
 }
 
@@ -372,7 +416,8 @@ export async function regenerateToken(
   if (!loaded.ok) return loaded;
   const { row, event } = loaded.data;
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  const issued = await db.transaction(async (tx) => {
+  const issued = await inLinkTransaction(db, async (tx) => {
+    await recheckInTransaction(tx, row, { allowWithdrawn: false });
     await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })
@@ -400,7 +445,8 @@ export async function regenerateToken(
     });
     return fresh;
   });
-  return ok({ ...issued, previousTokenId: row.id, eventId: row.eventId });
+  if (!issued.ok) return issued;
+  return ok({ ...issued.data, previousTokenId: row.id, eventId: row.eventId });
 }
 
 /**

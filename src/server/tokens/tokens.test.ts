@@ -5,6 +5,7 @@ import { accessTokens, auditEvents, events, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
 import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
+import { raceBeforeTransaction } from "@/server/events/test-race";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { issueAccessList, listTokens } from "./queries";
 import {
@@ -298,5 +299,28 @@ describe("regenerate and revoke rules", () => {
     const archivedRevoke = await revokeToken(db, live[0].id, fresh.adminId);
     expect(!archivedRevoke.ok && archivedRevoke.error.code).toBe("locked");
   });
-});
 
+  it("recheck archive and withdrawal inside the transaction", async () => {
+    const fresh = await seedEvent(db);
+    const result = await issueTokensForEvent(db, fresh.eventId);
+    if (!result.ok) throw new Error(result.error.message);
+    const buyer = result.data.find((t) => t.contactType === "buyer")!;
+    const supplier = result.data.find((t) => t.contactType === "supplier_admin")!;
+
+    // The person withdraws after regenerate's check, before its write.
+    const withdraw = () => db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, buyer.entityId));
+    const refused = await regenerateToken(raceBeforeTransaction(db, withdraw), buyer.tokenId, fresh.adminId);
+    expect(refused).toEqual({
+      ok: false,
+      error: { code: "conflict", message: "This person has withdrawn. Restore them before giving them a new link." },
+    });
+    expect((await db.select().from(accessTokens).where(eq(accessTokens.id, buyer.tokenId)))[0].revokedAt).toBeNull();
+
+    // The event is archived after revoke's check, before its write.
+    const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, fresh.eventId));
+    const archived = await revokeToken(raceBeforeTransaction(db, archive), supplier.tokenId, fresh.adminId);
+    expect(archived).toEqual({ ok: false, error: { code: "locked", message: "This event is archived and can't be changed." } });
+    expect((await db.select().from(accessTokens).where(eq(accessTokens.id, supplier.tokenId)))[0].revokedAt).toBeNull();
+    expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, supplier.tokenId))).toHaveLength(0);
+  });
+});

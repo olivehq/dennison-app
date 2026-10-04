@@ -1,9 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { accessTokens, admins, appointments, auditEvents, events, matchRuns, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { raceBeforeTransaction } from "@/server/events/test-race";
 import { displayNameFor, getParticipant, getSupplier, listParticipants, listSuppliers } from "./queries";
 import {
   restoreParticipant,
@@ -257,5 +259,54 @@ describe("locked events", () => {
     for (const result of results) {
       expect(result).toMatchObject({ ok: false, error: { code: "locked" } });
     }
+  });
+});
+
+describe("editability under the event row lock (D85)", () => {
+  it("a withdraw refuses when the event was locked after its check, and writes nothing", async () => {
+    const event = await createEvent("Race withdraw");
+    const [person] = await db.insert(suppliers).values({ eventId: event, name: "Late Lodge", type: "hotel" }).returning();
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, event));
+    const result = await withdrawSupplier(raceBeforeTransaction(db, lock), { id: person.id, adminId });
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect((await getSupplier(person.id, db))?.status).toBe("active");
+    expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, person.id))).toHaveLength(0);
+  });
+});
+
+describe("restoring a supplier whose desk was taken", () => {
+  it("clears the desk and says so in the result and the audit note", async () => {
+    const event = await createEvent("Desk restore");
+    const [gone] = await db
+      .insert(suppliers)
+      .values({ eventId: event, name: "Gone Inn", type: "hotel", deskNumber: 5, deskOverride: true })
+      .returning();
+    expect((await withdrawSupplier(db, { id: gone.id, adminId })).ok).toBe(true);
+    const [taker] = await db.insert(suppliers).values({ eventId: event, name: "New Inn", type: "hotel" }).returning();
+    expect((await setSupplierDesk(db, { id: taker.id, deskNumber: 5, adminId })).ok).toBe(true);
+
+    const note = "Desk 5 is now assigned to New Inn, so the desk was cleared. Reassign desks or set one by hand.";
+    expect(await restoreSupplier(db, { id: gone.id, adminId })).toEqual({ ok: true, data: { id: gone.id, note } });
+    expect(await getSupplier(gone.id, db)).toMatchObject({ status: "active", deskNumber: null, deskOverride: false });
+    expect(await getSupplier(taker.id, db)).toMatchObject({ deskNumber: 5, deskOverride: true });
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "supplier.restore"), eq(auditEvents.entityId, gone.id)));
+    expect(audit).toMatchObject({
+      entityId: gone.id,
+      note,
+      before: { status: "withdrawn", deskNumber: 5, deskOverride: true },
+      after: { status: "active", deskNumber: null, deskOverride: false },
+    });
+
+    // A desk nobody took comes back with the supplier.
+    const [kept] = await db
+      .insert(suppliers)
+      .values({ eventId: event, name: "Kept Inn", type: "hotel", deskNumber: 8, deskOverride: true })
+      .returning();
+    await withdrawSupplier(db, { id: kept.id, adminId });
+    expect(await restoreSupplier(db, { id: kept.id, adminId })).toEqual({ ok: true, data: { id: kept.id } });
+    expect(await getSupplier(kept.id, db)).toMatchObject({ deskNumber: 8, deskOverride: true });
   });
 });

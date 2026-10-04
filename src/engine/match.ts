@@ -99,8 +99,9 @@ function createState(input: MatchInput): State {
 
 /**
  * Pinned rows are placed first and never moved. Rows that name a withdrawn
- * or unknown person, or that break a hard constraint against an earlier
- * pinned row, are dropped with a warning instead of corrupting the schedule.
+ * or unknown person, pair people who are no longer eligible (an N/A or a
+ * biztech opt-out after a re-import), or break a hard constraint against an
+ * earlier pinned row, are dropped with a warning instead of corrupting the schedule.
  */
 function placePinned(state: State, pinned: Appointment[]) {
   const sorted = sortAppointments(pinned);
@@ -122,6 +123,13 @@ function pinnedProblem(state: State, row: Appointment, kept: Appointment[]): str
   if (!state.buyerById.has(row.buyerId)) return 'buyer is withdrawn or unknown';
   if (!state.supplierById.has(row.supplierId)) return 'supplier is withdrawn or unknown';
   if (row.slot < 1 || row.slot > state.settings.slotCount) return 'slot is out of range';
+  const buyer = state.buyerById.get(row.buyerId)!;
+  const supplier = state.supplierById.get(row.supplierId)!;
+  if (!isEligible(buyer, supplier, state.ctx)) {
+    return state.index.isRejected(buyer.id, supplier.id)
+      ? `${buyer.id} marked ${supplier.id} as N/A`
+      : `${buyer.id} is not opted in to business meetings`;
+  }
   if (findConflicts([...kept, row]).length > 0) return 'conflicts with another pinned appointment';
   return null;
 }
