@@ -13,7 +13,7 @@ import {
 } from "./admins";
 import { requireAdmin } from "./session";
 
-export const TEAM_PATH = "/team";
+const TEAM_PATH = "/team";
 
 const idSchema = z.string().min(1);
 

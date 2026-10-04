@@ -7,9 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-atkinson), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -27,6 +28,7 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -39,6 +41,21 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  /* Schedule semantics from the 03 Resource timeline design. */
+  --color-hotel: var(--hotel);
+  --color-hotel-foreground: var(--hotel-foreground);
+  --color-hotel-tint: var(--hotel-tint);
+  --color-hotel-ink: var(--hotel-ink);
+  --color-business: var(--business);
+  --color-business-foreground: var(--business-foreground);
+  --color-business-tint: var(--business-tint);
+  --color-business-ink: var(--business-ink);
+  --color-mutual: var(--mutual);
+  --color-now: var(--now);
+  --color-now-foreground: var(--now-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-open: var(--open);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -48,73 +65,115 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * Palette: putty ground, umber ink, pool teal for hotels, marigold for
+ * business, cue red for the now line only, oxblood for count problems.
+ * Values copied from designs/03-resource-timeline/index.html.
+ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.375rem;
+  --background: oklch(0.952 0.006 75);
+  --foreground: oklch(0.25 0.015 60);
+  --card: oklch(0.985 0.003 75);
+  --card-foreground: oklch(0.25 0.015 60);
+  --popover: oklch(0.99 0.002 75);
+  --popover-foreground: oklch(0.25 0.015 60);
+  --primary: oklch(0.29 0.02 60);
+  --primary-foreground: oklch(0.98 0.004 75);
+  --secondary: oklch(0.915 0.008 75);
+  --secondary-foreground: oklch(0.27 0.015 60);
+  --muted: oklch(0.928 0.007 75);
+  --muted-foreground: oklch(0.48 0.015 60);
+  --accent: oklch(0.91 0.012 75);
+  --accent-foreground: oklch(0.25 0.015 60);
+  --destructive: oklch(0.53 0.19 27);
+  --destructive-foreground: oklch(0.985 0.01 27);
+  --border: oklch(0.87 0.008 75);
+  --input: oklch(0.82 0.01 75);
+  --ring: oklch(0.42 0.09 235);
+  --chart-1: oklch(0.53 0.105 185);
+  --chart-2: oklch(0.8 0.155 78);
+  --chart-3: oklch(0.29 0.02 60);
+  --chart-4: oklch(0.7 0.02 70);
+  --chart-5: oklch(0.53 0.19 27);
+  --sidebar: oklch(0.985 0.003 75);
+  --sidebar-foreground: oklch(0.25 0.015 60);
+  --sidebar-primary: oklch(0.29 0.02 60);
+  --sidebar-primary-foreground: oklch(0.98 0.004 75);
+  --sidebar-accent: oklch(0.91 0.012 75);
+  --sidebar-accent-foreground: oklch(0.25 0.015 60);
+  --sidebar-border: oklch(0.87 0.008 75);
+  --sidebar-ring: oklch(0.42 0.09 235);
+
+  /* custom semantic tokens */
+  --hotel: oklch(0.53 0.105 185);
+  --hotel-foreground: oklch(0.985 0.012 185);
+  --hotel-tint: oklch(0.905 0.045 185);
+  --hotel-ink: oklch(0.34 0.07 190);
+  --business: oklch(0.8 0.155 78);
+  --business-foreground: oklch(0.27 0.06 60);
+  --business-tint: oklch(0.945 0.06 88);
+  --business-ink: oklch(0.38 0.08 65);
+  --mutual: var(--foreground);
+  --now: oklch(0.6 0.22 25);
+  --now-foreground: oklch(0.99 0.01 25);
+  --warning: oklch(0.72 0.14 58);
+  --warning-foreground: oklch(0.3 0.07 50);
+  --open: oklch(0.72 0.012 70);
 }
 
+/*
+ * Dark: same hues, lightness inverted. Teal and marigold are lifted so they
+ * keep AA contrast against the dark umber ground; red stays for the now line.
+ */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.21 0.012 60);
+  --foreground: oklch(0.93 0.008 75);
+  --card: oklch(0.25 0.012 60);
+  --card-foreground: oklch(0.93 0.008 75);
+  --popover: oklch(0.26 0.012 60);
+  --popover-foreground: oklch(0.93 0.008 75);
+  --primary: oklch(0.92 0.01 75);
+  --primary-foreground: oklch(0.23 0.015 60);
+  --secondary: oklch(0.31 0.012 60);
+  --secondary-foreground: oklch(0.93 0.008 75);
+  --muted: oklch(0.3 0.012 60);
+  --muted-foreground: oklch(0.72 0.012 70);
+  --accent: oklch(0.32 0.014 60);
+  --accent-foreground: oklch(0.95 0.008 75);
+  --destructive: oklch(0.7 0.17 27);
+  --destructive-foreground: oklch(0.16 0.03 27);
+  --border: oklch(0.36 0.012 60);
+  --input: oklch(0.42 0.012 60);
+  --ring: oklch(0.7 0.09 235);
+  --chart-1: oklch(0.7 0.1 185);
+  --chart-2: oklch(0.8 0.155 78);
+  --chart-3: oklch(0.92 0.01 75);
+  --chart-4: oklch(0.55 0.02 70);
+  --chart-5: oklch(0.7 0.17 27);
+  --sidebar: oklch(0.23 0.012 60);
+  --sidebar-foreground: oklch(0.93 0.008 75);
+  --sidebar-primary: oklch(0.92 0.01 75);
+  --sidebar-primary-foreground: oklch(0.23 0.015 60);
+  --sidebar-accent: oklch(0.32 0.014 60);
+  --sidebar-accent-foreground: oklch(0.95 0.008 75);
+  --sidebar-border: oklch(0.36 0.012 60);
+  --sidebar-ring: oklch(0.7 0.09 235);
+
+  --hotel: oklch(0.7 0.1 185);
+  --hotel-foreground: oklch(0.18 0.03 190);
+  --hotel-tint: oklch(0.33 0.05 185);
+  --hotel-ink: oklch(0.86 0.07 185);
+  --business: oklch(0.8 0.155 78);
+  --business-foreground: oklch(0.27 0.06 60);
+  --business-tint: oklch(0.36 0.06 80);
+  --business-ink: oklch(0.9 0.1 85);
+  --mutual: var(--foreground);
+  --now: oklch(0.68 0.2 25);
+  --now-foreground: oklch(0.15 0.03 25);
+  --warning: oklch(0.78 0.14 60);
+  --warning-foreground: oklch(0.25 0.06 50);
+  --open: oklch(0.5 0.012 70);
 }
 
 @layer base {
@@ -126,5 +185,6 @@
   }
   html {
     @apply font-sans;
+    -webkit-text-size-adjust: 100%;
   }
 }

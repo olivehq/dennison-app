@@ -1,0 +1,115 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+import { getDb } from "@/db/client";
+import { fromZod, type ActionResult } from "@/lib/errors";
+import { requireAdmin } from "@/server/auth/session";
+import { getParticipant, getSupplier } from "./queries";
+import {
+  saveParticipantSchema,
+  saveSupplierSchema,
+  setBiztechOptInSchema,
+  setSupplierDeskSchema,
+} from "./schemas";
+import {
+  restoreParticipant,
+  restoreSupplier,
+  setBiztechOptIn,
+  setSupplierDesk,
+  upsertParticipant,
+  upsertSupplier,
+  withdrawParticipant,
+  withdrawSupplier,
+} from "./roster";
+
+const idSchema = z.uuid();
+
+type IdResult = ActionResult<{ id: string }>;
+
+/** Every roster page lives under the event, so one layout revalidation covers them all. */
+function revalidateEvent(eventId: string): void {
+  revalidatePath(`/events/${eventId}`, "layout");
+}
+
+export async function saveParticipant(input: unknown): Promise<IdResult> {
+  const actor = await requireAdmin();
+  const parsed = saveParticipantSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { eventId, id, ...data } = parsed.data;
+  const result = await upsertParticipant(getDb(), { eventId, id, data, adminId: actor.id });
+  if (result.ok) revalidateEvent(eventId);
+  return result;
+}
+
+async function participantAction(
+  rawId: unknown,
+  run: (input: { id: string; adminId: string }) => Promise<IdResult>,
+): Promise<IdResult> {
+  const actor = await requireAdmin();
+  const parsed = idSchema.safeParse(rawId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await run({ id: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getParticipant(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
+  return result;
+}
+
+export async function withdrawParticipantAction(id: unknown): Promise<IdResult> {
+  return participantAction(id, (input) => withdrawParticipant(getDb(), input));
+}
+
+export async function restoreParticipantAction(id: unknown): Promise<IdResult> {
+  return participantAction(id, (input) => restoreParticipant(getDb(), input));
+}
+
+export async function setBiztechOptInAction(input: unknown): Promise<IdResult> {
+  const parsed = setBiztechOptInSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  return participantAction(parsed.data.id, (base) =>
+    setBiztechOptIn(getDb(), { ...base, optIn: parsed.data.optIn }),
+  );
+}
+
+export async function saveSupplier(input: unknown): Promise<IdResult> {
+  const actor = await requireAdmin();
+  const parsed = saveSupplierSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const { eventId, id, ...data } = parsed.data;
+  const result = await upsertSupplier(getDb(), { eventId, id, data, adminId: actor.id });
+  if (result.ok) revalidateEvent(eventId);
+  return result;
+}
+
+async function supplierAction(
+  rawId: unknown,
+  run: (input: { id: string; adminId: string }) => Promise<IdResult>,
+): Promise<IdResult> {
+  const actor = await requireAdmin();
+  const parsed = idSchema.safeParse(rawId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await run({ id: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getSupplier(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
+  return result;
+}
+
+export async function withdrawSupplierAction(id: unknown): Promise<IdResult> {
+  return supplierAction(id, (input) => withdrawSupplier(getDb(), input));
+}
+
+export async function restoreSupplierAction(id: unknown): Promise<IdResult> {
+  return supplierAction(id, (input) => restoreSupplier(getDb(), input));
+}
+
+export async function setSupplierDeskAction(input: unknown): Promise<IdResult> {
+  const parsed = setSupplierDeskSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  return supplierAction(parsed.data.id, (base) =>
+    setSupplierDesk(getDb(), { ...base, deskNumber: parsed.data.deskNumber }),
+  );
+}

@@ -22,7 +22,7 @@ components/app  ->  components/ui (shadcn)
 | Module | Owns | Key exports |
 |---|---|---|
 | `auth` | Better Auth instance, session helpers, team management, invites | `getAuth()`, `createAuth(db)`, `getSession()`, `requireSession()`, `requireAdmin()`, `inviteAdmin`, `resendInvite`, `disableAdmin`, `enableAdmin`, `listAdmins`, `getInviteByToken` |
-| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `getEvent`, `updateSettings`, `lockSchedule`, `unlockSchedule`, `assignDesks` |
+| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `listEvents`, `getEvent`, `getEventOrThrow`, `getEventCounts`, `createEvent`, `updateEvent`, `updateEventSettings`, `deleteEvent`; later `lockSchedule`, `unlockSchedule`, `assignDesks`. `assertEventEditable(event)` in `events/editable.ts` returns `fail('locked', ...)` for locked, sent, and archived events; every module that mutates event data calls it first |
 | `roster` | Participants and suppliers: list, add, edit, withdraw, restore | `listParticipants`, `upsertParticipant`, `withdrawParticipant`, same for suppliers |
 | `imports` | File upload, parsing (list and matrix formats), validation report, alias mapping, applying rankings | `createImport`, `validateImport`, `saveAlias`, `applyImport` |
 | `matching` | Runs the engine, stores runs, compares runs, activates a run, pins | `runMatching`, `rerunKeepingExisting`, `activateRun`, `compareRuns`, `setPinned` |
@@ -32,7 +32,7 @@ components/app  ->  components/ui (shadcn)
 | `audit` | Writing and reading `audit_events`, undo | `recordAudit`, `listAudit`, `undoAudit` |
 | `tokens` | Participant access tokens: issue, verify, revoke, regenerate | `issueTokensForEvent`, `verifyToken`, `revokeToken` |
 
-Each module has `queries.ts` (reads), `actions.ts` (`'use server'` mutations), and optionally internal helpers. Tests sit beside the code.
+Each module has `queries.ts` (reads), `actions.ts` (`'use server'` mutations), and optionally internal helpers. Tests sit beside the code. Actions are thin: they call `requireAdmin()`, delegate to a plain module that takes the `db` handle (for example `events/events.ts`, `auth/admins.ts`), then `revalidatePath`. Tests exercise the plain module with `createTestDb()`, since `headers()` and `revalidatePath` need a request.
 
 ## Engine contract
 
@@ -74,7 +74,7 @@ Allowed list. Each is built from shadcn primitives. Add a new one only when it h
 - `SlotFilter`: free-in-slot select.
 - `FileDropzone`: upload input with drag and drop.
 - `ConfirmDialog`: AlertDialog with a typed confirmation for destructive actions.
-- `ThemeToggle`: light and dark.
+- `ThemeToggle`: light and dark. `variant="icon"` for toolbars, `variant="menu"` for a sidebar row.
 
 ## Theme
 
