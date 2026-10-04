@@ -5,6 +5,7 @@ import { computeStats, type Appointment } from "@/engine";
 import { defaultEventSettings } from "@/lib/schemas/event-settings";
 import { createEvent } from "@/server/events/events";
 import { upsertParticipant, upsertSupplier } from "@/server/roster/roster";
+import { planDesks } from "@/server/schedule/lock";
 import { createAdminAccount, findAdminId } from "./admin";
 import type { Fixture } from "./fixture";
 import { demoBuyers, demoSupplierContacts } from "./people";
@@ -64,8 +65,12 @@ export async function seedDemo(db: Db, fixture: Fixture): Promise<SeedSummary> {
       `Supplier ${s.name}`,
     );
     supplierIds.set(s.name, id);
-    // 2025 desks were alphabetical, the same rule lock applies (D17), so no override.
-    if (s.desk !== null) await db.update(suppliers).set({ deskNumber: s.desk }).where(eq(suppliers.id, id));
+  }
+  // Desks follow the lock rule (D17) through the same planner, so locking the
+  // demo keeps every number. The 2025 file sorted by code point ("eShow" last).
+  const supplierRows = await db.select().from(suppliers).where(eq(suppliers.eventId, eventId));
+  for (const plan of planDesks(supplierRows)) {
+    await db.update(suppliers).set({ deskNumber: plan.desk }).where(eq(suppliers.id, plan.supplierId));
   }
 
   const buyerIds = new Map<string, string>();

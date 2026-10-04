@@ -15,7 +15,7 @@ export type Db = PgDatabase<PgQueryResultHKT, Schema>;
 /** The handle passed to a `db.transaction(async (tx) => ...)` callback. */
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-export const PGLITE_DATA_DIR = ".data/pglite";
+export const PGLITE_DATA_DIR = `${env.LOCAL_DATA_DIR}/pglite`;
 
 type Connection =
   | { kind: "pglite"; db: PgliteDatabase<Schema>; client: PGlite }
@@ -39,15 +39,24 @@ function openConnection(): Connection {
   return { kind: "pglite", client, db: drizzlePglite({ client, schema }) };
 }
 
+/**
+ * Share one connection per process through globalThis when: in development
+ * (modules re-evaluate on HMR), and for PGlite always, because `next start`
+ * loads this module once per server bundle and PGlite allows one instance per
+ * folder (a second instance does not see the first one's writes).
+ */
+function shareConnection(): boolean {
+  return !env.isProduction || !env.DATABASE_URL;
+}
+
 function getConnection(): Connection {
   if (connection) return connection;
-  // In development the module re-evaluates on HMR; globalThis survives that.
-  if (!env.isProduction && globalStore.__awDbConnection) {
+  if (shareConnection() && globalStore.__awDbConnection) {
     connection = globalStore.__awDbConnection;
     return connection;
   }
   connection = openConnection();
-  if (!env.isProduction) globalStore.__awDbConnection = connection;
+  if (shareConnection()) globalStore.__awDbConnection = connection;
   return connection;
 }
 
@@ -65,7 +74,7 @@ export function setDbForTests(db: Db | undefined): void {
 export async function closeDb(): Promise<void> {
   const current = connection;
   connection = undefined;
-  if (!env.isProduction) delete globalStore.__awDbConnection;
+  if (shareConnection()) delete globalStore.__awDbConnection;
   if (!current) return;
   if (current.kind === "postgres") {
     await current.client.end();

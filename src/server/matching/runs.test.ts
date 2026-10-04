@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { appointments, events, matchRuns, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
+import { VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
 import { nameWarning } from "./common";
 import { getActiveRun, getRun, listRuns } from "./queries";
@@ -159,6 +160,38 @@ describe("setPinned", () => {
 
     const again = await setPinned(db, { appointmentId: row.id, pinned: true, adminId: seeded.adminId });
     expect(again.ok && again.data.version).toBe(active.version + 1);
+  });
+
+  it("refuses a stale client version", async () => {
+    const active = await getActiveRun(seeded.eventId, db);
+    if (!active) throw new Error("no active run");
+    const [row] = await db.select().from(appointments).where(eq(appointments.runId, active.id)).limit(1);
+    const result = await setPinned(db, {
+      appointmentId: row.id,
+      pinned: !row.pinned,
+      adminId: seeded.adminId,
+      version: active.version - 1,
+    });
+    expect(!result.ok && result.error).toMatchObject({ code: "conflict", message: VERSION_CONFLICT_MESSAGE });
+  });
+
+  it("is a conflict, not an overwrite, when another save lands between its read and its write", async () => {
+    const active = await getActiveRun(seeded.eventId, db);
+    if (!active) throw new Error("no active run");
+    const [row] = await db.select().from(appointments).where(eq(appointments.runId, active.id)).limit(1);
+    // Another admin's save commits right before this transaction starts.
+    const racing = Object.create(db) as Db;
+    racing.transaction = (async (fn: Parameters<Db["transaction"]>[0]) => {
+      await db.update(matchRuns).set({ version: sql`${matchRuns.version} + 1` }).where(eq(matchRuns.id, active.id));
+      return db.transaction(fn);
+    }) as Db["transaction"];
+
+    const result = await setPinned(racing, { appointmentId: row.id, pinned: !row.pinned, adminId: seeded.adminId });
+    expect(!result.ok && result.error).toMatchObject({ code: "conflict", message: VERSION_CONFLICT_MESSAGE });
+    const [unchanged] = await db.select().from(appointments).where(eq(appointments.id, row.id));
+    expect(unchanged.pinned).toBe(row.pinned);
+    const after = await getActiveRun(seeded.eventId, db);
+    expect(after?.version).toBe(active.version + 1);
   });
 });
 

@@ -1,4 +1,4 @@
-import { and, count, desc, eq, isNull, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, gte, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import { auditEvents, type AuditEvent } from "@/db/schema";
 
@@ -34,9 +34,37 @@ export async function recordAudit(db: Db, input: RecordAuditInput): Promise<Audi
 export type AuditFilters = {
   adminId?: string;
   action?: string;
+  /** Any of these actions. An entry ending in "." matches every action with that prefix. */
+  actions?: readonly string[];
   entityType?: string;
   entityId?: string;
+  /**
+   * Rows about one buyer or supplier: the row's entity, a schedule change that
+   * names them as buyer or supplier, or a link issued to them.
+   */
+  personId?: string;
+  /** Inclusive lower bound on `created_at`. */
+  from?: Date;
+  /** Exclusive upper bound on `created_at`. */
+  to?: Date;
 };
+
+function actionMatches(pattern: string): SQL {
+  return pattern.endsWith(".")
+    ? like(auditEvents.action, `${pattern.replace(/[\\%_]/g, "\\$&")}%`)
+    : eq(auditEvents.action, pattern);
+}
+
+function mentionsPerson(personId: string): SQL {
+  return or(
+    eq(auditEvents.entityId, personId),
+    sql`${auditEvents.before}->>'buyerId' = ${personId}`,
+    sql`${auditEvents.before}->>'supplierId' = ${personId}`,
+    sql`${auditEvents.after}->>'buyerId' = ${personId}`,
+    sql`${auditEvents.after}->>'supplierId' = ${personId}`,
+    sql`${auditEvents.after}->>'entityId' = ${personId}`,
+  )!;
+}
 
 export type ListAuditInput = {
   /** Null lists team and admin changes, which belong to no event. */
@@ -70,6 +98,13 @@ export async function listAudit(input: ListAuditInput, db: Db = getDb()): Promis
   if (filters.action) conditions.push(eq(auditEvents.action, filters.action));
   if (filters.entityType) conditions.push(eq(auditEvents.entityType, filters.entityType));
   if (filters.entityId) conditions.push(eq(auditEvents.entityId, filters.entityId));
+  if (filters.actions) {
+    // An empty list matches nothing rather than everything.
+    conditions.push(filters.actions.length ? or(...filters.actions.map(actionMatches))! : sql`false`);
+  }
+  if (filters.personId) conditions.push(mentionsPerson(filters.personId));
+  if (filters.from) conditions.push(gte(auditEvents.createdAt, filters.from));
+  if (filters.to) conditions.push(lt(auditEvents.createdAt, filters.to));
   const where = and(...conditions);
 
   const [rows, [{ total }]] = await Promise.all([

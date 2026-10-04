@@ -1,11 +1,12 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { auditEvents, events, participants, rankings } from "@/db/schema";
+import { auditEvents, events, participants, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { BOM } from "@/server/exports/common";
 import { masterScheduleCsv } from "@/server/exports/master";
 import { scheduleZipEntries } from "@/server/exports/schedules";
+import { planDesks } from "@/server/schedule/lock";
 import { getScheduleView } from "@/server/schedule/views";
 import { DEMO_EVENT_NAME, seedDemo, type SeedSummary } from "./demo";
 import { loadFixture } from "./fixture";
@@ -48,6 +49,16 @@ describe("seedDemo", () => {
     expect(rows.every((p) => p.organization && p.biztechOptIn && p.email.endsWith("@example.org"))).toBe(true);
     const ranked = await db.select().from(rankings).where(eq(rankings.eventId, first.eventId));
     expect(ranked).toHaveLength(65 * 56 - 17 + 56 * 65);
+  });
+
+  it("numbers desks the way lock does, so locking the demo keeps them (D17)", async () => {
+    const rows = await db.select().from(suppliers).where(eq(suppliers.eventId, first.eventId));
+    const planned = new Map(planDesks(rows).map((p) => [p.supplierId, p.desk]));
+    expect(rows.every((s) => s.deskNumber === planned.get(s.id) && !s.deskOverride)).toBe(true);
+    const byName = Object.fromEntries(rows.map((s) => [s.name, s.deskNumber]));
+    expect(byName["Art of Mentoring"]).toBe(1);
+    expect(byName["eShow"]).toBe(7);
+    expect(byName["San Diego Tourism Authority"]).toBeLessThan(byName["SEAS Productions"]!);
   });
 
   it("replaces the event on a second run and keeps the admin", async () => {

@@ -3,8 +3,9 @@ import { getDb, type Db } from "@/db/client";
 import { accessTokens, participants, suppliers, type ContactType } from "@/db/schema";
 import type { ActionResult } from "@/lib/errors";
 import { ok } from "@/lib/errors";
-import { buyerDisplayName, compareNames } from "@/server/matching/common";
-import { linkFor, rotateTokensForEvent } from "./tokens";
+import { compareNames } from "@/lib/names";
+import { buyerDisplayName } from "@/server/matching/common";
+import { contactKey, linkFor, linksForContacts, listContacts } from "./tokens";
 
 export type TokenStatus = "active" | "revoked" | "expired";
 
@@ -81,16 +82,16 @@ export type AccessListRow = {
 /**
  * Rows for the participant access CSV (scope 2.4, the email fallback).
  *
- * This is a write, not a read. The database stores only token hashes, so the
- * only way to print a working link for everyone is to issue a new token for
- * every contact. Calling it revokes every live link of the event and returns
- * fresh ones; links sent earlier stop working. Callers must audit the call.
+ * Each contact's current link is reused (D31, D59), so links already emailed
+ * keep working. Only contacts with no usable link get a new token, which makes
+ * this a write. Callers must audit the call.
  */
 export async function issueAccessList(db: Db, eventId: string): Promise<ActionResult<AccessListRow[]>> {
-  const rotated = await rotateTokensForEvent(db, eventId);
-  if (!rotated.ok) return rotated;
-  const rows = rotated.data
-    .map((t) => ({ name: t.name, email: t.email, contactType: t.contactType, link: linkFor(t.token) }))
+  const contacts = await listContacts(db, eventId);
+  const links = await linksForContacts(db, eventId, contacts, { issueMissing: true });
+  if (!links.ok) return links;
+  const rows = contacts
+    .map((c) => ({ name: c.name, email: c.email, contactType: c.contactType, link: linkFor(links.data.get(contactKey(c))!.token) }))
     .sort((a, b) => compareNames(a.name, b.name) || a.contactType.localeCompare(b.contactType));
   return ok(rows);
 }

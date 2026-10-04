@@ -175,6 +175,12 @@ export const emailMessageStatusEnum = pgEnum("email_message_status", [
   "complained",
   "failed",
 ]);
+export const emailCampaignStatusEnum = pgEnum("email_campaign_status", [
+  "draft",
+  "sending",
+  "sent",
+  "failed",
+]);
 
 // ---------------------------------------------------------------------------
 // Domain tables. Everything hangs off an event and cascades with it.
@@ -415,6 +421,10 @@ export const accessTokens = pgTable(
     contactType: contactTypeEnum("contact_type").notNull(),
     entityId: uuid("entity_id").notNull(),
     tokenHash: text("token_hash").notNull().unique(),
+    // The plain token, AES-256-GCM encrypted with a key derived from
+    // TOKEN_PEPPER (D59), so emails and the access list can reuse a link
+    // instead of rotating it. Null for tokens issued before D59.
+    tokenCiphertext: text("token_ciphertext"),
     expiresAt: timestamptz("expires_at").notNull(),
     revokedAt: timestamptz("revoked_at"),
     lastViewedAt: timestamptz("last_viewed_at"),
@@ -435,14 +445,19 @@ export const emailCampaigns = pgTable(
     name: text("name").notNull(),
     fromName: text("from_name").notNull(),
     fromEmail: text("from_email").notNull(),
-    replyTo: text("reply_to"),
+    replyTo: text("reply_to").notNull(),
     subject: text("subject").notNull(),
     htmlBody: text("html_body").notNull(),
     audience: emailAudienceEnum("audience").notNull(),
-    // Access token ids when audience is "selected".
-    selectedTokenIds: jsonb("selected_token_ids").$type<string[]>(),
+    // Recipient keys ("buyer:<id>", "supplier_admin:<id>", ...) when audience
+    // is "selected" (D60). Keys, not token ids: a contact may have no link yet.
+    selectedRecipients: jsonb("selected_recipients").$type<string[]>().notNull().default([]),
     kind: emailCampaignKindEnum("kind").notNull(),
+    status: emailCampaignStatusEnum("status").notNull().default("draft"),
+    recipientCount: integer("recipient_count"),
+    testSentAt: timestamptz("test_sent_at"),
     sentAt: timestamptz("sent_at"),
+    sentBy: text("sent_by").references(() => admins.id),
     createdBy: text("created_by").references(() => admins.id),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -451,9 +466,12 @@ export const emailCampaigns = pgTable(
 );
 
 export type EmailDeliveryEvent = {
+  /** "sent", "delivered", "bounced", ... (the Resend event type without "email."). */
   type: string;
   at: string;
   detail?: string;
+  /** The webhook delivery id, so a retried webhook is recorded once. */
+  id?: string;
 };
 
 export const emailMessages = pgTable(
@@ -469,16 +487,24 @@ export const emailMessages = pgTable(
     accessTokenId: uuid("access_token_id").references(() => accessTokens.id, {
       onDelete: "set null",
     }),
+    // Who the message is for, independent of the token, which can be
+    // regenerated (D60). Supplier contacts use the supplier id.
+    contactType: contactTypeEnum("contact_type").notNull(),
+    entityId: uuid("entity_id").notNull(),
+    recipientName: text("recipient_name").notNull(),
     toEmail: text("to_email").notNull(),
     providerMessageId: text("provider_message_id"),
     status: emailMessageStatusEnum("status").notNull().default("queued"),
     events: jsonb("events").$type<EmailDeliveryEvent[]>().notNull().default([]),
     scheduleHash: text("schedule_hash"),
+    sentAt: timestamptz("sent_at"),
+    lastEventAt: timestamptz("last_event_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => [
     index("email_messages_campaign_idx").on(table.campaignId),
+    index("email_messages_event_contact_idx").on(table.eventId, table.contactType, table.entityId),
     index("email_messages_provider_id_idx").on(table.providerMessageId),
     index("email_messages_token_idx").on(table.accessTokenId),
   ],
@@ -619,3 +645,7 @@ export type SupplierType = Supplier["type"];
 export type ImportKind = Import["kind"];
 export type ImportStatus = Import["status"];
 export type ContactType = AccessToken["contactType"];
+export type EmailAudience = EmailCampaign["audience"];
+export type EmailCampaignKind = EmailCampaign["kind"];
+export type EmailCampaignStatus = EmailCampaign["status"];
+export type EmailMessageStatus = EmailMessage["status"];

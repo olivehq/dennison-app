@@ -10,13 +10,14 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { restoreParticipantAction, withdrawParticipantAction } from "@/server/roster/actions";
 import {
   AppointmentCount,
+  EmailChangeBadge,
   LinkBadge,
   RosterRowActions,
   RosterStatusBadge,
   StatusFilterToggle,
   useUrlFilter,
 } from "../_roster/roster-ui";
-import type { BiztechFilter, Health, LinkInfo, StatusFilter } from "../_roster/types";
+import type { BiztechFilter, EmailChange, Health, LinkInfo, StatusFilter } from "../_roster/types";
 import { ParticipantDialog, type ParticipantFormData } from "./participant-dialog";
 
 export type ParticipantTableRow = ParticipantFormData & {
@@ -28,6 +29,7 @@ export type ParticipantTableRow = ParticipantFormData & {
   health: Health;
   healthHint?: string;
   link: LinkInfo;
+  emailChange: EmailChange;
 };
 
 const helper = createDataTableColumnHelper<ParticipantTableRow>();
@@ -117,8 +119,11 @@ export function ParticipantsTable({
           header: "Link",
           cell: ({ row }) => <LinkBadge link={row.original.link} />,
         }),
-        // TODO(email module): add the "Changed since last email" column here once
-        // recipientsChangedSinceLastSend lands (scope 2.7, D13).
+        helper.accessor((row) => row.emailChange ?? "", {
+          id: "emailChange",
+          header: "Changed since last email",
+          cell: ({ row }) => <EmailChangeBadge state={row.original.emailChange} />,
+        }),
         helper.accessor("status", {
           header: "Status",
           cell: ({ row }) => <RosterStatusBadge status={row.original.status} />,

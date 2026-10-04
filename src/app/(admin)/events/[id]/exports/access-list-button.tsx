@@ -1,16 +1,17 @@
 "use client";
 
+import * as React from "react";
 import { DownloadIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 
 /**
- * The access list rotates every participant link (D31), so it is a POST
- * behind a confirm. The file is fetched and saved here rather than by a form
- * navigation so a refusal shows as a toast and the page refreshes its
- * "Generated" line once the file has arrived.
+ * The access list reuses each contact's current link and issues one only for
+ * contacts without (D31, D59), so it is a POST. The file is fetched and saved
+ * here rather than by a form navigation so a refusal shows as a toast and the
+ * page refreshes its "Generated" line once the file has arrived.
  */
 export function AccessListButton({
   href,
@@ -24,6 +25,7 @@ export function AccessListButton({
   disabled: boolean;
 }) {
   const router = useRouter();
+  const [pending, setPending] = React.useState(false);
 
   const download = async () => {
     const response = await fetch(href, { method: "POST" });
@@ -38,32 +40,23 @@ export function AccessListButton({
     link.click();
     // Revoking in the same tick can cancel the download in some browsers.
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    toast.success("Access list downloaded. Links sent before now no longer work.");
+    toast.success("Access list downloaded. Links already sent keep working.");
     router.refresh();
   };
 
-  if (disabled) {
-    return (
-      <Button variant="outline" disabled>
-        <DownloadIcon data-icon="inline-start" />
-        {label}
-      </Button>
-    );
-  }
+  const run = async () => {
+    setPending(true);
+    try {
+      await download();
+    } finally {
+      setPending(false);
+    }
+  };
 
   return (
-    <ConfirmDialog
-      title="Replace every participant link?"
-      description="The access list needs fresh links, so every link already emailed or shared stops working. Only the links in this file will open schedules. Send them out again after downloading."
-      confirmLabel="Replace links and download"
-      destructive
-      onConfirm={download}
-      trigger={
-        <Button variant="outline">
-          <DownloadIcon data-icon="inline-start" />
-          {label}
-        </Button>
-      }
-    />
+    <Button variant="outline" disabled={disabled || pending} onClick={() => void run()}>
+      {pending ? <Spinner data-icon="inline-start" /> : <DownloadIcon data-icon="inline-start" />}
+      {label}
+    </Button>
   );
 }

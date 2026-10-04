@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { accessTokens, appointments, events, suppliers, type Appointment } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
@@ -14,6 +14,7 @@ import {
   swapCandidates,
   undoAudit,
   VERSION_CONFLICT_MESSAGE,
+  type SwapCandidate,
 } from "./edits";
 import { lockSchedule, planDesks, reassignDesks, unlockSchedule } from "./lock";
 import { getPersonSchedule, getScheduleView } from "./queries";
@@ -38,8 +39,39 @@ function supplierNamed(name: string) {
   return s;
 }
 
+/** Removes the first appointment of the active run and returns it. */
+async function removeOne(): Promise<Appointment> {
+  const [first] = await rows();
+  const result = await removeAppointment(
+    db,
+    { runId, version: await version(), slot: first.slot, supplierId: first.supplierId, buyerId: first.buyerId },
+    seeded.adminId,
+  );
+  if (!result.ok) throw new Error(result.error.message);
+  return first;
+}
+
+/** An engine-placed appointment that has at least one swap candidate, with the candidates. */
+async function replaceableRow(): Promise<{ target: Appointment; pick: SwapCandidate }> {
+  for (const target of (await rows()).filter((a) => a.source === "engine")) {
+    const candidates = await swapCandidates(db, {
+      runId,
+      supplierId: target.supplierId,
+      slot: target.slot,
+      excludeBuyerId: target.buyerId,
+    });
+    if (candidates.ok && candidates.data.length > 0) return { target, pick: candidates.data[0] };
+  }
+  throw new Error("no appointment in the fixture has a swap candidate");
+}
+
+// One database for the file; every test gets its own event and active run, so
+// tests pass in any order and on their own (`-t`, `--sequence.shuffle`).
 beforeAll(async () => {
   db = await createTestDb();
+});
+
+beforeEach(async () => {
   seeded = await seedEvent(db);
   const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
   if (!run.ok) throw new Error(run.error.message);
@@ -113,8 +145,6 @@ describe("getScheduleView", () => {
 });
 
 describe("edits", () => {
-  let removed: Appointment;
-
   it("refuses a stale version", async () => {
     const [a] = await rows();
     const result = await removeAppointment(
@@ -131,7 +161,7 @@ describe("edits", () => {
 
   it("removes an appointment, bumps the version, recomputes stats, and audits", async () => {
     const all = await rows();
-    removed = all[0];
+    const removed = all[0];
     const v = await version();
     const result = await removeAppointment(
       db,
@@ -157,9 +187,33 @@ describe("edits", () => {
   });
 
   it("refuses a double booking with the slot in the reason", async () => {
+    // Open a supplier slot, then offer a buyer who is busy elsewhere in that slot, eligible,
+    // and not already paired with the supplier, so the double booking is the only rule it breaks.
     const all = await rows();
-    const busy = all.find((a) => a.slot === removed.slot && a.supplierId !== removed.supplierId);
-    if (!busy) throw new Error("fixture has no busy buyer in that slot");
+    const ineligible = new Set([seeded.buyers[0].id, seeded.buyers[seeded.buyers.length - 1].id]);
+    let removed: Appointment | undefined;
+    let busy: Appointment | undefined;
+    for (const candidate of all) {
+      const paired = new Set(all.filter((a) => a.supplierId === candidate.supplierId).map((a) => a.buyerId));
+      busy = all.find(
+        (a) =>
+          a.slot === candidate.slot &&
+          a.supplierId !== candidate.supplierId &&
+          !paired.has(a.buyerId) &&
+          !ineligible.has(a.buyerId),
+      );
+      if (busy) {
+        removed = candidate;
+        break;
+      }
+    }
+    if (!removed || !busy) throw new Error("fixture has no busy buyer to offer");
+    const cleared = await removeAppointment(
+      db,
+      { runId, version: await version(), slot: removed.slot, supplierId: removed.supplierId, buyerId: removed.buyerId },
+      seeded.adminId,
+    );
+    expect(cleared.ok).toBe(true);
     const result = await addAppointment(
       db,
       { runId, version: await version(), slot: removed.slot, supplierId: removed.supplierId, buyerId: busy.buyerId },
@@ -173,6 +227,7 @@ describe("edits", () => {
   });
 
   it("refuses a duplicate pair", async () => {
+    const removed = await removeOne();
     const all = await rows();
     const busyInSlot = new Set(all.filter((a) => a.slot === removed.slot).map((a) => a.buyerId));
     const paired = all.find((a) => a.supplierId === removed.supplierId && !busyInSlot.has(a.buyerId));
@@ -278,18 +333,7 @@ describe("edits", () => {
   });
 
   it("replace swaps the buyer and undo restores it, each bumping the version", async () => {
-    const all = await rows();
-    const target = all.find((a) => a.source === "engine" && a.slot !== removed.slot);
-    if (!target) throw new Error("no engine row");
-    const candidates = await swapCandidates(db, {
-      runId,
-      supplierId: target.supplierId,
-      slot: target.slot,
-      excludeBuyerId: target.buyerId,
-    });
-    if (!candidates.ok || candidates.data.length === 0) throw new Error("no candidates");
-    const pick = candidates.data[0];
-
+    const { target, pick } = await replaceableRow();
     const v = await version();
     const replaced = await replaceAppointment(
       db,
@@ -339,6 +383,50 @@ describe("edits", () => {
 
     const notUndoable = await undoAudit(db, { auditEventId: undoAuditRows.rows[0].id, adminId: seeded.adminId });
     expect(notUndoable.ok).toBe(true);
+  });
+
+  it("replace keeps the slot's pin and says so in the audit row", async () => {
+    const { target, pick } = await replaceableRow();
+    await db.update(appointments).set({ pinned: true }).where(eq(appointments.id, target.id));
+    const replaced = await replaceAppointment(
+      db,
+      {
+        runId,
+        version: await version(),
+        slot: target.slot,
+        supplierId: target.supplierId,
+        removeBuyerId: target.buyerId,
+        addBuyerId: pick.buyerId,
+      },
+      seeded.adminId,
+    );
+    expect(replaced.ok).toBe(true);
+    if (!replaced.ok) return;
+    const row = (await rows()).find((a) => a.slot === target.slot && a.supplierId === target.supplierId);
+    expect(row).toMatchObject({ buyerId: pick.buyerId, pinned: true });
+    const audit = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.replace" } }, db);
+    expect(audit.rows[0].before).toMatchObject({ pinned: true });
+    expect(audit.rows[0].after).toMatchObject({ buyerId: pick.buyerId, pinned: true, pinKept: true });
+
+    const undone = await undoAudit(db, { auditEventId: replaced.data.auditEventId, adminId: seeded.adminId });
+    expect(undone.ok).toBe(true);
+    const restored = (await rows()).find((a) => a.slot === target.slot && a.supplierId === target.supplierId);
+    expect(restored).toMatchObject({ buyerId: target.buyerId, pinned: true });
+  });
+
+  it("undoing a removal puts a pinned appointment back pinned", async () => {
+    const [first] = await rows();
+    await db.update(appointments).set({ pinned: true }).where(eq(appointments.id, first.id));
+    const result = await removeAppointment(
+      db,
+      { runId, version: await version(), slot: first.slot, supplierId: first.supplierId, buyerId: first.buyerId },
+      seeded.adminId,
+    );
+    if (!result.ok) throw new Error(result.error.message);
+    const undone = await undoAudit(db, { auditEventId: result.data.auditEventId, adminId: seeded.adminId });
+    expect(undone.ok).toBe(true);
+    const back = (await rows()).find((a) => a.slot === first.slot && a.supplierId === first.supplierId);
+    expect(back).toMatchObject({ buyerId: first.buyerId, pinned: true });
   });
 
   it("undo refuses other audit actions", async () => {
@@ -397,6 +485,9 @@ describe("lock and unlock", () => {
   });
 
   it("refuses edits and desk changes while locked", async () => {
+    await removeOne();
+    const locked = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(locked.ok).toBe(true);
     const [a] = await rows();
     const edit = await removeAppointment(
       db,
@@ -412,6 +503,8 @@ describe("lock and unlock", () => {
   });
 
   it("unlock needs a reason and returns the event to matched", async () => {
+    const locked = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(locked.ok).toBe(true);
     const noReason = await unlockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId, reason: "  " });
     expect(!noReason.ok && noReason.error.code).toBe("validation");
 

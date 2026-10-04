@@ -1,13 +1,16 @@
 import { LockIcon } from "lucide-react";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
+import { recipientKey } from "@/lib/schemas/email";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { getScheduleChangeState } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { listSuppliers } from "@/server/roster/queries";
 import { listTokens } from "@/server/tokens/queries";
 import { latestLinks, linkOf } from "../_roster/link-status";
 import { lockReason } from "../_roster/lock-reason";
-import { healthFor, parseStatusFilter, parseTypeFilter } from "../_roster/types";
+import { emailChangeOf } from "../_roster/email-change";
+import { combineEmailChange, healthFor, parseStatusFilter, parseTypeFilter } from "../_roster/types";
 import { eventSectionHref } from "../event-sections";
 import { AddSupplierButton, SuppliersTable, type SupplierTableRow } from "./suppliers-table";
 
@@ -22,10 +25,11 @@ export default async function SuppliersPage({
   const event = await getEvent(id);
   if (!event) notFound();
 
-  const [suppliers, tokens, counts] = await Promise.all([
+  const [suppliers, tokens, counts, emailState] = await Promise.all([
     listSuppliers(event.id, { includeWithdrawn: true }),
     listTokens(event.id),
     getEventCounts(event.id),
+    getScheduleChangeState(event.id),
   ]);
   const links = latestLinks(tokens);
   const hasRun = counts.activeRunId !== null;
@@ -51,6 +55,10 @@ export default async function SuppliersPage({
         health === "low" ? `below the target of ${target}` : health === "high" ? `above the target of ${target}` : undefined,
       adminLink: linkOf(links, "supplier_admin", s.id),
       attendeeLink: linkOf(links, "supplier_attendee", s.id),
+      emailChange: combineEmailChange(
+        emailChangeOf(emailState, recipientKey("supplier_admin", s.id)),
+        emailChangeOf(emailState, recipientKey("supplier_attendee", s.id)),
+      ),
     };
   });
   const active = rows.filter((row) => row.status === "active").length;

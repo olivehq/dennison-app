@@ -30,7 +30,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { ActionResult } from "@/lib/errors";
 import { regenerateTokenAction, revokeTokenAction } from "@/server/tokens/actions";
-import type { Health, LinkInfo, StatusFilter } from "./types";
+import type { EmailChange, Health, LinkInfo, StatusFilter } from "./types";
 
 // ---------------------------------------------------------------------------
 // Cells
@@ -48,6 +48,23 @@ export function LinkBadge({ link, prefix }: { link: LinkInfo; prefix?: string })
       {prefix ? `${prefix}: ${label.toLowerCase()}` : label}
     </Badge>
   );
+}
+
+/** The "Changed since last email" cell. Empty before the person was ever emailed. */
+export function EmailChangeBadge({ state }: { state: EmailChange }) {
+  if (state === "changed") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-warning bg-warning/15 text-warning-foreground"
+        title="Their schedule differs from the one in their last email. Send an update from the Emails page."
+      >
+        Changed
+      </Badge>
+    );
+  }
+  if (state === "current") return <span className="text-sm text-muted-foreground">Up to date</span>;
+  return <span className="sr-only">Not emailed yet</span>;
 }
 
 export function RosterStatusBadge({ status }: { status: "active" | "withdrawn" }) {

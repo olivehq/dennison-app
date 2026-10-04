@@ -234,7 +234,7 @@ describe("suppliers", () => {
 
   it("withdraws and restores, hiding withdrawn rows by default", async () => {
     expect((await withdrawSupplier(db, { id: hyattId, adminId })).ok).toBe(true);
-    expect((await listSuppliers(eventId, {}, db)).map((s) => s.name)).toEqual(["Visit SLO CAL", "eShow"]);
+    expect((await listSuppliers(eventId, {}, db)).map((s) => s.name)).toEqual(["eShow", "Visit SLO CAL"]);
     expect(await listSuppliers(eventId, { includeWithdrawn: true }, db)).toHaveLength(3);
     expect((await restoreSupplier(db, { id: hyattId, adminId })).ok).toBe(true);
     expect(await listSuppliers(eventId, {}, db)).toHaveLength(3);

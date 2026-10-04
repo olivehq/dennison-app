@@ -141,7 +141,7 @@ export function PersonSheet(props: PersonSheetProps) {
     if (!a) return;
     setBusyRow(a.id);
     startTransition(async () => {
-      const result = await setPinnedAction({ appointmentId: a.id, pinned: !a.pinned });
+      const result = await setPinnedAction({ appointmentId: a.id, pinned: !a.pinned, version });
       setBusyRow(null);
       if (!result.ok) {
         onError(result.error);

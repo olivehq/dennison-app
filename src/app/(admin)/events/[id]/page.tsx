@@ -5,9 +5,12 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventStatus } from "@/lib/schemas/event";
+import { getEmailSummary } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { EVENT_STATUS_LABELS } from "../event-status-badge";
 import { DeleteEventButton } from "./delete-event-button";
+import { SendUpdateButton } from "./emails/campaign-buttons";
+import { people } from "./emails/labels";
 import { eventSectionHref } from "./event-sections";
 
 const STEPS: EventStatus[] = ["draft", "imported", "matched", "locked", "sent"];
@@ -102,17 +105,28 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();
-  const counts = await getEventCounts(event.id);
-  const next = NEXT_ACTION[event.status];
+  const [counts, email] = await Promise.all([getEventCounts(event.id), getEmailSummary(event.id)]);
+  // After a send, changed schedules come first: those people hold an outdated email.
+  // Relocking after an edit returns the event to locked, so look at sends, not only the status.
+  const needsUpdate = (event.status === "sent" || event.status === "locked") && email.hasSent && email.changed > 0;
+  const next = needsUpdate
+    ? {
+        title: "Send an update",
+        description: `${people(email.changed)} changed since their last email. Send them their updated schedule.`,
+        segment: "emails",
+        label: "Go to emails",
+      }
+    : NEXT_ACTION[event.status];
   const canDelete = event.status === "draft" && counts.participants === 0;
 
   return (
     <>
       <StatusStepper status={event.status} />
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <CountCard label="Participants" value={counts.participants} href={eventSectionHref(event.id, "participants")} />
         <CountCard label="Suppliers" value={counts.suppliers} href={eventSectionHref(event.id, "suppliers")} />
         <CountCard label="Appointments" value={counts.appointments} href={eventSectionHref(event.id, "schedule")} />
+        <CountCard label="Changed since last email" value={email.changed} href={eventSectionHref(event.id, "emails")} />
       </div>
       <Card className="max-w-xl">
         <CardHeader>
@@ -121,7 +135,8 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
           <CardDescription>{next.description}</CardDescription>
         </CardHeader>
         <CardFooter className="gap-2">
-          <Button asChild>
+          {needsUpdate ? <SendUpdateButton eventId={event.id} /> : null}
+          <Button variant={needsUpdate ? "outline" : "default"} asChild>
             <Link href={eventSectionHref(event.id, next.segment)}>
               {next.label}
               <ArrowRightIcon data-icon="inline-end" />

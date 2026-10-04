@@ -7,12 +7,12 @@
  * Postgres. Safe to re-run: the demo event is deleted and rebuilt, the demo
  * admin is created only once.
  */
-import { closeDb, getDb } from "@/db/client";
+import { closeDb, getDb, PGLITE_DATA_DIR } from "@/db/client";
 import { DEMO_ADMIN, DEMO_EVENT_NAME, seedDemo } from "./seed/demo";
 import { loadFixture } from "./seed/fixture";
 
 async function main() {
-  const target = process.env.DATABASE_URL ? "DATABASE_URL" : "PGlite (.data/pglite)";
+  const target = process.env.DATABASE_URL ? "DATABASE_URL" : `PGlite (${PGLITE_DATA_DIR})`;
   console.log(`Seeding the demo event into ${target}`);
   const summary = await seedDemo(getDb(), loadFixture());
   if (summary.replacedEvents > 0) console.log("Replaced the existing demo event.");

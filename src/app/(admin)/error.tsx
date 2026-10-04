@@ -1,5 +1,6 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { TriangleAlertIcon } from "lucide-react";
 import * as React from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -16,6 +17,8 @@ export default function AdminError({
 }) {
   React.useEffect(() => {
     console.error(error);
+    // The boundary catches the error, so report it here (a no-op without a DSN).
+    Sentry.captureException(error);
   }, [error]);
 
   const tryAgain = retry ?? reset;

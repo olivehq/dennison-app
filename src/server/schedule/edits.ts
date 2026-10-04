@@ -30,7 +30,8 @@ import {
   type SwapCandidatesInput,
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEditable, compareNames } from "@/server/matching/common";
+import { compareNames } from "@/lib/names";
+import { assertEventEditable } from "@/server/events/editable";
 import {
   loadRoster,
   toEngineBuyers,
@@ -89,6 +90,8 @@ export const UNDOABLE_ACTIONS: ReadonlySet<string> = new Set([
 type EditOptions = {
   /** Set by `undoAudit`: the row is recorded as `appointment.undo` pointing at this audit id. */
   undoOf?: string;
+  /** Set by `undoAudit` when it re-adds a removed appointment that was pinned. */
+  pinned?: boolean;
 };
 
 type EditContext = {
@@ -133,7 +136,7 @@ async function loadContext(db: Db, runId: string): Promise<ActionResult<EditCont
   if (run.status !== "completed") return fail("validation", "That run did not complete, so it cannot be edited.");
   const roster = await loadRoster(db, run.eventId);
   if (!roster) return fail("not_found", "That event no longer exists.");
-  const locked = assertEditable(roster.event);
+  const locked = assertEventEditable(roster.event);
   if (locked) return locked;
   const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));
   const index = buildRankingIndex(toEngineRankings(roster.rankings));
@@ -253,8 +256,14 @@ function isUniqueViolation(error: unknown): boolean {
 
 type Change = {
   deleteIds: string[];
-  insert: Omit<EngineAppointment, "pinned" | "source"> | null;
-  audit: { action: string; before: AppointmentSnapshot | null; note: string | null };
+  insert: Omit<EngineAppointment, "source"> | null;
+  audit: {
+    action: string;
+    before: AppointmentSnapshot | null;
+    note: string | null;
+    /** Extra keys for the audit `after`, beside the inserted row's snapshot. */
+    after?: Record<string, unknown>;
+  };
   touched: { buyerIds: string[]; supplierIds: string[] };
 };
 
@@ -302,7 +311,7 @@ async function commit(
             buyerRank: change.insert.buyerRank,
             supplierRank: change.insert.supplierRank,
             source: "manual",
-            pinned: false,
+            pinned: change.insert.pinned,
           })
           .returning();
       }
@@ -313,7 +322,7 @@ async function commit(
         entityType: "appointment",
         entityId: inserted?.id ?? change.deleteIds[0] ?? null,
         before: change.audit.before,
-        after: inserted ? snapshot(inserted) : null,
+        after: inserted ? { ...snapshot(inserted), ...change.audit.after } : null,
         note: options.undoOf ? undoNote(options.undoOf) : change.audit.note,
       });
       return { version: bumped.version, auditEventId: audit.id };
@@ -332,7 +341,13 @@ function findRow(ctx: EditContext, slot: number, supplierId: string, buyerId: st
   return ctx.rows.find((r) => r.slot === slot && r.supplierId === supplierId && r.buyerId === buyerId) ?? null;
 }
 
-function stamped(ctx: EditContext, slot: number, buyerId: string, supplierId: string): EngineAppointment {
+function stamped(
+  ctx: EditContext,
+  slot: number,
+  buyerId: string,
+  supplierId: string,
+  pinned = false,
+): EngineAppointment {
   return {
     slot,
     buyerId,
@@ -340,7 +355,7 @@ function stamped(ctx: EditContext, slot: number, buyerId: string, supplierId: st
     buyerRank: ctx.index.buyerRank(buyerId, supplierId),
     supplierRank: ctx.index.supplierRank(supplierId, buyerId),
     source: "manual",
-    pinned: false,
+    pinned,
   };
 }
 
@@ -364,7 +379,8 @@ export async function replaceAppointment(
   const ineligible = checkEligible(ctx, input.addBuyerId, input.supplierId);
   if (ineligible) return ineligible;
 
-  const added = stamped(ctx, input.slot, input.addBuyerId, input.supplierId);
+  // A pinned slot stays pinned: the admin protected the slot, and the replacement is a deliberate choice too.
+  const added = stamped(ctx, input.slot, input.addBuyerId, input.supplierId, existing.pinned);
   const wouldBe = [...ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow), added];
   const conflict = checkConflicts(ctx, wouldBe, added);
   if (conflict) return conflict;
@@ -376,7 +392,12 @@ export async function replaceAppointment(
     {
       deleteIds: [existing.id],
       insert: added,
-      audit: { action: "appointment.replace", before: snapshot(existing), note: input.note ?? null },
+      audit: {
+        action: "appointment.replace",
+        before: snapshot(existing),
+        note: input.note ?? null,
+        after: existing.pinned ? { pinKept: true } : undefined,
+      },
       touched: { buyerIds: [input.removeBuyerId, input.addBuyerId], supplierIds: [input.supplierId] },
     },
     adminId,
@@ -401,7 +422,7 @@ export async function addAppointment(
   const ineligible = checkEligible(ctx, input.buyerId, input.supplierId);
   if (ineligible) return ineligible;
 
-  const added = stamped(ctx, input.slot, input.buyerId, input.supplierId);
+  const added = stamped(ctx, input.slot, input.buyerId, input.supplierId, options.pinned ?? false);
   const wouldBe = [...ctx.rows.map(toEngineRow), added];
   const conflict = checkConflicts(ctx, wouldBe, added);
   if (conflict) return conflict;
@@ -597,7 +618,7 @@ export async function undoAudit(
       db,
       { ...common, slot: before.slot, supplierId: before.supplierId, buyerId: before.buyerId },
       input.adminId,
-      options,
+      { ...options, pinned: before.pinned },
     );
   }
   return fail("validation", "This entry has nothing to replay.");

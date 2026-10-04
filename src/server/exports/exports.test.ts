@@ -68,7 +68,7 @@ describe("exports against a real run", () => {
     expect(availability.exports.master.scheduleChanged).toBe(true);
   });
 
-  it("access CSV rotates links, audits, and the new links open schedules without ranks", async () => {
+  it("access CSV reuses links, audits, and the new links open schedules without ranks", async () => {
     const locked = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
     expect(locked.ok).toBe(true);
     const before = await db.select().from(auditEvents).where(eq(auditEvents.action, "export.access_list"));
@@ -97,10 +97,11 @@ describe("exports against a real run", () => {
     expect(supplierView?.schedule.person.type).toBe("supplier");
     expect(supplierView?.schedule.person.desk).not.toBeNull();
 
-    // A second access list replaces every link (D31).
+    // A second access list hands out the same links (D31, D59).
     const again = await accessCsv(seeded.eventId, seeded.adminId, db);
     expect(again.ok).toBe(true);
-    expect(await loadParticipantView(buyerToken, db)).toBeNull();
+    expect(again.ok && again.data.csv).toBe(result.data.csv);
+    expect(await loadParticipantView(buyerToken, db)).not.toBeNull();
   });
 
   it("refuses unknown tokens and withdrawn people with the same null", async () => {

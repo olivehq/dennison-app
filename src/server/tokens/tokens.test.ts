@@ -4,12 +4,13 @@ import type { Db } from "@/db/client";
 import { accessTokens } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
-import { generateToken, hashToken } from "@/lib/tokens";
+import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { issueAccessList, listTokens } from "./queries";
 import {
   issueTokensForEvent,
   linkFor,
+  linksForContacts,
   regenerateToken,
   revokeToken,
   tokenExpiry,
@@ -37,10 +38,20 @@ describe("token primitives (D14)", () => {
   });
 
   it("expires at the end of the day 60 days after the event, in the event timezone", () => {
-    const expiry = tokenExpiry("2026-11-10", "America/Los_Angeles");
+    const before = new Date("2026-10-04T12:00:00Z");
+    const expiry = tokenExpiry("2026-11-10", "America/Los_Angeles", before);
     // Jan 9, 2027 23:59:59.999 in Los Angeles (UTC-8).
     expect(expiry.toISOString()).toBe("2027-01-10T07:59:59.999Z");
-    expect(tokenExpiry("2026-11-10", "UTC").toISOString()).toBe("2027-01-09T23:59:59.999Z");
+    expect(tokenExpiry("2026-11-10", "UTC", before).toISOString()).toBe("2027-01-09T23:59:59.999Z");
+  });
+
+  it("gives a link issued after the event 60 days from now instead of expiring it at once", () => {
+    const now = new Date("2026-10-04T12:00:00Z");
+    // A 2025 event: 60 days after it is long past, so now + 60 days wins.
+    expect(tokenExpiry("2025-11-14", "America/Los_Angeles", now).toISOString()).toBe("2026-12-03T12:00:00.000Z");
+    // The day the two meet, the event rule still decides when it is later.
+    const late = new Date("2026-11-10T20:00:00Z");
+    expect(tokenExpiry("2026-11-10", "America/Los_Angeles", late).toISOString()).toBe("2027-01-10T07:59:59.999Z");
   });
 });
 
@@ -138,8 +149,15 @@ describe("issue and verify", () => {
     expect(supplierAdmin?.email).toMatch(/@supplier\.example\.com$/);
   });
 
-  it("issueAccessList rotates every link and returns plain ones", async () => {
-    const live = (await listTokens(seeded.eventId, db)).filter((t) => t.status === "active");
+  it("stores the token encrypted beside the hash (D59)", async () => {
+    const [row] = await db.select().from(accessTokens).where(eq(accessTokens.id, issued[0].tokenId));
+    expect(row.tokenCiphertext).not.toBeNull();
+    expect(row.tokenCiphertext).not.toContain(issued[0].token);
+    expect(decryptToken(row.tokenCiphertext!)).toBe(issued[0].token);
+  });
+
+  it("issueAccessList reuses live links and replaces only unusable ones (D31, D59)", async () => {
+    const before = (await listTokens(seeded.eventId, db)).filter((t) => t.status === "active");
     const result = await issueAccessList(db, seeded.eventId);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -147,12 +165,33 @@ describe("issue and verify", () => {
     for (const row of result.data) {
       expect(row.link.startsWith(`${env.APP_URL}/s/`)).toBe(true);
       expect(row.email).toContain("@");
+      expect(await verifyToken(db, row.link.split("/s/")[1])).not.toBeNull();
     }
-    expect(await verifyToken(db, result.data[0].link.split("/s/")[1])).not.toBeNull();
+    // A link issued at lock is handed out again, not rotated.
+    const kept = issued[3];
+    expect(result.data.map((r) => r.link)).toContain(linkFor(kept.token));
+    expect(await verifyToken(db, kept.token)).not.toBeNull();
+
+    // The token inserted without ciphertext (pepper test) can't be printed, so it is replaced.
     const after = await listTokens(seeded.eventId, db);
-    for (const old of live) {
-      expect(after.find((t) => t.id === old.id)?.status).toBe("revoked");
-    }
+    const legacy = before.filter((t) => !after.some((a) => a.id === t.id && a.status === "active"));
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0].entityId).toBe(seeded.buyers[1].id);
     expect(after.filter((t) => t.status === "active")).toHaveLength(21);
+
+    // A second call changes nothing.
+    const again = await issueAccessList(db, seeded.eventId);
+    expect(again.ok && again.data.map((r) => r.link).sort()).toEqual(result.data.map((r) => r.link).sort());
+  });
+
+  it("linksForContacts without issueMissing writes nothing", async () => {
+    const count = async () => (await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId))).length;
+    const total = await count();
+    const fresh = await seedEvent(db);
+    const none = await linksForContacts(db, fresh.eventId, [{ contactType: "buyer", entityId: fresh.buyers[0].id }], {
+      issueMissing: false,
+    });
+    expect(none.ok && none.data.size).toBe(0);
+    expect(await count()).toBe(total);
   });
 });

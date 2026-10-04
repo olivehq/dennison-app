@@ -1,12 +1,15 @@
 import { LockIcon } from "lucide-react";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
+import { recipientKey } from "@/lib/schemas/email";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { getScheduleChangeState } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { fullNameFor, listParticipants } from "@/server/roster/queries";
 import { listTokens } from "@/server/tokens/queries";
 import { latestLinks, linkOf } from "../_roster/link-status";
 import { lockReason } from "../_roster/lock-reason";
+import { emailChangeOf } from "../_roster/email-change";
 import { healthFor, parseBiztechFilter, parseStatusFilter } from "../_roster/types";
 import { eventSectionHref } from "../event-sections";
 import { AddParticipantButton, ParticipantsTable, type ParticipantTableRow } from "./participants-table";
@@ -27,10 +30,11 @@ export default async function ParticipantsPage({
   const event = await getEvent(id);
   if (!event) notFound();
 
-  const [participants, tokens, counts] = await Promise.all([
+  const [participants, tokens, counts, emailState] = await Promise.all([
     listParticipants(event.id, { includeWithdrawn: true }),
     listTokens(event.id),
     getEventCounts(event.id),
+    getScheduleChangeState(event.id),
   ]);
   const links = latestLinks(tokens);
   const hasRun = counts.activeRunId !== null;
@@ -56,6 +60,7 @@ export default async function ParticipantsPage({
       healthHint:
         health === "low" ? `below the minimum of ${buyerMin}` : health === "high" ? `above the maximum of ${buyerMax}` : undefined,
       link: linkOf(links, "buyer", p.id),
+      emailChange: emailChangeOf(emailState, recipientKey("buyer", p.id)),
     };
   });
   const active = rows.filter((row) => row.status === "active").length;

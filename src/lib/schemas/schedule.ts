@@ -54,7 +54,7 @@ export const swapCandidatesInput = z.object({
 
 export const undoAuditInput = z.object({ auditEventId: uuid });
 
-export const setPinnedInput = z.object({ appointmentId: uuid, pinned: z.boolean() });
+export const setPinnedInput = z.object({ appointmentId: uuid, pinned: z.boolean(), version: version.optional() });
 
 export const runMatchingInput = z.object({ keepExisting: z.boolean().default(false) });
 

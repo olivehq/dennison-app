@@ -9,6 +9,8 @@ const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: optionalUrl,
+  // Where PGlite and local uploads live when DATABASE_URL and Blob are unset.
+  LOCAL_DATA_DIR: z.preprocess(emptyToUndefined, z.string().default(".data")),
   APP_URL: z.preprocess(emptyToUndefined, z.url().default("http://localhost:3000")),
   BETTER_AUTH_SECRET: optionalString,
   TOKEN_PEPPER: optionalString,

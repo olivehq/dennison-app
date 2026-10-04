@@ -1,6 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { get as blobGet, put as blobPut } from "@vercel/blob";
+import { del as blobDel, get as blobGet, put as blobPut } from "@vercel/blob";
 import { env } from "@/lib/env";
 
 export type StoredFile = {
@@ -11,9 +11,11 @@ export type StoredFile = {
 type StorageAdapter = {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
   get(key: string): Promise<StoredFile | null>;
+  /** Removes the file. A missing file is not an error. */
+  delete(key: string): Promise<void>;
 };
 
-export const LOCAL_UPLOADS_DIR = ".data/uploads";
+export const LOCAL_UPLOADS_DIR = `${env.LOCAL_DATA_DIR}/uploads`;
 
 /** `events/<eventId>/imports/<importId>/<filename>` */
 export function importFileKey(eventId: string, importId: string, filename: string): string {
@@ -53,6 +55,9 @@ function blobAdapter(token: string): StorageAdapter {
       const body = Buffer.from(await new Response(result.stream).arrayBuffer());
       return { body, contentType: result.blob.contentType ?? "application/octet-stream" };
     },
+    async delete(key) {
+      await blobDel(key, { token });
+    },
   };
 }
 
@@ -78,6 +83,9 @@ function localAdapter(root: string): StorageAdapter {
         throw error;
       }
     },
+    async delete(key) {
+      await Promise.all([rm(filePath(key), { force: true }), rm(metaPath(key), { force: true })]);
+    },
   };
 }
 
@@ -89,6 +97,9 @@ function memoryAdapter(): StorageAdapter {
     },
     async get(key) {
       return files.get(key) ?? null;
+    },
+    async delete(key) {
+      files.delete(key);
     },
   };
 }
@@ -121,4 +132,9 @@ export async function putFile(input: {
 export async function getFile(key: string): Promise<StoredFile | null> {
   assertSafeKey(key);
   return getAdapter().get(key);
+}
+
+export async function deleteFile(key: string): Promise<void> {
+  assertSafeKey(key);
+  await getAdapter().delete(key);
 }

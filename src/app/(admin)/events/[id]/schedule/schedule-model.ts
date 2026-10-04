@@ -1,4 +1,5 @@
 import type { QualityStats } from "@/engine";
+import { compareNames } from "@/lib/names";
 import type {
   ScheduleAppointment,
   ScheduleBuyer,
@@ -177,7 +178,7 @@ export function busyCount(model: ScheduleModel, list: readonly Person[], slot: n
 
 /** Fewest meetings first, then name. Used for the free buyers lists. */
 export function byFewest<T extends Person>(list: readonly T[]): T[] {
-  return [...list].sort((a, b) => a.count - b.count || a.name.localeCompare(b.name));
+  return [...list].sort((a, b) => a.count - b.count || compareNames(a.name, b.name));
 }
 
 export type SheetRow = {

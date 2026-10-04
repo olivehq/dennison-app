@@ -3,7 +3,9 @@ import type { Db } from "@/db/client";
 import { events, suppliers, type Supplier } from "@/db/schema";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEditable, compareNames, loadEvent } from "@/server/matching/common";
+import { compareNames } from "@/lib/names";
+import { assertEventEditable } from "@/server/events/editable";
+import { loadEvent } from "@/server/matching/common";
 import { findActiveRun } from "@/server/matching/runs";
 import { issueTokensForEvent } from "@/server/tokens/tokens";
 
@@ -71,7 +73,7 @@ export async function lockSchedule(
 ): Promise<ActionResult<LockResult>> {
   const event = await loadEvent(db, input.eventId);
   if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEditable(event);
+  const locked = assertEventEditable(event);
   if (locked) return fail("conflict", "The schedule is already locked.");
   const active = await findActiveRun(db, event.id);
   if (!active) return fail("validation", "Run matching and activate a run before locking.");
@@ -130,7 +132,7 @@ export async function reassignDesks(
 ): Promise<ActionResult<{ eventId: string; desks: DeskAssignment[] }>> {
   const event = await loadEvent(db, input.eventId);
   if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEditable(event);
+  const locked = assertEventEditable(event);
   if (locked) return locked;
   const desks = await db.transaction(async (tx) => {
     const { before, after } = await applyDesks(tx, event.id);

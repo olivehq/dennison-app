@@ -27,6 +27,12 @@ export const eventSettingsSchema = z
     mutualTopN: z.int().min(1).max(500),
     hotelRankCutoff: z.int().min(1).max(500),
     biztechOptInRule: biztechOptInRuleSchema,
+    /**
+     * D&A asked in writing to keep participant data (SOW 4). When not true, the
+     * retention cron deletes it 90 days after the event. Missing means false.
+     * Changed only through `setRetainData`, which works in every status.
+     */
+    retainData: z.boolean().optional(),
   })
   .superRefine((settings, ctx) => {
     if (settings.slots.length !== settings.slotCount) {
@@ -98,4 +104,5 @@ export const defaultEventSettings: EventSettings = {
   mutualTopN: 10,
   hotelRankCutoff: 27,
   biztechOptInRule: "from_biztech_file",
+  retainData: false,
 };

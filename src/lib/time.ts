@@ -1,5 +1,5 @@
 import { TZDate } from "@date-fns/tz";
-import { format } from "date-fns";
+import { addDays, endOfDay, format } from "date-fns";
 
 export const MINUTES_PER_DAY = 24 * 60;
 
@@ -83,4 +83,16 @@ export function nowInTimezone(timezone: string, now: Date = new Date()): number 
 /** A stored instant shown in the event's timezone: "Nov 10, 2026, 3:10 PM". */
 export function formatTimestamp(instant: Date, timezone: string): string {
   return format(new TZDate(instant, timezone), "MMM d, yyyy, h:mm a");
+}
+
+/**
+ * The last millisecond of `date` plus `days` in the given timezone, as an instant.
+ * "2026-11-10", "America/Los_Angeles", 60 -> 2027-01-10T07:59:59.999Z.
+ */
+export function endOfDayInTimezone(date: string, timezone: string, days = 0): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) throw new RangeError(`Expected an ISO date (YYYY-MM-DD), got "${date}"`);
+  const [, year, month, day] = match;
+  const local = new TZDate(Number(year), Number(month) - 1, Number(day), timezone);
+  return new Date(endOfDay(addDays(local, days)).getTime());
 }

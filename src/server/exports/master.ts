@@ -1,4 +1,4 @@
-import { compareNames } from "@/server/matching/common";
+import { compareNames } from "@/lib/names";
 import { deskLabel, toCsv, type ExportView } from "./common";
 
 /** Output spec section 2, columns in this order. */

@@ -15,9 +15,10 @@ export const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
 };
 
 /**
- * `Participant_Access_<year>.csv`, the email fallback (scope 2.4). This
- * rotates every participant link of the event (D31): the CSV holds the only
- * working links afterwards. Audited as `export.access_list`.
+ * `Participant_Access_<year>.csv`, the email fallback (scope 2.4). Each
+ * contact's current link is reused and only contacts without one get a new
+ * token (D31, D59), so links already emailed keep working. Audited as
+ * `export.access_list`.
  */
 export async function accessCsv(
   eventId: string,

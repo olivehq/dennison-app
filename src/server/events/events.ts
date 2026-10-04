@@ -89,8 +89,10 @@ export async function updateEventSettings(
   const parsed = eventSettingsSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
+  // retainData only changes through setRetainData, so a stale settings form can't flip it.
+  const settings = { ...parsed.data, retainData: event.settings.retainData ?? false };
   await db.transaction(async (tx) => {
-    await tx.update(events).set({ settings: parsed.data }).where(eq(events.id, event.id));
+    await tx.update(events).set({ settings }).where(eq(events.id, event.id));
     await recordAudit(tx, {
       eventId: event.id,
       adminId: actorId,
@@ -98,10 +100,50 @@ export async function updateEventSettings(
       entityType: "event",
       entityId: event.id,
       before: event.settings,
-      after: parsed.data,
+      after: settings,
     });
   });
   return ok({ id: event.id });
+}
+
+/**
+ * "Keep participant data after 90 days" (SOW 4). Allowed in every status
+ * except archived, because D&A usually asks after the show, when the event is
+ * locked or sent. An archived event's data is already gone.
+ */
+export async function setRetainData(
+  db: Db,
+  id: unknown,
+  retain: unknown,
+  actorId: string,
+): Promise<ActionResult<{ id: string; retainData: boolean }>> {
+  const loaded = await loadEvent(db, id);
+  if (!loaded.ok) return loaded;
+  const event = loaded.data;
+  const parsed = z.boolean().safeParse(retain);
+  if (!parsed.success) return fail("validation", "Choose whether to keep the data.");
+  if (event.status === "archived") {
+    return fail("locked", "This event is archived. Its participant data has already been deleted.");
+  }
+  const current = event.settings.retainData ?? false;
+  if (current === parsed.data) return ok({ id: event.id, retainData: current });
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(events)
+      .set({ settings: { ...event.settings, retainData: parsed.data } })
+      .where(eq(events.id, event.id));
+    await recordAudit(tx, {
+      eventId: event.id,
+      adminId: actorId,
+      action: "event.retention",
+      entityType: "event",
+      entityId: event.id,
+      before: { retainData: current },
+      after: { retainData: parsed.data },
+    });
+  });
+  return ok({ id: event.id, retainData: parsed.data });
 }
 
 /** Only a draft event with no participants can be deleted. Everything else is kept for the audit trail. */

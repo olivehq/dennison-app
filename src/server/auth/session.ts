@@ -10,7 +10,15 @@ export async function getSession(): Promise<SessionData | null> {
   // Read headers before touching auth so a build-time prerender bails out to
   // dynamic rendering without initialising the database or secrets.
   const requestHeaders = await headers();
-  const result = await getAuth().api.getSession({ headers: requestHeaders });
+  // Sessions last 12 hours from the last refresh (auth.ts). Only a Server
+  // Action can write the cookie; a page render that refreshed would extend the
+  // database row but leave the browser cookie to expire. So renders don't
+  // refresh, and SessionKeepAlive refreshes through the auth route instead.
+  const canSetCookies = requestHeaders.has("next-action");
+  const result = await getAuth().api.getSession({
+    headers: requestHeaders,
+    query: { disableRefresh: !canSetCookies },
+  });
   if (!result || result.user.disabledAt) return null;
   return result;
 }

@@ -9,6 +9,7 @@ import {
   type Participant,
   type Supplier,
 } from "@/db/schema";
+import { compareNames } from "@/lib/names";
 import { displayNameFor } from "./display-name";
 
 export { displayNameFor, fullNameFor } from "./display-name";
@@ -71,16 +72,18 @@ export async function listParticipants(
       .select()
       .from(participants)
       .where(and(eq(participants.eventId, eventId), statusFilter(participants.status, options)))
-      .orderBy(participants.lastName, participants.firstName, participants.email),
+      .orderBy(participants.email),
     appointmentCounts(db, eventId, appointments.buyerId),
     entitiesWithTokens(db, eventId, ["buyer"]),
   ]);
-  return rows.map((row) => ({
-    ...row,
-    displayLabel: displayNameFor(row),
-    appointmentCount: counts.get(row.id) ?? 0,
-    hasPendingToken: tokens.has(row.id),
-  }));
+  return rows
+    .sort((a, b) => compareNames(a.lastName, b.lastName) || compareNames(a.firstName, b.firstName))
+    .map((row) => ({
+      ...row,
+      displayLabel: displayNameFor(row),
+      appointmentCount: counts.get(row.id) ?? 0,
+      hasPendingToken: tokens.has(row.id),
+    }));
 }
 
 export async function listSuppliers(
@@ -93,15 +96,17 @@ export async function listSuppliers(
       .select()
       .from(suppliers)
       .where(and(eq(suppliers.eventId, eventId), statusFilter(suppliers.status, options)))
-      .orderBy(suppliers.name),
+      .orderBy(suppliers.id),
     appointmentCounts(db, eventId, appointments.supplierId),
     entitiesWithTokens(db, eventId, ["supplier_admin", "supplier_attendee"]),
   ]);
-  return rows.map((row) => ({
-    ...row,
-    appointmentCount: counts.get(row.id) ?? 0,
-    hasPendingToken: tokens.has(row.id),
-  }));
+  return rows
+    .sort((a, b) => compareNames(a.name, b.name))
+    .map((row) => ({
+      ...row,
+      appointmentCount: counts.get(row.id) ?? 0,
+      hasPendingToken: tokens.has(row.id),
+    }));
 }
 
 export async function getParticipant(id: string, db: Db = getDb()): Promise<ParticipantRow | null> {

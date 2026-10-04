@@ -8,6 +8,7 @@ import {
   createEvent as createEventRecord,
   deleteEvent as deleteEventRecord,
   updateEvent as updateEventRecord,
+  setRetainData as setRetainDataRecord,
   updateEventSettings as updateEventSettingsRecord,
 } from "./events";
 
@@ -35,6 +36,13 @@ export async function updateEvent(id: unknown, input: unknown): Promise<ActionRe
 export async function updateEventSettings(id: unknown, settings: unknown): Promise<ActionResult<{ id: string }>> {
   const actor = await requireAdmin();
   const result = await updateEventSettingsRecord(getDb(), id, settings, actor.id);
+  if (result.ok) revalidateEvent(result.data.id);
+  return result;
+}
+
+export async function setRetainData(id: unknown, retain: unknown): Promise<ActionResult<{ id: string; retainData: boolean }>> {
+  const actor = await requireAdmin();
+  const result = await setRetainDataRecord(getDb(), id, retain, actor.id);
   if (result.ok) revalidateEvent(result.data.id);
   return result;
 }

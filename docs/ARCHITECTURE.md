@@ -22,15 +22,15 @@ components/app  ->  components/ui (shadcn)
 | Module | Owns | Key exports |
 |---|---|---|
 | `auth` | Better Auth instance, session helpers, team management, invites | `getAuth()`, `createAuth(db)`, `getSession()`, `requireSession()`, `requireAdmin()`, `inviteAdmin`, `resendInvite`, `disableAdmin`, `enableAdmin`, `listAdmins`, `getInviteByToken` |
-| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `listEvents`, `getEvent`, `getEventOrThrow`, `getEventCounts`, `createEvent`, `updateEvent`, `updateEventSettings`, `deleteEvent`; later `lockSchedule`, `unlockSchedule`, `assignDesks`. `assertEventEditable(event)` in `events/editable.ts` returns `fail('locked', ...)` for locked, sent, and archived events; every module that mutates event data calls it first. `advanceStatus(tx, eventId, from, to)` in `events/status.ts` moves the status forward (D46) |
+| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `listEvents`, `getEvent`, `getEventOrThrow`, `getEventCounts`, `createEvent`, `updateEvent`, `updateEventSettings`, `deleteEvent`; later `lockSchedule`, `unlockSchedule`, `assignDesks`. `assertEventEditable(event)` in `events/editable.ts` returns `fail('locked', ...)` for locked, sent, and archived events; every module that mutates event data calls it first. `advanceStatus(tx, eventId, from, to)` in `events/status.ts` moves the status forward (D46). `setRetainData` (works in any status but archived) and `deleteExpiredParticipantData(db, now)` in `events/retention.ts`, run by the cron route (D69, D70) |
 | `roster` | Participants and suppliers: list, add, edit, withdraw, restore | `listParticipants`, `upsertParticipant`, `withdrawParticipant`, same for suppliers |
 | `imports` | File upload, parsing (list and matrix formats), validation report, alias mapping, applying rankings | `createImport`, `validateImport`, `saveAlias`, `saveAliases`, `applyImport`. Templates download from `GET /api/imports/templates/[kind]` (session required) |
 | `matching` | Runs the engine, stores runs, compares runs, activates a run, pins | `runMatching`, `rerunKeepingExisting`, `activateRun`, `compareRuns`, `setPinned` |
 | `schedule` | Reads for the workspace, manual edits with version check, swap candidates | `getScheduleView`, `getPersonSchedule`, `replaceAppointment`, `removeAppointment`, `swapCandidates` |
 | `exports` | Master CSV, per-person ZIP, quality report, access CSV, export history, the participant page read | `masterScheduleCsv`, `schedulesZip`, `qualityReportText`, `accessCsv`, `exportAvailability`, `recordExport`, `loadParticipantView`. Route Handlers in `src/app/api/exports/[eventId]/` call these (D43) |
-| `email` | Campaigns, rendering merge fields, sending through the adapter, webhook updates, changed-since-send | `createCampaign`, `previewCampaign`, `sendCampaign`, `recordDeliveryEvent`, `recipientsChangedSinceLastSend` |
-| `audit` | Writing and reading `audit_events`, undo | `recordAudit`, `listAudit`, `undoAudit` |
-| `tokens` | Participant access tokens: issue, verify, revoke, regenerate | `issueTokensForEvent`, `verifyToken`, `revokeToken` |
+| `email` | Campaigns, merge fields, audiences, sending through the adapter, Resend webhooks, changed since last email (D13, D59 to D64) | `createCampaign`, `updateCampaign`, `duplicateCampaign`, `previewCampaign`, `sendTest`, `sendCampaign`, `resendToBounced`, `resolveAudience`, `renderTemplate`, `changedSinceLastSend`, `recordDeliveryEvent`, `handleResendWebhook`; reads `listCampaigns`, `getCampaign`, `getAudienceOptions`, `getEmailSummary`. Webhook route: `POST /api/webhooks/resend` |
+| `audit` | Writing and reading `audit_events`, the activity page, plain-English rows | `recordAudit`, `listAudit` (filters: admin, action groups, person, time window), `describeAudit` and `AUDIT_ACTION_GROUPS` in `describe.ts` (pure), `getActivityPage` in `queries.ts`. Undo itself is `undoAudit` in `schedule/edits.ts` (D32) |
+| `tokens` | Participant access tokens: issue, verify, revoke, regenerate, reuse (D59) | `issueTokensForEvent`, `linksForContacts`, `verifyToken`, `revokeToken` |
 
 Each module has `queries.ts` (reads), `actions.ts` (`'use server'` mutations), and optionally internal helpers. Tests sit beside the code. Actions are thin: they call `requireAdmin()`, delegate to a plain module that takes the `db` handle (for example `events/events.ts`, `auth/admins.ts`), then `revalidatePath`. Tests exercise the plain module with `createTestDb()`, since `headers()` and `revalidatePath` need a request.
 
@@ -85,7 +85,26 @@ Tokens follow the 03 Resource timeline design: putty ground, umber ink, pool tea
 | | Database | Files | Email |
 |---|---|---|---|
 | Tests | PGlite in memory, migrated per test file | in-memory adapter | logger adapter |
-| Local dev, no env | PGlite in `.data/pglite` | `.data/uploads` | logger adapter |
+| Local dev, no env | PGlite in `.data/pglite` (`$LOCAL_DATA_DIR/pglite`) | `.data/uploads` | logger adapter |
 | Local dev, Docker | postgres.js to `DATABASE_URL` | `.data/uploads` | logger or Resend |
 | Vercel preview | Neon branch per preview | Vercel Blob | Resend, test domain |
 | Vercel production | Neon main | Vercel Blob | Resend, D&A domain |
+
+## Security and operations
+
+- **Proxy (`src/proxy.ts`).** Runs before every page and route except static files. In order: rate limits `/s/*` (60 per IP per 10 minutes, in memory per instance, D72), builds the Content-Security-Policy with a fresh nonce, then the optimistic session-cookie redirect to `/login`. Pages and actions still check the session themselves.
+- **Content-Security-Policy (D71).** Built by `buildCsp` in `src/lib/csp.ts`:
+
+  ```
+  default-src 'self'; script-src 'self' 'nonce-<per request>' 'strict-dynamic' ['unsafe-eval' in development only];
+  style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self';
+  connect-src 'self' [Sentry ingest origin when NEXT_PUBLIC_SENTRY_DSN is set];
+  object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  ```
+
+  What this means for new code: no third-party script, font, image, or fetch origin works until it is added to `buildCsp`. Inline `<script>` needs the nonce (`(await headers()).get("x-nonce")`); scripts loaded by our own bundles are fine through `'strict-dynamic'`. Inline styles and `style` attributes are allowed. Nothing may use `eval` or `new Function` in production. Rich-text editors (Tiptap/ProseMirror) only need `'self'` scripts and inline styles; pasted remote images are blocked by `img-src`. `iframe` previews need a `frame-src` entry, which there is none of. Check the browser console for "Content Security Policy" errors after any UI change.
+- **Other headers.** `next.config.ts` `headers()`: HSTS, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, Permissions-Policy; `/s/*` overrides with `no-referrer` and `X-Robots-Tag: noindex, nofollow`.
+- **Sessions (D73).** 12 hours from the last refresh. Page renders don't refresh; Server Actions and `SessionKeepAlive` (admin layout, on each navigation) do.
+- **Monitoring (D74).** Sentry through `src/instrumentation.ts`, `src/instrumentation-client.ts`, and `sentry.{server,edge}.config.ts` at the repo root, inactive without a DSN. `src/lib/sentry-scrub.ts` holds the data-collection settings and the token scrubber every `Sentry.init` uses.
+- **Cron (D69).** `vercel.json` schedules `GET /api/cron/retention` at 09:00 UTC. The route checks `Authorization: Bearer $CRON_SECRET` with `rejectCronRequest` from `src/lib/cron-auth.ts`.
+

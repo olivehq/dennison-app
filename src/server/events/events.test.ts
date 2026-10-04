@@ -6,7 +6,7 @@ import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas/event-settings";
 import { listAudit } from "@/server/audit/audit";
 import { assertEventEditable } from "./editable";
-import { createEvent, deleteEvent, updateEvent, updateEventSettings } from "./events";
+import { createEvent, deleteEvent, setRetainData, updateEvent, updateEventSettings } from "./events";
 import { getEvent, getEventCounts, listEvents } from "./queries";
 
 const ACTOR = "admin-test";
@@ -107,6 +107,35 @@ describe("locked events", () => {
       expect(result?.ok).toBe(false);
       if (result && !result.ok) expect(result.error.code).toBe("locked");
     }
+  });
+});
+
+describe("setRetainData", () => {
+  it("works while locked, audits the change, and survives a settings save", async () => {
+    const id = await makeEvent("Retain");
+    await db.update(events).set({ status: "sent" }).where(eq(events.id, id));
+    const on = await setRetainData(db, id, true, ACTOR);
+    expect(on).toEqual({ ok: true, data: { id, retainData: true } });
+    expect((await getEvent(id, db))?.settings.retainData).toBe(true);
+    const audit = await listAudit({ eventId: id, filters: { action: "event.retention" } }, db);
+    expect(audit.rows.map((r) => [r.before, r.after])).toEqual([[{ retainData: false }, { retainData: true }]]);
+
+    // Saving again is a no-op with no second audit row.
+    await setRetainData(db, id, true, ACTOR);
+    expect((await listAudit({ eventId: id, filters: { action: "event.retention" } }, db)).total).toBe(1);
+
+    // A settings form saved with a stale retainData leaves it alone.
+    await db.update(events).set({ status: "matched" }).where(eq(events.id, id));
+    const saved = await updateEventSettings(db, id, { ...defaultEventSettings, retainData: false, buyerMin: 6 }, ACTOR);
+    expect(saved.ok).toBe(true);
+    expect((await getEvent(id, db))?.settings).toMatchObject({ retainData: true, buyerMin: 6 });
+  });
+
+  it("refuses archived events and non-boolean input", async () => {
+    const id = await makeEvent("Archived");
+    expect(await setRetainData(db, id, "yes", ACTOR)).toMatchObject({ ok: false, error: { code: "validation" } });
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, id));
+    expect(await setRetainData(db, id, true, ACTOR)).toMatchObject({ ok: false, error: { code: "locked" } });
   });
 });
 

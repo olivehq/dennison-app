@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSlots, formatEventDate, formatMinutes, formatTimestamp, nowInTimezone, parseClock } from "./time";
+import { buildSlots, endOfDayInTimezone, formatEventDate, formatMinutes, formatTimestamp, nowInTimezone, parseClock } from "./time";
 
 describe("formatMinutes", () => {
   it("formats afternoon and morning times on a 12-hour clock", () => {
@@ -85,5 +85,15 @@ describe("formatTimestamp", () => {
     const instant = new Date("2026-11-10T23:10:00Z");
     expect(formatTimestamp(instant, "America/Los_Angeles")).toBe("Nov 10, 2026, 3:10 PM");
     expect(formatTimestamp(instant, "America/New_York")).toBe("Nov 10, 2026, 6:10 PM");
+  });
+});
+
+describe("endOfDayInTimezone", () => {
+  it("is the last millisecond of the day, days later, in that timezone", () => {
+    expect(endOfDayInTimezone("2026-11-10", "America/Los_Angeles").toISOString()).toBe("2026-11-11T07:59:59.999Z");
+    expect(endOfDayInTimezone("2026-11-10", "America/Los_Angeles", 90).toISOString()).toBe("2027-02-09T07:59:59.999Z");
+    // Crosses the March DST change: midnight is UTC-7 by then.
+    expect(endOfDayInTimezone("2026-03-01", "America/Los_Angeles", 10).toISOString()).toBe("2026-03-12T06:59:59.999Z");
+    expect(() => endOfDayInTimezone("11/10/2026", "UTC")).toThrow(RangeError);
   });
 });

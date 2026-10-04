@@ -106,3 +106,17 @@ export function getLoggedEmails(): readonly EmailMessage[] {
 export function clearLoggedEmails(): void {
   loggedEmails.length = 0;
 }
+
+export type WebhookHeaders = { id: string; timestamp: string; signature: string };
+
+/**
+ * Verifies a Resend webhook (Svix-style headers `svix-id`, `svix-timestamp`,
+ * `svix-signature`) against the signing secret and returns the parsed JSON.
+ * Throws when the signature or timestamp is wrong. Uses the `resend` package's
+ * own verifier, so no extra dependency (D62).
+ */
+export function verifyWebhook(payload: string, headers: WebhookHeaders, secret: string): unknown {
+  // Verification is local; the API key is never used, so a placeholder is fine.
+  const resend = new Resend(env.RESEND_API_KEY ?? "re_webhook_verify_only");
+  return resend.webhooks.verify({ payload, headers, webhookSecret: secret });
+}

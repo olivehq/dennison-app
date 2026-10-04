@@ -1,6 +1,4 @@
-import { TZDate } from "@date-fns/tz";
-import { addDays, endOfDay } from "date-fns";
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
@@ -11,13 +9,15 @@ import {
 } from "@/db/schema";
 import { env } from "@/lib/env";
 import { fail, ok, type ActionResult } from "@/lib/errors";
-import { generateToken, hashToken } from "@/lib/tokens";
+import { endOfDayInTimezone } from "@/lib/time";
+import { decryptToken, encryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { buyerDisplayName, loadEvent } from "@/server/matching/common";
 
 /**
  * Participant access links (D14, scope 2.6). One token per contact: every
  * active buyer, and each active supplier's admin and attendee contact. The
- * plain token exists only in the return value of the function that issued it.
+ * plain token is returned by the function that issued it and stored only
+ * encrypted (D59), so `linksForContacts` can hand the same link out again.
  */
 
 export const TOKEN_TTL_DAYS = 60;
@@ -47,20 +47,29 @@ export function linkFor(token: string): string {
   return `${env.APP_URL}/s/${token}`;
 }
 
-/** End of the day 60 days after the event, in the event's timezone (D14, D16). */
-export function tokenExpiry(eventDate: string, timezone: string, ttlDays = TOKEN_TTL_DAYS): Date {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(eventDate);
-  if (!match) throw new RangeError(`Expected an ISO date (YYYY-MM-DD), got "${eventDate}"`);
-  const [, year, month, day] = match;
-  const eventDay = new TZDate(Number(year), Number(month) - 1, Number(day), timezone);
-  return new Date(endOfDay(addDays(eventDay, ttlDays)).getTime());
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The later of the end of the day 60 days after the event, in the event's
+ * timezone (D14, D16), and 60 days from `now`. The second keeps links issued
+ * or rotated after a past event date from expiring on the spot.
+ */
+export function tokenExpiry(
+  eventDate: string,
+  timezone: string,
+  now: Date = new Date(),
+  ttlDays = TOKEN_TTL_DAYS,
+): Date {
+  const afterEvent = endOfDayInTimezone(eventDate, timezone, ttlDays);
+  const fromNow = new Date(now.getTime() + ttlDays * DAY_MS);
+  return afterEvent > fromNow ? afterEvent : fromNow;
 }
 
 function isActiveToken(row: Pick<AccessToken, "revokedAt" | "expiresAt">, now: Date): boolean {
   return row.revokedAt === null && row.expiresAt > now;
 }
 
-function contactKey(contact: Pick<ContactRef, "contactType" | "entityId">): string {
+export function contactKey(contact: Pick<ContactRef, "contactType" | "entityId">): string {
   return `${contact.contactType}\u0000${contact.entityId}`;
 }
 
@@ -114,6 +123,7 @@ export async function issueTokenForContact(
       contactType: input.contactType,
       entityId: input.entityId,
       tokenHash: hashToken(token),
+      tokenCiphertext: encryptToken(token),
       expiresAt: input.expiresAt,
     })
     .returning({ id: accessTokens.id, expiresAt: accessTokens.expiresAt });
@@ -177,6 +187,71 @@ export async function rotateTokensForEvent(db: Db, eventId: string): Promise<Act
     return issueForContacts(tx, eventId, contacts, expiresAt);
   });
   return ok(issued);
+}
+
+export type ContactLink = { tokenId: string; token: string };
+
+/**
+ * The current link of each contact, keyed by `contactKey` (D59). A contact's
+ * newest active token is reused when its ciphertext decrypts. With
+ * `issueMissing`, contacts with no usable token get a new one; an active token
+ * from before D59 (no ciphertext) is revoked first, since its plain value is
+ * gone. Without `issueMissing` nothing is written and those contacts are
+ * absent from the map. Callers audit what they did with the links.
+ */
+export async function linksForContacts(
+  db: Db,
+  eventId: string,
+  contacts: Pick<ContactRef, "contactType" | "entityId">[],
+  options: { issueMissing: boolean },
+): Promise<ActionResult<Map<string, ContactLink>>> {
+  const event = await loadEvent(db, eventId);
+  if (!event) return fail("not_found", "That event no longer exists.");
+  const now = new Date();
+  const rows = await db
+    .select()
+    .from(accessTokens)
+    .where(eq(accessTokens.eventId, eventId))
+    .orderBy(desc(accessTokens.createdAt));
+  const newestActive = new Map<string, AccessToken>();
+  for (const row of rows) {
+    const key = contactKey(row);
+    if (isActiveToken(row, now) && !newestActive.has(key)) newestActive.set(key, row);
+  }
+
+  const links = new Map<string, ContactLink>();
+  const missing: Pick<ContactRef, "contactType" | "entityId">[] = [];
+  const unreadable: string[] = [];
+  for (const contact of contacts) {
+    const key = contactKey(contact);
+    if (links.has(key)) continue;
+    const row = newestActive.get(key);
+    const token = row?.tokenCiphertext ? decryptToken(row.tokenCiphertext) : null;
+    if (row && token) {
+      links.set(key, { tokenId: row.id, token });
+    } else {
+      missing.push(contact);
+      if (row) unreadable.push(row.id);
+    }
+  }
+  if (!options.issueMissing || missing.length === 0) return ok(links);
+
+  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
+  await db.transaction(async (tx) => {
+    if (unreadable.length > 0) {
+      await tx.update(accessTokens).set({ revokedAt: now }).where(inArray(accessTokens.id, unreadable));
+    }
+    for (const contact of missing) {
+      const issued = await issueTokenForContact(tx, {
+        eventId,
+        contactType: contact.contactType,
+        entityId: contact.entityId,
+        expiresAt,
+      });
+      links.set(contactKey(contact), { tokenId: issued.tokenId, token: issued.token });
+    }
+  });
+  return ok(links);
 }
 
 /** Revokes one token. Already revoked tokens are left as they are. Callers write the audit row. */

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { restoreSupplierAction, withdrawSupplierAction } from "@/server/roster/actions";
 import {
   AppointmentCount,
+  EmailChangeBadge,
   LinkBadge,
   RosterRowActions,
   RosterStatusBadge,
@@ -17,7 +18,7 @@ import {
   useUrlFilter,
   type RowLink,
 } from "../_roster/roster-ui";
-import type { Health, LinkInfo, StatusFilter, TypeFilter } from "../_roster/types";
+import type { EmailChange, Health, LinkInfo, StatusFilter, TypeFilter } from "../_roster/types";
 import { SupplierDialog, type SupplierFormData } from "./supplier-dialog";
 
 export type SupplierTableRow = SupplierFormData & {
@@ -27,6 +28,8 @@ export type SupplierTableRow = SupplierFormData & {
   healthHint?: string;
   adminLink: LinkInfo;
   attendeeLink: LinkInfo;
+  /** Either contact's schedule changed since their last email. */
+  emailChange: EmailChange;
 };
 
 const TYPE_LABELS = { business: "Business", hotel: "Hotel" } as const;
@@ -157,8 +160,11 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
             );
           },
         }),
-        // TODO(email module): add the "Changed since last email" column here once
-        // recipientsChangedSinceLastSend lands (scope 2.7, D13).
+        helper.accessor((row) => row.emailChange ?? "", {
+          id: "emailChange",
+          header: "Changed since last email",
+          cell: ({ row }) => <EmailChangeBadge state={row.original.emailChange} />,
+        }),
         helper.accessor("status", {
           header: "Status",
           cell: ({ row }) => <RosterStatusBadge status={row.original.status} />,

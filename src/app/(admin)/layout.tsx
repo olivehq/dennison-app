@@ -3,6 +3,7 @@ import { ThemeToggle } from "@/components/app/theme-toggle";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { requireSession } from "@/server/auth/session";
 import { AppSidebar } from "./app-sidebar";
+import { SessionKeepAlive } from "./session-keep-alive";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const [{ user }, cookieStore] = await Promise.all([requireSession(), cookies()]);
@@ -10,6 +11,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
   return (
     <SidebarProvider defaultOpen={defaultOpen}>
+      <SessionKeepAlive />
       <AppSidebar user={{ name: user.name, email: user.email }} />
       <SidebarInset>
         <div className="flex h-12 items-center justify-between gap-2 border-b px-3 md:hidden">

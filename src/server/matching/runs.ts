@@ -1,11 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/db/client";
 import { appointments, events, matchRuns, type Event, type MatchRun } from "@/db/schema";
 import { runMatching, type Appointment, type QualityStats } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
+import { VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { assertEventEditable } from "@/server/events/editable";
-import { compareNames, loadEvent, nameWarning } from "./common";
+import { compareNames } from "@/lib/names";
+import { loadEvent, nameWarning } from "./common";
 import { buildMatchInput, loadRoster, type Roster } from "./input";
 
 export type StartRunInput = {
@@ -327,10 +329,17 @@ export async function compareRuns(
   return ok({ added, removed, countChanges });
 }
 
-/** Protects one appointment from the next "re-run and keep existing" (scope 2.2). Bumps the run version. */
+class VersionConflict extends Error {}
+
+/**
+ * Protects one appointment from the next "re-run and keep existing" (scope 2.2).
+ * Bumps the run version like every other schedule save (D11, D33): the update
+ * only fires while the version is still the one read here (and the one the
+ * client sent, when it sent one), so a concurrent edit makes it a conflict.
+ */
 export async function setPinned(
   db: Db,
-  input: { appointmentId: string; pinned: boolean; adminId: string },
+  input: { appointmentId: string; pinned: boolean; adminId: string; version?: number },
 ): Promise<ActionResult<{ appointmentId: string; pinned: boolean; version: number }>> {
   const [row] = await db.select().from(appointments).where(eq(appointments.id, input.appointmentId)).limit(1);
   if (!row) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
@@ -338,27 +347,36 @@ export async function setPinned(
   if (!run || !event) return fail("not_found", "That run no longer exists.");
   const locked = assertEventEditable(event);
   if (locked) return locked;
+  if (input.version !== undefined && input.version !== run.version) {
+    return fail("conflict", VERSION_CONFLICT_MESSAGE);
+  }
   if (row.pinned === input.pinned) {
     return ok({ appointmentId: row.id, pinned: row.pinned, version: run.version });
   }
 
-  const version = await db.transaction(async (tx) => {
-    await tx.update(appointments).set({ pinned: input.pinned }).where(eq(appointments.id, row.id));
-    const [updated] = await tx
-      .update(matchRuns)
-      .set({ version: run.version + 1 })
-      .where(eq(matchRuns.id, run.id))
-      .returning({ version: matchRuns.version });
-    await recordAudit(tx, {
-      eventId: row.eventId,
-      adminId: input.adminId,
-      action: input.pinned ? "appointment.pin" : "appointment.unpin",
-      entityType: "appointment",
-      entityId: row.id,
-      before: { pinned: row.pinned },
-      after: { pinned: input.pinned, slot: row.slot, buyerId: row.buyerId, supplierId: row.supplierId },
+  try {
+    const version = await db.transaction(async (tx) => {
+      const [bumped] = await tx
+        .update(matchRuns)
+        .set({ version: sql`${matchRuns.version} + 1` })
+        .where(and(eq(matchRuns.id, run.id), eq(matchRuns.version, run.version)))
+        .returning({ version: matchRuns.version });
+      if (!bumped) throw new VersionConflict();
+      await tx.update(appointments).set({ pinned: input.pinned }).where(eq(appointments.id, row.id));
+      await recordAudit(tx, {
+        eventId: row.eventId,
+        adminId: input.adminId,
+        action: input.pinned ? "appointment.pin" : "appointment.unpin",
+        entityType: "appointment",
+        entityId: row.id,
+        before: { pinned: row.pinned },
+        after: { pinned: input.pinned, slot: row.slot, buyerId: row.buyerId, supplierId: row.supplierId },
+      });
+      return bumped.version;
     });
-    return updated.version;
-  });
-  return ok({ appointmentId: row.id, pinned: input.pinned, version });
+    return ok({ appointmentId: row.id, pinned: input.pinned, version });
+  } catch (error) {
+    if (error instanceof VersionConflict) return fail("conflict", VERSION_CONFLICT_MESSAGE);
+    throw error;
+  }
 }

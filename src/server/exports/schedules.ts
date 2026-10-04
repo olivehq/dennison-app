@@ -1,5 +1,5 @@
 import { ZipArchive, type Archiver } from "archiver";
-import { compareNames } from "@/server/matching/common";
+import { compareNames } from "@/lib/names";
 import { deskLabel, toCsv, type ExportView } from "./common";
 import { scheduleFilename, uniqueFilenames } from "./filenames";
 

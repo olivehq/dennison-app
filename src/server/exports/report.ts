@@ -1,7 +1,7 @@
 import type { Event } from "@/db/schema";
 import type { CountAndPct, PersonCount, QualityStats } from "@/engine";
 import { formatEventDate } from "@/lib/time";
-import { compareNames } from "@/server/matching/common";
+import { compareNames } from "@/lib/names";
 import type { ExportView } from "./common";
 
 /**

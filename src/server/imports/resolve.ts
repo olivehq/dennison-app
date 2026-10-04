@@ -1,3 +1,4 @@
+import { compareNames } from "@/lib/names";
 import type { NameSuggestion } from "@/lib/schemas/import";
 
 export type ResolvableEntity = {
@@ -96,7 +97,7 @@ function suggestionsFor(raw: string, entities: ResolvableEntity[]): NameSuggesti
   }));
   return scored
     .filter((suggestion) => suggestion.score >= SUGGESTION_THRESHOLD)
-    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+    .sort((a, b) => b.score - a.score || compareNames(a.name, b.name))
     .slice(0, SUGGESTION_LIMIT)
     .map((suggestion) => ({ ...suggestion, score: Math.round(suggestion.score * 100) / 100 }));
 }
