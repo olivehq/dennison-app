@@ -1,28 +1,15 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { events, type Event, type EventStatus } from "@/db/schema";
-import { fail, type ActionResult } from "@/lib/errors";
+import { events, type Event } from "@/db/schema";
+
+/** Helpers shared by the matching, schedule, and tokens modules. */
 
 /**
- * Helpers shared by the matching, schedule, and tokens modules.
- *
- * Follow-up: `assertEditable` duplicates the status check the events module
- * owns. Unify once both land.
+ * @deprecated Import `assertEventEditable` from `@/server/events/editable` (D27).
+ * This alias only keeps `src/server/schedule` compiling until it switches its
+ * imports; it is the same function, not a copy.
  */
-
-const LOCKED_STATUSES: ReadonlySet<EventStatus> = new Set(["locked", "sent", "archived"]);
-
-/**
- * A locked event rejects every mutation except unlock, exports, and sends
- * (AGENTS.md invariants). Returns the failure to return, or null when edits
- * are allowed.
- */
-export function assertEditable(event: Pick<Event, "status">): ActionResult<never> | null {
-  if (LOCKED_STATUSES.has(event.status)) {
-    return fail("locked", "The schedule is locked. Unlock it to make changes.");
-  }
-  return null;
-}
+export { assertEventEditable as assertEditable } from "@/server/events/editable";
 
 export async function loadEvent(db: Db, eventId: string): Promise<Event | null> {
   const [event] = await db.select().from(events).where(eq(events.id, eventId)).limit(1);

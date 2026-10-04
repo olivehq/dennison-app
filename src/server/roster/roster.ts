@@ -209,6 +209,36 @@ async function nameTaken(db: Db, eventId: string, name: string, exceptId?: strin
   return row !== undefined;
 }
 
+/** The name of another active supplier holding this desk, or null. A null desk is never taken. */
+async function deskTakenBy(db: Db, eventId: string, deskNumber: number | null, exceptId?: string): Promise<string | null> {
+  if (deskNumber === null) return null;
+  const conditions = [eq(suppliers.eventId, eventId), eq(suppliers.deskNumber, deskNumber), eq(suppliers.status, "active")];
+  if (exceptId) conditions.push(ne(suppliers.id, exceptId));
+  const [row] = await db.select({ name: suppliers.name }).from(suppliers).where(and(...conditions)).limit(1);
+  return row?.name ?? null;
+}
+
+function deskConflict(deskNumber: number, holder: string): ActionResult<never> {
+  return fail("conflict", `Desk ${deskNumber} is already assigned to ${holder}.`, {
+    deskNumber: [`Already assigned to ${holder}.`],
+  });
+}
+
+/**
+ * Desk fields for a save. `undefined` leaves the desk alone, and so does the
+ * number the supplier already has (a desk assigned at lock keeps deskOverride
+ * false). Any other number is a manual override (D17); null clears it.
+ */
+function deskChange(
+  existing: Supplier | null,
+  deskNumber: number | null | undefined,
+): { deskNumber: number | null; deskOverride: boolean } | null {
+  if (deskNumber === undefined) return null;
+  if (existing && existing.deskNumber === deskNumber) return null;
+  if (!existing && deskNumber === null) return null;
+  return { deskNumber, deskOverride: deskNumber !== null };
+}
+
 function supplierValues(data: SupplierInput) {
   return {
     name: data.name,
@@ -242,7 +272,13 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
     });
   }
 
-  const values = supplierValues(input.data);
+  const desk = deskChange(existing, input.data.deskNumber);
+  if (desk) {
+    const taken = await deskTakenBy(db, input.eventId, desk.deskNumber, existing?.id);
+    if (taken) return deskConflict(desk.deskNumber as number, taken);
+  }
+
+  const values = { ...supplierValues(input.data), ...desk };
   const saved = await db.transaction(async (tx) => {
     if (!existing) {
       const [row] = await tx.insert(suppliers).values({ eventId: input.eventId, ...values }).returning();
@@ -323,25 +359,8 @@ export async function setSupplierDesk(
   const loaded = await loadEditableEvent(db, existing.eventId);
   if (!loaded.ok) return loaded.error;
 
-  if (input.deskNumber !== null) {
-    const [taken] = await db
-      .select({ name: suppliers.name })
-      .from(suppliers)
-      .where(
-        and(
-          eq(suppliers.eventId, existing.eventId),
-          eq(suppliers.deskNumber, input.deskNumber),
-          eq(suppliers.status, "active"),
-          ne(suppliers.id, existing.id),
-        ),
-      )
-      .limit(1);
-    if (taken) {
-      return fail("conflict", `Desk ${input.deskNumber} is already assigned to ${taken.name}.`, {
-        deskNumber: [`Already assigned to ${taken.name}.`],
-      });
-    }
-  }
+  const taken = await deskTakenBy(db, existing.eventId, input.deskNumber, existing.id);
+  if (taken) return deskConflict(input.deskNumber as number, taken);
 
   const values = { deskNumber: input.deskNumber, deskOverride: input.deskNumber !== null };
   await db.transaction(async (tx) => {

@@ -22,11 +22,12 @@ import {
   type RankingIndex,
 } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
-import type {
-  AddAppointmentInput,
-  RemoveAppointmentInput,
-  ReplaceAppointmentInput,
-  SwapCandidatesInput,
+import {
+  VERSION_CONFLICT_MESSAGE,
+  type AddAppointmentInput,
+  type RemoveAppointmentInput,
+  type ReplaceAppointmentInput,
+  type SwapCandidatesInput,
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { assertEditable, compareNames } from "@/server/matching/common";
@@ -47,8 +48,7 @@ import { matchStrength, type MatchStrength } from "./views";
  * audit row (D12) in one transaction. The unique indexes stay the authority.
  */
 
-export const VERSION_CONFLICT_MESSAGE =
-  "Someone else changed this schedule. Review their change, then try again.";
+export { VERSION_CONFLICT_MESSAGE };
 
 export type AffectedPerson = {
   personId: string;

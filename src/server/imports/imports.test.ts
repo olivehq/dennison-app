@@ -8,7 +8,7 @@ import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
 import { useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
-import { applyImport, createImport, deleteImportRecord, saveAlias } from "./imports";
+import { applyImport, createImport, deleteImportRecord, saveAlias, saveAliases } from "./imports";
 import { getImport, getImportStatusByKind, listImports, readinessForMatching } from "./queries";
 
 let db: Db;
@@ -109,7 +109,9 @@ describe("participants import", () => {
     expect(first.state).toBe("ready");
     expect(first.report).toMatchObject({ format: "template", counts: { rows: 4, errors: 0, unknownNames: 0 } });
     const applied = await expectOk(await applyImport(db, { importId: first.importId, adminId }));
-    expect(applied.summary).toMatchObject({ kind: "participants", created: 4, updated: 0 });
+    expect(applied.summary).toMatchObject({ kind: "participants", created: 4, updated: 0, eventAdvanced: true });
+    const [advanced] = await db.select({ status: events.status }).from(events).where(eq(events.id, eventId));
+    expect(advanced.status).toBe("imported");
     expect((await participantByEmail("test1@example.com")).biztechOptIn).toBe(true);
     expect((await participantByEmail("ann@example.com")).biztechOptIn).toBe(false);
 
@@ -176,7 +178,7 @@ describe("suppliers import", () => {
     const outcome = await expectOk(await upload("suppliers", writeSheet(supplierHeaders, rows)));
     expect(outcome.state).toBe("ready");
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
-    expect(applied.summary).toMatchObject({ created: 25, updated: 0 });
+    expect(applied.summary).toMatchObject({ created: 25, updated: 0, eventAdvanced: false });
     const all = await db.select().from(suppliers).where(eq(suppliers.eventId, eventId));
     expect(all.filter((s) => s.type === "business")).toHaveLength(4);
 
@@ -359,6 +361,57 @@ describe("queries and readiness", () => {
     expect(result.rankingsDeleted).toBe(4);
     expect(await getImport(target.id, db)).toBeNull();
     expect((await readinessForMatching(eventId, db)).missing).toEqual(["supplier_rankings"]);
+  });
+});
+
+describe("applying a roster file re-checks pending ranking files", () => {
+  it("turns a pending ranking import ready once the missing supplier is added", async () => {
+    const pending = await expectOk(
+      await upload("buyer_hotel_rankings", listSheet([{ name: "Ann Lee", choices: ["Brand New Inn"] }])),
+    );
+    expect(pending.state).toBe("needs_mapping");
+    const roster = await expectOk(
+      await upload("suppliers", writeSheet(supplierHeaders, [["Brand New Inn", "hotel", "", "", "", ""]])),
+    );
+    await expectOk(await applyImport(db, { importId: roster.importId, adminId }));
+    expect((await getImport(pending.importId, db))?.state).toBe("ready");
+    await deleteImportRecord(db, { importId: pending.importId, adminId });
+  });
+});
+
+describe("saving several aliases at once", () => {
+  it("is all or nothing and re-validates the pending import once", async () => {
+    const outcome = await expectOk(
+      await upload("supplier_rankings", listSheet([{ name: "See Monterey", choices: ["Annie Lee", "Robert Ray"] }])),
+    );
+    expect(outcome.state).toBe("needs_mapping");
+    expect(outcome.report.unknownNames.map((n) => n.raw).sort()).toEqual(["Annie Lee", "Robert Ray"]);
+    const [ann, bob] = [await participantByEmail("ann@example.com"), await participantByEmail("bob@example.com")];
+
+    const refused = await saveAliases(db, {
+      eventId,
+      adminId,
+      aliases: [
+        { raw: "Annie Lee", entityType: "buyer", entityId: ann.id },
+        { raw: "Robert Ray", entityType: "buyer", entityId: "00000000-0000-4000-8000-000000000000" },
+      ],
+    });
+    expect(refused).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(await db.select().from(nameAliases).where(eq(nameAliases.rawText, "Annie Lee"))).toHaveLength(0);
+
+    const saved = await expectOk(
+      await saveAliases(db, {
+        eventId,
+        adminId,
+        aliases: [
+          { raw: " Annie Lee ", entityType: "buyer", entityId: ann.id },
+          { raw: "Robert Ray", entityType: "buyer", entityId: bob.id },
+        ],
+      }),
+    );
+    expect(saved.aliasIds).toHaveLength(2);
+    expect(saved.imports).toEqual(expect.arrayContaining([{ importId: outcome.importId, kind: "supplier_rankings", state: "ready" }]));
+    await deleteImportRecord(db, { importId: outcome.importId, adminId });
   });
 });
 

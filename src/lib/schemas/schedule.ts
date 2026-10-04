@@ -8,6 +8,10 @@ import { MAX_SLOT_COUNT } from "./event-settings";
  * Follow-up: re-export from `src/lib/schemas/index.ts` once that file is free.
  */
 
+/** Returned with code `conflict` when a save carries a stale run version (D11). Shared so the client can tell it apart. */
+export const VERSION_CONFLICT_MESSAGE =
+  "Someone else changed this schedule. Review their change, then try again.";
+
 const uuid = z.uuid("Expected an id.");
 const slot = z.int().min(1).max(MAX_SLOT_COUNT);
 const version = z.int().min(1);

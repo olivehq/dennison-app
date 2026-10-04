@@ -102,6 +102,20 @@ export const saveAliasSchema = z.object({
   entityId: z.uuid(),
 });
 
+export const saveAliasesSchema = z.object({
+  eventId: z.uuid(),
+  aliases: z
+    .array(
+      z.object({
+        raw: z.string().trim().min(1, "The raw name is empty."),
+        entityType: entityTypeSchema,
+        entityId: z.uuid(),
+      }),
+    )
+    .min(1, "Choose at least one name to map.")
+    .max(500),
+});
+
 export const IMPORT_FILE_EXTENSIONS = [".xlsx", ".xls", ".csv"] as const;
 export const IMPORT_MAX_FILE_BYTES = 5 * 1024 * 1024;
 
@@ -115,6 +129,7 @@ export type UnknownName = z.infer<typeof unknownNameSchema>;
 export type ImportValidationReport = z.infer<typeof importValidationReportSchema>;
 export type UploadImportInput = z.infer<typeof uploadImportSchema>;
 export type SaveAliasInput = z.infer<typeof saveAliasSchema>;
+export type SaveAliasesInput = z.infer<typeof saveAliasesSchema>;
 
 export function isRankingKind(kind: ImportKind): kind is RankingKind {
   return (rankingKinds as readonly string[]).includes(kind);

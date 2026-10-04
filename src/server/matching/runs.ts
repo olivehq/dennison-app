@@ -4,7 +4,8 @@ import { appointments, events, matchRuns, type Event, type MatchRun } from "@/db
 import { runMatching, type Appointment, type QualityStats } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEditable, compareNames, loadEvent, nameWarning } from "./common";
+import { assertEventEditable } from "@/server/events/editable";
+import { compareNames, loadEvent, nameWarning } from "./common";
 import { buildMatchInput, loadRoster, type Roster } from "./input";
 
 export type StartRunInput = {
@@ -105,7 +106,7 @@ async function loadPinnedFromActiveRun(
 export async function startRun(db: Db, input: StartRunInput): Promise<ActionResult<StartRunResult>> {
   const roster = await loadRoster(db, input.eventId);
   if (!roster) return fail("not_found", "That event no longer exists.");
-  const locked = assertEditable(roster.event);
+  const locked = assertEventEditable(roster.event);
   if (locked) return locked;
 
   let pinned: Appointment[] = [];
@@ -227,7 +228,7 @@ export async function activateRun(
   if (run.status !== "completed") return fail("validation", "Only a completed run can be activated.");
   const event = await loadEvent(db, run.eventId);
   if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEditable(event);
+  const locked = assertEventEditable(event);
   if (locked) return locked;
   if (run.isActive) return ok({ runId: run.id });
 
@@ -335,7 +336,7 @@ export async function setPinned(
   if (!row) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
   const [run, event] = await Promise.all([findRun(db, row.runId), loadEvent(db, row.eventId)]);
   if (!run || !event) return fail("not_found", "That run no longer exists.");
-  const locked = assertEditable(event);
+  const locked = assertEventEditable(event);
   if (locked) return locked;
   if (row.pinned === input.pinned) {
     return ok({ appointmentId: row.id, pinned: row.pinned, version: run.version });

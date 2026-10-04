@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSlots, formatEventDate, formatMinutes, nowInTimezone, parseClock } from "./time";
+import { buildSlots, formatEventDate, formatMinutes, formatTimestamp, nowInTimezone, parseClock } from "./time";
 
 describe("formatMinutes", () => {
   it("formats afternoon and morning times on a 12-hour clock", () => {
@@ -77,5 +77,13 @@ describe("nowInTimezone", () => {
     expect(nowInTimezone("America/Los_Angeles", instant)).toBe(15 * 60 + 10);
     expect(nowInTimezone("America/New_York", instant)).toBe(18 * 60 + 10);
     expect(nowInTimezone("UTC", instant)).toBe(23 * 60 + 10);
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("shows the instant in the event timezone, not the machine's", () => {
+    const instant = new Date("2026-11-10T23:10:00Z");
+    expect(formatTimestamp(instant, "America/Los_Angeles")).toBe("Nov 10, 2026, 3:10 PM");
+    expect(formatTimestamp(instant, "America/New_York")).toBe("Nov 10, 2026, 6:10 PM");
   });
 });

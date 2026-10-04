@@ -79,3 +79,8 @@ export function nowInTimezone(timezone: string, now: Date = new Date()): number 
   const local = new TZDate(now, timezone);
   return local.getHours() * 60 + local.getMinutes();
 }
+
+/** A stored instant shown in the event's timezone: "Nov 10, 2026, 3:10 PM". */
+export function formatTimestamp(instant: Date, timezone: string): string {
+  return format(new TZDate(instant, timezone), "MMM d, yyyy, h:mm a");
+}

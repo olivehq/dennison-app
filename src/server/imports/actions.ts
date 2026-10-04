@@ -7,13 +7,14 @@ import { fail, fromZod, type ActionResult } from "@/lib/errors";
 import {
   IMPORT_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
+  saveAliasesSchema,
   saveAliasSchema,
   uploadImportSchema,
   type ImportKind,
   type ImportState,
 } from "@/lib/schemas/import";
 import { requireAdmin } from "@/server/auth/session";
-import { applyImport, createImport, deleteImportRecord, saveAlias, type ApplySummary } from "./imports";
+import { applyImport, createImport, deleteImportRecord, saveAlias, saveAliases, type ApplySummary } from "./imports";
 import { getImport } from "./queries";
 
 const idSchema = z.uuid();
@@ -75,6 +76,18 @@ export async function saveAliasAction(
   const parsed = saveAliasSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await saveAlias(getDb(), { ...parsed.data, adminId: actor.id });
+  if (result.ok) revalidateEvent(parsed.data.eventId);
+  return result;
+}
+
+/** Saves several mappings at once ("Save all suggested") and re-validates pending imports once. */
+export async function saveAliasesAction(
+  input: unknown,
+): Promise<ActionResult<{ aliasIds: string[]; imports: { importId: string; kind: ImportKind; state: ImportState }[] }>> {
+  const actor = await requireAdmin();
+  const parsed = saveAliasesSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await saveAliases(getDb(), { ...parsed.data, adminId: actor.id });
   if (result.ok) revalidateEvent(parsed.data.eventId);
   return result;
 }

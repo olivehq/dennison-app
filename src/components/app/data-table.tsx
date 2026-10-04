@@ -70,6 +70,8 @@ type DataTableProps<TData extends RowData> = {
   /** Rendered under the empty description, usually the "Create" button. */
   emptyAction?: React.ReactNode;
   onRowClick?: (row: TData) => void;
+  /** Extra classes per row, for example muting withdrawn people. */
+  rowClassName?: (row: TData) => string | undefined;
   getRowId?: (row: TData, index: number) => string;
   pageSize?: number;
   className?: string;
@@ -87,6 +89,7 @@ export function DataTable<TData extends RowData>({
   emptyDescription,
   emptyAction,
   onRowClick,
+  rowClassName,
   getRowId,
   pageSize = DATA_TABLE_PAGE_SIZE,
   className,
@@ -196,7 +199,7 @@ export function DataTable<TData extends RowData>({
                   <TableRow
                     key={row.id}
                     onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-                    className={cn(onRowClick && "cursor-pointer")}
+                    className={cn(onRowClick && "cursor-pointer", rowClassName?.(row.original))}
                   >
                     {row.getAllCells().map((cell) => (
                       <TableCell key={cell.id}>

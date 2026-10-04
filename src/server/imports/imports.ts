@@ -21,6 +21,7 @@ import {
 } from "@/lib/schemas/import";
 import { getFile, importFileKey, putFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
+import { advanceStatus } from "@/server/events/status";
 import { loadEditableEvent } from "@/server/roster/editable";
 import { revokeTokens } from "@/server/roster/roster";
 import {
@@ -58,6 +59,8 @@ export type ApplySummary = {
   optedIn: number;
   optedOut: number;
   aliasesSaved: number;
+  /** True when this apply moved the event from draft to imported. */
+  eventAdvanced: boolean;
 };
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -169,13 +172,13 @@ async function revalidatePending(db: Db, eventId: string): Promise<{ importId: s
   return results;
 }
 
-export type SaveAliasInput = {
-  eventId: string;
-  raw: string;
-  entityType: EntityType;
-  entityId: string;
-  adminId: string;
-};
+export type AliasMapping = { raw: string; entityType: EntityType; entityId: string };
+
+export type SaveAliasInput = AliasMapping & { eventId: string; adminId: string };
+
+export type SaveAliasesInput = { eventId: string; aliases: AliasMapping[]; adminId: string };
+
+type RevalidatedImport = { importId: string; kind: ImportKind; state: ImportState };
 
 async function entityExists(db: Db, eventId: string, entityType: EntityType, entityId: string): Promise<boolean> {
   const table = entityType === "buyer" ? participants : suppliers;
@@ -187,40 +190,62 @@ async function entityExists(db: Db, eventId: string, entityType: EntityType, ent
   return row !== undefined;
 }
 
-/** Maps a raw name to an entity (source manual) and re-validates every pending import of the event. */
+/**
+ * Maps raw names to entities (source manual) in one transaction, then
+ * re-validates every pending import of the event once. All or nothing: one
+ * bad mapping refuses the whole batch.
+ */
+export async function saveAliases(
+  db: Db,
+  input: SaveAliasesInput,
+): Promise<ActionResult<{ aliasIds: string[]; imports: RevalidatedImport[] }>> {
+  const loaded = await loadEditableEvent(db, input.eventId);
+  if (!loaded.ok) return loaded.error;
+  if (input.aliases.length === 0) return fail("validation", "Choose at least one name to map.");
+  const aliases = input.aliases.map((alias) => ({ ...alias, raw: alias.raw.trim() }));
+  if (aliases.some((alias) => alias.raw === "")) return fail("validation", "The raw name is empty.", { raw: ["Required."] });
+  for (const alias of aliases) {
+    if (!(await entityExists(db, input.eventId, alias.entityType, alias.entityId))) {
+      return fail("not_found", `The person chosen for "${alias.raw}" is not on this event's roster.`);
+    }
+  }
+
+  const aliasIds = await db.transaction(async (tx) => {
+    const ids: string[] = [];
+    for (const alias of aliases) {
+      const [row] = await tx
+        .insert(nameAliases)
+        .values({ eventId: input.eventId, rawText: alias.raw, entityType: alias.entityType, entityId: alias.entityId, source: "manual" })
+        .onConflictDoUpdate({
+          target: [nameAliases.eventId, nameAliases.entityType, nameAliases.rawText],
+          set: { entityId: alias.entityId, source: "manual" },
+        })
+        .returning();
+      await recordAudit(tx, {
+        eventId: input.eventId,
+        adminId: input.adminId,
+        action: "alias.save",
+        entityType: "name_alias",
+        entityId: row.id,
+        after: { raw: alias.raw, entityType: alias.entityType, entityId: alias.entityId },
+      });
+      ids.push(row.id);
+    }
+    return ids;
+  });
+  const revalidated = await revalidatePending(db, input.eventId);
+  return ok({ aliasIds, imports: revalidated });
+}
+
+/** Maps one raw name to an entity (source manual) and re-validates every pending import of the event. */
 export async function saveAlias(
   db: Db,
   input: SaveAliasInput,
-): Promise<ActionResult<{ aliasId: string; imports: { importId: string; kind: ImportKind; state: ImportState }[] }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
-  const raw = input.raw.trim();
-  if (raw === "") return fail("validation", "The raw name is empty.", { raw: ["Required."] });
-  if (!(await entityExists(db, input.eventId, input.entityType, input.entityId))) {
-    return fail("not_found", "That person is not on this event's roster.");
-  }
-
-  const alias = await db.transaction(async (tx) => {
-    const [row] = await tx
-      .insert(nameAliases)
-      .values({ eventId: input.eventId, rawText: raw, entityType: input.entityType, entityId: input.entityId, source: "manual" })
-      .onConflictDoUpdate({
-        target: [nameAliases.eventId, nameAliases.entityType, nameAliases.rawText],
-        set: { entityId: input.entityId, source: "manual" },
-      })
-      .returning();
-    await recordAudit(tx, {
-      eventId: input.eventId,
-      adminId: input.adminId,
-      action: "alias.save",
-      entityType: "name_alias",
-      entityId: row.id,
-      after: { raw, entityType: input.entityType, entityId: input.entityId },
-    });
-    return row;
-  });
-  const revalidated = await revalidatePending(db, input.eventId);
-  return ok({ aliasId: alias.id, imports: revalidated });
+): Promise<ActionResult<{ aliasId: string; imports: RevalidatedImport[] }>> {
+  const { eventId, adminId, ...alias } = input;
+  const result = await saveAliases(db, { eventId, adminId, aliases: [alias] });
+  if (!result.ok) return result;
+  return ok({ aliasId: result.data.aliasIds[0], imports: result.data.imports });
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +438,7 @@ export async function applyImport(
       optedIn: 0,
       optedOut: 0,
       aliasesSaved: 0,
+      eventAdvanced: false,
     };
     if (parsed.kind === "participants") {
       Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
@@ -426,6 +452,7 @@ export async function applyImport(
       .update(imports)
       .set({ status: "applied", appliedAt: new Date(), validation: report, rowCount: report.counts.rows })
       .where(eq(imports.id, row.id));
+    result.eventAdvanced = await advanceStatus(tx, event.id, "draft", "imported");
     await recordAudit(tx, {
       eventId: event.id,
       adminId: input.adminId,
@@ -437,6 +464,8 @@ export async function applyImport(
     });
     return result;
   });
+  // A roster change can resolve (or break) names in ranking files waiting to be applied.
+  if (!isRankingKind(row.kind)) await revalidatePending(db, event.id);
   return ok({ importId: row.id, summary });
 }
 

@@ -211,6 +211,27 @@ describe("suppliers", () => {
     expect(await getSupplier(hyattId, db)).toMatchObject({ deskNumber: null, deskOverride: false });
   });
 
+  it("saves a desk with the supplier: a new number is an override, the same number is left alone", async () => {
+    const [slo] = await listSuppliers(eventId, {}, db).then((rows) => rows.filter((s) => s.name === "Visit SLO CAL"));
+    const taken = await upsertSupplier(db, { eventId, id: hyattId, data: { ...hyatt, deskNumber: 4 }, adminId });
+    expect(taken).toMatchObject({ ok: false, error: { code: "conflict", fieldErrors: { deskNumber: expect.any(Array) } } });
+
+    expect((await upsertSupplier(db, { eventId, id: hyattId, data: { ...hyatt, deskNumber: 9 }, adminId })).ok).toBe(true);
+    expect(await getSupplier(hyattId, db)).toMatchObject({ deskNumber: 9, deskOverride: true });
+
+    // A desk assigned at lock (no override) survives an edit that sends the same number back.
+    await db.update(suppliers).set({ deskNumber: 4, deskOverride: false }).where(eq(suppliers.id, slo.id));
+    const sloData = { ...hyatt, name: "Visit SLO CAL", adminContact: null, attendeeContact: null, deskNumber: 4 };
+    expect((await upsertSupplier(db, { eventId, id: slo.id, data: sloData, adminId })).ok).toBe(true);
+    expect(await getSupplier(slo.id, db)).toMatchObject({ deskNumber: 4, deskOverride: false });
+
+    expect((await upsertSupplier(db, { eventId, id: hyattId, data: { ...hyatt, deskNumber: null }, adminId })).ok).toBe(true);
+    expect(await getSupplier(hyattId, db)).toMatchObject({ deskNumber: null, deskOverride: false });
+    const untouched = await upsertSupplier(db, { eventId, id: slo.id, data: { ...sloData, deskNumber: undefined }, adminId });
+    expect(untouched.ok).toBe(true);
+    expect(await getSupplier(slo.id, db)).toMatchObject({ deskNumber: 4 });
+  });
+
   it("withdraws and restores, hiding withdrawn rows by default", async () => {
     expect((await withdrawSupplier(db, { id: hyattId, adminId })).ok).toBe(true);
     expect((await listSuppliers(eventId, {}, db)).map((s) => s.name)).toEqual(["Visit SLO CAL", "eShow"]);

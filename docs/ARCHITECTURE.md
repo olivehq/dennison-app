@@ -22,12 +22,12 @@ components/app  ->  components/ui (shadcn)
 | Module | Owns | Key exports |
 |---|---|---|
 | `auth` | Better Auth instance, session helpers, team management, invites | `getAuth()`, `createAuth(db)`, `getSession()`, `requireSession()`, `requireAdmin()`, `inviteAdmin`, `resendInvite`, `disableAdmin`, `enableAdmin`, `listAdmins`, `getInviteByToken` |
-| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `listEvents`, `getEvent`, `getEventOrThrow`, `getEventCounts`, `createEvent`, `updateEvent`, `updateEventSettings`, `deleteEvent`; later `lockSchedule`, `unlockSchedule`, `assignDesks`. `assertEventEditable(event)` in `events/editable.ts` returns `fail('locked', ...)` for locked, sent, and archived events; every module that mutates event data calls it first |
+| `events` | Event CRUD, settings, status transitions, lock and unlock, desks | `listEvents`, `getEvent`, `getEventOrThrow`, `getEventCounts`, `createEvent`, `updateEvent`, `updateEventSettings`, `deleteEvent`; later `lockSchedule`, `unlockSchedule`, `assignDesks`. `assertEventEditable(event)` in `events/editable.ts` returns `fail('locked', ...)` for locked, sent, and archived events; every module that mutates event data calls it first. `advanceStatus(tx, eventId, from, to)` in `events/status.ts` moves the status forward (D46) |
 | `roster` | Participants and suppliers: list, add, edit, withdraw, restore | `listParticipants`, `upsertParticipant`, `withdrawParticipant`, same for suppliers |
-| `imports` | File upload, parsing (list and matrix formats), validation report, alias mapping, applying rankings | `createImport`, `validateImport`, `saveAlias`, `applyImport` |
+| `imports` | File upload, parsing (list and matrix formats), validation report, alias mapping, applying rankings | `createImport`, `validateImport`, `saveAlias`, `saveAliases`, `applyImport`. Templates download from `GET /api/imports/templates/[kind]` (session required) |
 | `matching` | Runs the engine, stores runs, compares runs, activates a run, pins | `runMatching`, `rerunKeepingExisting`, `activateRun`, `compareRuns`, `setPinned` |
 | `schedule` | Reads for the workspace, manual edits with version check, swap candidates | `getScheduleView`, `getPersonSchedule`, `replaceAppointment`, `removeAppointment`, `swapCandidates` |
-| `exports` | Master CSV, per-person ZIP, quality report, access CSV | `masterScheduleCsv`, `schedulesZip`, `qualityReport`, `accessCsv` |
+| `exports` | Master CSV, per-person ZIP, quality report, access CSV, export history, the participant page read | `masterScheduleCsv`, `schedulesZip`, `qualityReportText`, `accessCsv`, `exportAvailability`, `recordExport`, `loadParticipantView`. Route Handlers in `src/app/api/exports/[eventId]/` call these (D43) |
 | `email` | Campaigns, rendering merge fields, sending through the adapter, webhook updates, changed-since-send | `createCampaign`, `previewCampaign`, `sendCampaign`, `recordDeliveryEvent`, `recipientsChangedSinceLastSend` |
 | `audit` | Writing and reading `audit_events`, undo | `recordAudit`, `listAudit`, `undoAudit` |
 | `tokens` | Participant access tokens: issue, verify, revoke, regenerate | `issueTokensForEvent`, `verifyToken`, `revokeToken` |
@@ -67,7 +67,7 @@ Deterministic. Ties are broken by id order.
 Allowed list. Each is built from shadcn primitives. Add a new one only when it has two call sites.
 
 - `PageHeader`: title, status badge, actions.
-- `DataTable`: the TanStack wrapper with search, column filters, pagination.
+- `DataTable`: the TanStack wrapper with search, column filters, pagination. `rowClassName` mutes rows such as withdrawn people.
 - `RankBadge`: `B:4`, `S:-`, top-10 highlight.
 - `AppointmentBlock`: the timeline block, business or hotel tone, match strength treatment.
 - `PersonSchedule`: a person's nine slots with OPEN gaps. Used in the detail sheet and the participant page.

@@ -7,13 +7,10 @@
  * directly: an `admins` row plus a credential `accounts` row with the password
  * hashed the way Better Auth hashes it. Later admins come through the Team page.
  */
-import { randomUUID } from "node:crypto";
-import { hashPassword } from "better-auth/crypto";
-import { eq } from "drizzle-orm";
 import { closeDb, getDb } from "@/db/client";
-import { accounts, admins } from "@/db/schema";
 import { emailSchema } from "@/lib/schemas/roster";
 import { passwordSchema } from "@/lib/schemas/auth";
+import { createAdminAccount, findAdminId } from "./seed/admin";
 
 async function main() {
   const [rawEmail, name, password] = process.argv.slice(2);
@@ -36,25 +33,13 @@ async function main() {
   }
 
   const db = getDb();
-  const [existing] = await db.select({ id: admins.id }).from(admins).where(eq(admins.email, email.data));
-  if (existing) {
+  if (await findAdminId(db, email.data)) {
     console.error(`${email.data} already has an account. Use the Team page or password reset instead.`);
     process.exitCode = 1;
     return;
   }
 
-  const id = randomUUID();
-  const hashed = await hashPassword(password);
-  await db.transaction(async (tx) => {
-    await tx.insert(admins).values({ id, name: name.trim(), email: email.data, emailVerified: true });
-    await tx.insert(accounts).values({
-      id: randomUUID(),
-      accountId: id,
-      providerId: "credential",
-      userId: id,
-      password: hashed,
-    });
-  });
+  await createAdminAccount(db, { email: email.data, name, password });
   console.log(`Created admin ${email.data}. Sign in at ${process.env.APP_URL ?? "http://localhost:3000"}/login`);
 }
 
