@@ -1,0 +1,1505 @@
+<!--
+  Design: 10, Ledger (spreadsheet-native)
+  Concept: D&A staff already live in Excel and eShow exports, so the results workspace is a calm, well-made workbook:
+  sheet tabs for Slots, Buyers, Suppliers and Quality, a frozen header row and first column, real cell selection, and a
+  formula bar that reads the selected meeting back as one plain sentence. Conditional-formatting fills carry the judgement
+  (green for mutual top-10, rose for counts out of range, hatching for open slots) so problems surface without any chrome.
+  Palette (OKLCH, approx hex):
+    Paper  oklch(0.993 0.002 170)  #FBFDFC  page and cells
+    Ink    oklch(0.255 0.018 215)  #192528  text, business tag
+    Rule   oklch(0.905 0.009 200)  #D9E1E2  the grid line
+    Chrome oklch(0.968 0.005 200)  #F1F5F6  row/column headers, sheet tabs
+    Ledger teal (the one accent) oklch(0.47 0.085 205) #006871  selection, primary action, focus
+    Fills: mutual oklch(0.945 0.045 155) on oklch(0.40 0.09 155); flag oklch(0.94 0.035 20) on oklch(0.48 0.15 25)
+  Type: IBM Plex Sans (UI, cells, tabular numerals throughout) with IBM Plex Sans Condensed for grid chrome
+        (column letters, row numbers, sheet tabs, header labels). Plex comes from the same lineage as the office tools staff know.
+  Layout: full-height workbook. Title bar with actions, formula bar (name box + fx + sentence), toolbar (search, free-in-slot,
+        filter chips, formatting rules), the sheet with a docked task pane on the right (overlay sheet on small screens),
+        then sheet tabs and a status bar with selection count, sum and averages.
+  shadcn components: Button, Badge, Tabs (sheet tabs), Table, DropdownMenu (column filters, Export, More), Popover
+        (formatting rules), Input + InputGroup (search, name box), Select (free in slot), Sheet (detail pane), Dialog
+        (run matching, lock), ToggleGroup (buyer/supplier day), Progress, Alert, Empty, Kbd, Separator, ScrollArea,
+        Tooltip (title hints), sonner toast.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AW appointments, Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-grid: var(--grid);
+  --color-chrome: var(--chrome);
+  --color-mutual: var(--mutual);
+  --color-mutual-foreground: var(--mutual-foreground);
+  --color-flag: var(--flag);
+  --color-flag-foreground: var(--flag-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-business: var(--business);
+  --color-business-foreground: var(--business-foreground);
+  --color-hotel: var(--hotel);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+:root {
+  --radius: 0.375rem;
+  --background: oklch(0.993 0.002 170);
+  --foreground: oklch(0.255 0.018 215);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.255 0.018 215);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.255 0.018 215);
+  --primary: oklch(0.47 0.085 205);
+  --primary-foreground: oklch(0.985 0.005 200);
+  --secondary: oklch(0.962 0.006 200);
+  --secondary-foreground: oklch(0.255 0.018 215);
+  --muted: oklch(0.965 0.005 200);
+  --muted-foreground: oklch(0.50 0.018 215);
+  --accent: oklch(0.95 0.022 205);
+  --accent-foreground: oklch(0.32 0.06 210);
+  --destructive: oklch(0.55 0.17 25);
+  --border: oklch(0.89 0.010 200);
+  --input: oklch(0.86 0.012 200);
+  --ring: oklch(0.47 0.085 205);
+  --chart-1: oklch(0.62 0.11 155);
+  --chart-2: oklch(0.72 0.07 205);
+  --chart-3: oklch(0.86 0.012 200);
+  --chart-4: oklch(0.70 0.12 70);
+  --chart-5: oklch(0.58 0.15 25);
+  /* custom semantic tokens */
+  --grid: oklch(0.905 0.009 200);
+  --freeze: oklch(0.255 0.018 215 / 0.32);
+  --chrome: oklch(0.968 0.005 200);
+  --sel: oklch(0.47 0.085 205 / 0.10);
+  --mutual: oklch(0.945 0.045 155);
+  --mutual-foreground: oklch(0.40 0.09 155);
+  --flag: oklch(0.94 0.035 20);
+  --flag-foreground: oklch(0.48 0.15 25);
+  --warning: oklch(0.95 0.06 85);
+  --warning-foreground: oklch(0.45 0.09 70);
+  --business: oklch(0.33 0.03 215);
+  --business-foreground: oklch(0.985 0.005 200);
+  --hotel: oklch(0.58 0.02 210);
+  --hatch: oklch(0.255 0.018 215 / 0.07);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  mark { background: var(--warning); color: inherit; border-radius: 2px; box-shadow: 0 0 0 1px var(--warning); }
+}
+
+@layer components {
+  /* ---------- app frame ---------- */
+  .lg-app { height: 100dvh; display: flex; flex-direction: column; }
+  .lg-app > * { flex: none; }
+  .lg-app > .lg-work { flex: 1 1 0; }
+  .lg-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* Button */
+  .lg-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px;
+    border-radius: var(--radius); border: 1px solid transparent; font: 500 13px/1 var(--font-sans); white-space: nowrap;
+    cursor: pointer; color: var(--foreground); background: transparent; transition: background-color .12s, border-color .12s, color .12s; }
+  .lg-btn .lg-ic { width: 15px; height: 15px; }
+  .lg-btn[data-variant="default"] { background: var(--primary); color: var(--primary-foreground); }
+  .lg-btn[data-variant="default"]:hover { background: color-mix(in oklch, var(--primary) 86%, black); }
+  .lg-btn[data-variant="outline"] { background: var(--background); border-color: var(--input); }
+  .lg-btn[data-variant="outline"]:hover { background: var(--accent); border-color: color-mix(in oklch, var(--primary) 30%, var(--input)); }
+  .lg-btn[data-variant="ghost"]:hover { background: var(--muted); }
+  .lg-btn[data-variant="link"] { height: auto; padding: 0; color: var(--primary); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in oklch, var(--primary) 35%, transparent); }
+  .lg-btn[data-size="sm"] { height: 28px; padding: 0 10px; font-size: 12.5px; }
+  .lg-btn[data-size="icon"] { width: 32px; padding: 0; }
+  .lg-btn[data-size="icon-sm"] { width: 28px; height: 28px; padding: 0; }
+  .lg-btn:disabled { opacity: .45; pointer-events: none; }
+  .lg-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-foreground); border-color: color-mix(in oklch, var(--primary) 35%, var(--input)); }
+
+  /* Badge */
+  .lg-badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 999px;
+    font: 500 12px/1 var(--font-sans); white-space: nowrap; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
+  .lg-badge .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+  .lg-badge[data-tone="draft"] { background: var(--warning); border-color: transparent; color: var(--warning-foreground); }
+  .lg-badge[data-tone="locked"] { background: var(--mutual); border-color: transparent; color: var(--mutual-foreground); }
+  .lg-badge[data-tone="edit"] { background: var(--accent); border-color: transparent; color: var(--accent-foreground); }
+  .lg-badge button { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: -4px; border-radius: 999px; color: var(--muted-foreground); }
+  .lg-badge button:hover { background: var(--muted); color: var(--foreground); }
+  .lg-badge button .lg-ic { width: 12px; height: 12px; }
+
+  .lg-kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--chrome); font: 500 11px/1 var(--font-cond); color: var(--muted-foreground); }
+
+  /* ---------- title bar ---------- */
+  .lg-title { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--background); }
+  .lg-doc { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+  .lg-mark { width: 30px; height: 30px; border-radius: var(--radius); display: grid; place-items: center; flex: none;
+    background: var(--primary); color: var(--primary-foreground); }
+  .lg-mark .lg-ic { width: 17px; height: 17px; }
+  .lg-doc h1 { font-weight: 600; font-size: 16px; letter-spacing: -0.005em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lg-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--muted-foreground); margin-top: 2px; }
+  .lg-meta .lg-btn[data-variant="link"] { font-size: 12.5px; font-weight: 500; }
+  .lg-meta .lg-btn.is-flag { color: var(--flag-foreground); text-decoration-color: color-mix(in oklch, var(--flag-foreground) 35%, transparent); }
+  .lg-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+  .lg-more { display: none; }
+
+  /* ---------- formula bar (the one bold element) ---------- */
+  .lg-fbar { display: flex; align-items: stretch; min-height: 46px; border-bottom: 1px solid var(--border); background: var(--card); }
+  .lg-namebox { width: 92px; flex: none; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border);
+    font: 600 13px/1 var(--font-cond); letter-spacing: .02em; color: var(--foreground); background: var(--chrome); }
+  .lg-fx { width: 40px; flex: none; display: grid; place-items: center; border-right: 1px solid var(--border);
+    font: italic 500 14px/1 var(--font-sans); color: var(--primary); }
+  .lg-formula { flex: 1; min-width: 0; display: block; align-self: center; padding: 8px 14px;
+    font-size: 15px; line-height: 1.45; color: var(--foreground); }
+  .lg-formula b { font-weight: 600; }
+  .lg-formula .lg-mute { color: var(--muted-foreground); }
+  .lg-formula .lg-x { color: var(--muted-foreground); padding: 0 .3em; }
+  .lg-formula .lg-chip { vertical-align: 1px; }
+  .lg-pair { font-variant-numeric: tabular-nums; }
+  .lg-fn { color: var(--primary); font-weight: 500; margin-right: .6em; }
+  .lg-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 4px; font-size: 13px; font-weight: 500;
+    background: var(--muted); color: var(--muted-foreground); }
+  .lg-chip-mutual { background: var(--mutual); color: var(--mutual-foreground); }
+  .lg-chip-one { background: var(--accent); color: var(--accent-foreground); }
+  .lg-chip-bad { background: var(--flag); color: var(--flag-foreground); }
+
+  /* ---------- toolbar ---------- */
+  .lg-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--background); }
+  .lg-igroup { position: relative; display: flex; align-items: center; height: 32px; width: 300px; max-width: 100%;
+    border: 1px solid var(--input); border-radius: var(--radius); background: var(--card); }
+  .lg-igroup:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 18%, transparent); }
+  .lg-igroup > .lg-ic { margin-left: 9px; color: var(--muted-foreground); width: 15px; height: 15px; }
+  .lg-igroup input { flex: 1; min-width: 0; height: 100%; padding: 0 8px; background: transparent; font-size: 13px; outline: none; }
+  .lg-igroup input::placeholder { color: var(--muted-foreground); }
+  .lg-igroup .lg-addon { padding-right: 6px; display: flex; align-items: center; gap: 4px; }
+  .lg-select { position: relative; display: inline-flex; align-items: center; height: 32px; border: 1px solid var(--input); border-radius: var(--radius); background: var(--card); }
+  .lg-select:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 18%, transparent); }
+  .lg-select label { padding-left: 10px; font-size: 12.5px; color: var(--muted-foreground); white-space: nowrap; }
+  .lg-select select { appearance: none; height: 100%; padding: 0 30px 0 6px; background: transparent; font: 500 13px var(--font-sans); outline: none; cursor: pointer; }
+  .lg-select .lg-ic { position: absolute; right: 8px; pointer-events: none; color: var(--muted-foreground); width: 14px; height: 14px; }
+  .lg-select.is-on { border-color: color-mix(in oklch, var(--primary) 45%, var(--input)); background: var(--accent); }
+  .lg-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .lg-spacer { flex: 1; }
+  .lg-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
+
+  /* Alert strip */
+  .lg-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 8px 16px; font-size: 13px;
+    background: var(--accent); color: var(--accent-foreground); border-bottom: 1px solid color-mix(in oklch, var(--primary) 20%, var(--border)); }
+  .lg-notice b { font-weight: 600; }
+
+  /* ---------- workspace ---------- */
+  .lg-work { display: flex; min-height: 0; min-width: 0; position: relative; }
+  .lg-scroll { flex: 1; min-width: 0; overflow: auto; position: relative; background: var(--background); overscroll-behavior: contain; }
+
+  /* the grid */
+  .lg-grid { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 13px; --rn: 48px; }
+  .lg-grid th, .lg-grid td { height: 32px; padding: 0 8px; border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: var(--background); text-align: left; font-weight: 400; }
+  .lg-grid td { position: relative; cursor: cell; }
+  .lg-grid td.num { text-align: right; }
+  .lg-grid thead th { position: sticky; z-index: 2; background-color: var(--chrome); }
+  .lg-grid .r-letters th { top: 0; height: 22px; padding: 0; text-align: center; font: 500 11px/1 var(--font-cond); color: var(--muted-foreground); }
+  .lg-grid .r-fields th { top: 22px; height: 40px; padding: 0 4px 0 8px; background-color: var(--card); border-bottom: 1px solid var(--freeze);
+    font: 600 12.5px/1.15 var(--font-cond); color: var(--foreground); }
+  .lg-grid .rn { position: sticky; left: 0; z-index: 1; width: var(--rn); padding: 0; text-align: center; background-color: var(--chrome);
+    font: 500 11px/1 var(--font-cond); color: var(--muted-foreground); }
+  .lg-grid thead .rn, .lg-grid thead .corner { z-index: 4; left: 0; }
+  .lg-grid .corner { position: sticky; }
+  .lg-grid .fz { position: sticky; left: var(--rn); z-index: 1; border-right: 1px solid var(--freeze); }
+  .lg-grid thead .fz { z-index: 3; }
+  .lg-grid.is-filtered tbody .rn { color: var(--primary); font-weight: 600; }
+  .lg-grid .is-hl { background-color: var(--accent) !important; color: var(--primary) !important; font-weight: 600; }
+  .lg-grid .r-letters th.is-hl { box-shadow: inset 0 -2px 0 var(--primary); }
+  .lg-grid tbody .rn.is-hl { box-shadow: inset -2px 0 0 var(--primary); }
+
+  .lg-fh { display: flex; align-items: center; gap: 4px; height: 100%; }
+  .lg-fh-l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .lg-fh-l small { display: block; font: 400 11.5px/1.2 var(--font-cond); color: var(--muted-foreground); }
+  th.num .lg-fh { flex-direction: row-reverse; }
+  th.num .lg-fh-l { text-align: right; }
+  .lg-fh-b { display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none; border-radius: 4px; color: var(--muted-foreground);
+    border: 1px solid transparent; cursor: pointer; }
+  .lg-fh-b:hover { background: var(--muted); color: var(--foreground); border-color: var(--border); }
+  .lg-fh-b .lg-ic { width: 13px; height: 13px; }
+  .lg-fh-b.is-on { background: var(--primary); color: var(--primary-foreground); }
+
+  .lg-cv { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  td.num .lg-cv { justify-content: flex-end; }
+  .lg-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .lg-sub { color: var(--muted-foreground); }
+  .lg-mute { color: var(--muted-foreground); }
+  .lg-sn { font-weight: 600; min-width: 1.2em; }
+  .lg-rk { flex: none; margin-left: auto; padding-left: 4px; font-size: 11.5px; color: var(--muted-foreground); }
+  .lg-rk i { font-style: normal; opacity: .55; padding: 0 1px; }
+  .lg-dash { color: var(--muted-foreground); }
+  .lg-top { color: var(--mutual-foreground); font-weight: 600; }
+
+  .lg-tt { display: inline-grid; place-items: center; width: 16px; height: 16px; flex: none; border-radius: 3px; font: 600 10px/1 var(--font-cond); font-style: normal; }
+  .lg-tt-business { background: var(--business); color: var(--business-foreground); }
+  .lg-tt-hotel { box-shadow: inset 0 0 0 1px var(--hotel); color: var(--hotel); }
+
+  /* conditional formatting */
+  .lg-grid td.cf-good { background-color: var(--mutual); color: var(--mutual-foreground); }
+  .lg-grid td.cf-good .lg-sub, .lg-grid td.cf-good .lg-rk { color: color-mix(in oklch, var(--mutual-foreground) 75%, var(--mutual)); }
+  .lg-grid td.cf-bad { background-color: var(--flag); color: var(--flag-foreground); font-weight: 600; }
+  .lg-grid td.cf-open { background-image: repeating-linear-gradient(135deg, transparent 0 5px, var(--hatch) 5px 6px); }
+  .lg-open { font-style: italic; color: var(--muted-foreground); }
+  .lg-grid td.cf-open.in-range, .lg-grid td.in-range { background-image: linear-gradient(var(--sel), var(--sel)); }
+  .lg-grid td.is-active { box-shadow: inset 0 0 0 2px var(--primary); outline: none; }
+  .lg-grid td.is-active::after { content: ""; position: absolute; right: 0; bottom: 0; width: 6px; height: 6px; background: var(--primary); box-shadow: 0 0 0 1px var(--background); }
+  .lg-scroll:not(:focus-within) .lg-grid td.is-active { box-shadow: inset 0 0 0 2px color-mix(in oklch, var(--primary) 50%, transparent); }
+
+  /* Empty */
+  .lg-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 48px 24px; max-width: 460px; margin: 0 auto; }
+  .lg-empty h3 { font-weight: 600; font-size: 15px; }
+  .lg-empty p { color: var(--muted-foreground); font-size: 13.5px; }
+  .lg-empty-ic { width: 40px; height: 40px; border-radius: var(--radius); display: grid; place-items: center; background: var(--chrome); color: var(--muted-foreground); }
+
+  /* ---------- detail pane (Sheet) ---------- */
+  .lg-pane { width: 408px; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--card); }
+  .lg-pane-h { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+  .lg-pane-h .lg-k { font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; }
+  .lg-pane-h h2 { font-size: 17px; font-weight: 600; line-height: 1.25; margin-top: 2px; letter-spacing: -0.005em; }
+  .lg-pane-h p { font-size: 13px; color: var(--muted-foreground); margin-top: 2px; }
+  .lg-pane-b { overflow: auto; flex: 1; padding: 14px 16px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .lg-cells { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden; }
+  .lg-cells > div { padding: 8px 10px; border-right: 1px solid var(--grid); }
+  .lg-cells > div:last-child { border-right: 0; }
+  .lg-cells dt { font-size: 11.5px; color: var(--muted-foreground); font-family: var(--font-cond); }
+  .lg-cells dd { font-size: 16px; font-weight: 600; margin-top: 1px; }
+  .lg-cells .cf-bad { background: var(--flag); color: var(--flag-foreground); }
+  .lg-cells .cf-bad dt { color: inherit; opacity: .8; }
+  .lg-h3 { font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .lg-st { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden; table-layout: fixed; }
+  .lg-st th { font: 600 11.5px/1 var(--font-cond); color: var(--muted-foreground); text-align: left; background: var(--chrome); height: 28px; padding: 0 8px; border-bottom: 1px solid var(--grid); }
+  .lg-st td { height: 34px; padding: 0 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lg-st tr:last-child td { border-bottom: 0; }
+  .lg-st .num { text-align: right; }
+  .lg-st tbody tr[data-open-key] { cursor: pointer; }
+  .lg-st tbody tr[data-open-key]:hover td { background-image: linear-gradient(var(--sel), var(--sel)); }
+  .lg-st tbody tr[data-open-key]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+  .lg-st tr.cf-good td { background-color: var(--mutual); color: var(--mutual-foreground); }
+  .lg-st tr.is-cur td { box-shadow: inset 0 2px 0 var(--primary), inset 0 -2px 0 var(--primary); }
+  .lg-st tr.is-cur td:first-child { box-shadow: inset 2px 2px 0 var(--primary), inset 0 -2px 0 var(--primary); }
+  .lg-st tr.is-cur td:last-child { box-shadow: inset -2px 2px 0 var(--primary), inset 0 -2px 0 var(--primary); }
+  .lg-st tr.cf-open td { background-image: repeating-linear-gradient(135deg, transparent 0 5px, var(--hatch) 5px 6px); }
+  .lg-st tr.cf-open .lg-open { font-weight: 500; font-style: normal; color: var(--foreground); }
+  .lg-rec { display: grid; grid-template-columns: 112px 1fr; border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden; font-size: 13px; }
+  .lg-rec dt { padding: 8px 10px; background: var(--chrome); color: var(--muted-foreground); font-family: var(--font-cond); font-weight: 500; border-bottom: 1px solid var(--grid); }
+  .lg-rec dd { padding: 6px 10px; border-bottom: 1px solid var(--grid); min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .lg-rec dt:last-of-type, .lg-rec dd:last-of-type { border-bottom: 0; }
+  .lg-rec .lg-btn[data-variant="link"] { font-size: 13px; font-weight: 600; color: var(--foreground); text-align: left; white-space: normal; line-height: 1.3; }
+  .lg-tg { display: inline-flex; border: 1px solid var(--input); border-radius: var(--radius); padding: 2px; gap: 2px; background: var(--chrome); }
+  .lg-tg button { height: 26px; padding: 0 10px; border-radius: calc(var(--radius) - 2px); font-size: 12.5px; font-weight: 500; color: var(--muted-foreground); }
+  .lg-tg button[aria-pressed="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 0 0 1px var(--border); }
+  .lg-backdrop { display: none; }
+
+  /* ---------- sheet tabs + status bar ---------- */
+  .lg-foot { display: flex; align-items: stretch; min-height: 38px; background: var(--chrome); border-top: 1px solid var(--freeze); }
+  .lg-tabs { display: flex; align-items: stretch; padding-left: 8px; overflow-x: auto; flex: none; scrollbar-width: none; }
+  .lg-tab { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 16px; margin-top: -1px; height: calc(100% + 1px);
+    font: 500 13px/1 var(--font-cond); color: var(--muted-foreground); border-right: 1px solid var(--border); cursor: pointer; white-space: nowrap; }
+  .lg-tab:first-child { border-left: 1px solid var(--border); }
+  .lg-tab:hover { color: var(--foreground); background: var(--muted); }
+  .lg-tab[aria-selected="true"] { background: var(--background); color: var(--primary); font-weight: 600; }
+  .lg-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 6px; height: 2px; border-radius: 2px; background: var(--primary); }
+  .lg-tab-n { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--flag); color: var(--flag-foreground); font: 600 11px/1 var(--font-cond); }
+  .lg-status { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 18px; padding: 0 16px; font-size: 12px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; }
+  .lg-status b { color: var(--foreground); font-weight: 600; margin-left: 5px; }
+  .lg-status .is-filtered { color: var(--primary); }
+
+  /* ---------- floating layers ---------- */
+  .lg-float { position: fixed; z-index: 60; min-width: 232px; max-width: min(340px, calc(100vw - 16px)); background: var(--popover); color: var(--popover-foreground);
+    border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); padding: 4px;
+    box-shadow: 0 12px 32px -12px oklch(0.255 0.018 215 / 0.28), 0 2px 6px -2px oklch(0.255 0.018 215 / 0.10); }
+  .lg-mlabel { padding: 6px 8px 4px; font-size: 11.5px; color: var(--muted-foreground); font-weight: 500; }
+  .lg-mi { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 8px; border-radius: calc(var(--radius) - 2px);
+    font-size: 13px; text-align: left; cursor: pointer; color: var(--foreground); }
+  .lg-mi:hover, .lg-mi:focus-visible { background: var(--accent); color: var(--accent-foreground); outline: none; }
+  .lg-mi .lg-ic { width: 15px; height: 15px; color: var(--muted-foreground); }
+  .lg-mi .lg-mi-n { margin-left: auto; font-size: 11.5px; color: var(--muted-foreground); }
+  .lg-mi .lg-mi-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lg-cb { width: 15px; height: 15px; flex: none; border: 1px solid var(--input); border-radius: 3px; display: grid; place-items: center; background: var(--card); }
+  .lg-cb .lg-ic { width: 11px; height: 11px; stroke-width: 3; color: var(--primary-foreground); opacity: 0; }
+  [aria-checked="true"] > .lg-cb { background: var(--primary); border-color: var(--primary); }
+  [aria-checked="true"] > .lg-cb .lg-ic { opacity: 1; }
+  [aria-checked="mixed"] > .lg-cb { background: var(--primary); border-color: var(--primary); }
+  [aria-checked="mixed"] > .lg-cb::after { content: ""; width: 7px; height: 2px; background: var(--primary-foreground); }
+  .lg-msep { height: 1px; background: var(--border); margin: 4px -4px; }
+  .lg-mlist { max-height: 232px; overflow: auto; }
+  .lg-msearch { display: flex; align-items: center; gap: 6px; height: 30px; margin: 2px 2px 4px; padding: 0 8px; border: 1px solid var(--input); border-radius: calc(var(--radius) - 2px); }
+  .lg-msearch input { flex: 1; min-width: 0; font-size: 12.5px; outline: none; background: transparent; }
+  .lg-msearch .lg-ic { width: 13px; height: 13px; color: var(--muted-foreground); }
+  .lg-rules { padding: 8px 8px 4px; display: flex; flex-direction: column; gap: 10px; width: 312px; }
+  .lg-rules h3 { font-weight: 600; font-size: 13.5px; }
+  .lg-rule { display: grid; grid-template-columns: 52px 1fr; gap: 10px; align-items: center; font-size: 12.5px; }
+  .lg-sw { height: 24px; border: 1px solid var(--grid); border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 3px; font-size: 11.5px; }
+
+  /* Dialog */
+  .lg-dialog { margin: auto; width: min(460px, calc(100vw - 32px)); border-radius: calc(var(--radius) + 6px); border: 1px solid var(--border); background: var(--card); color: var(--card-foreground); padding: 20px;
+    box-shadow: 0 24px 48px -16px oklch(0.255 0.018 215 / 0.35); }
+  .lg-dialog::backdrop { background: oklch(0.255 0.018 215 / 0.32); }
+  .lg-dialog h2 { font-size: 16px; font-weight: 600; }
+  .lg-dialog p { margin-top: 6px; color: var(--muted-foreground); font-size: 13.5px; line-height: 1.5; }
+  .lg-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+  /* Toast (sonner) */
+  .lg-toaster { position: fixed; z-index: 70; right: 16px; bottom: 52px; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 32px)); pointer-events: none; }
+  .lg-toast { pointer-events: auto; background: var(--popover); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); padding: 12px 14px; display: flex; gap: 10px;
+    box-shadow: 0 12px 28px -14px oklch(0.255 0.018 215 / 0.35); animation: lg-up .18s ease-out; font-size: 13px; }
+  .lg-toast .lg-ic { color: var(--primary); margin-top: 1px; }
+  .lg-toast b { font-weight: 600; display: block; }
+  .lg-toast span { color: var(--muted-foreground); }
+  @keyframes lg-up { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes lg-slide { from { transform: translateX(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+
+  /* ---------- Quality sheet ---------- */
+  .lg-report { padding: 20px 20px 40px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 28px 32px; max-width: 1320px;
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px); background-size: 100% 32px; background-position: 0 -1px; background-color: transparent; }
+  .lg-sec { background: var(--background); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .lg-sec header h2 { font-size: 15px; font-weight: 600; }
+  .lg-sec header p { font-size: 12.5px; color: var(--muted-foreground); margin-top: 1px; }
+  .lg-qt { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 13px; border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  .lg-qt th { font: 600 11.5px/1 var(--font-cond); color: var(--muted-foreground); text-align: left; background: var(--chrome); height: 28px; padding: 0 10px; border-bottom: 1px solid var(--grid); border-right: 1px solid var(--grid); }
+  .lg-qt td { height: 34px; padding: 0 10px; border-bottom: 1px solid var(--grid); border-right: 1px solid var(--grid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lg-qt th:last-child, .lg-qt td:last-child { border-right: 0; }
+  .lg-qt tr:last-child td { border-bottom: 0; }
+  .lg-qt .num { text-align: right; }
+  .lg-qt tbody tr[tabindex] { cursor: pointer; }
+  .lg-qt tbody tr[tabindex]:hover td, .lg-qt tbody tr.is-sel td { background-image: linear-gradient(var(--sel), var(--sel)); }
+  .lg-qt tbody tr[tabindex]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+  .lg-qt td.cf-bad { background-color: var(--flag); color: var(--flag-foreground); font-weight: 600; }
+  .lg-qt td.cf-good { background-color: var(--mutual); color: var(--mutual-foreground); font-weight: 600; }
+  .lg-qt tr.is-slot td { box-shadow: inset 0 -2px 0 var(--primary); }
+  .lg-qt tfoot td { font-weight: 600; background: var(--chrome); border-top: 1px solid var(--freeze); border-bottom: 0; }
+  .lg-big { font-size: 15px; font-weight: 600; }
+  .lg-bar { height: 12px; border-radius: 2px; background: var(--primary); opacity: .72; min-width: 2px; }
+  .lg-bar.is-bad { background: var(--flag-foreground); opacity: .55; }
+  .lg-prog { height: 6px; border-radius: 999px; background: var(--chrome); box-shadow: inset 0 0 0 1px var(--grid); overflow: hidden; }
+  .lg-prog > div { height: 100%; background: var(--primary); }
+  .lg-prog.is-bad > div { background: var(--flag-foreground); }
+  .lg-stack { display: flex; height: 12px; border-radius: 2px; overflow: hidden; gap: 1px; background: var(--background); }
+  .lg-stack > i { display: block; }
+  .lg-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted-foreground); }
+  .lg-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .lg-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 1023px) {
+    .lg-pane { position: fixed; z-index: 50; top: 0; right: 0; bottom: 0; width: min(420px, 100vw); box-shadow: -16px 0 40px -20px oklch(0.255 0.018 215 / 0.4); animation: lg-slide .18s ease-out; }
+    .lg-backdrop { display: block; position: fixed; inset: 0; z-index: 49; background: oklch(0.255 0.018 215 / 0.28); }
+    .lg-backdrop[hidden] { display: none; }
+  }
+  @media (max-width: 860px) {
+    .lg-act-wide { display: none; }
+    .lg-more { display: inline-flex; }
+  }
+  @media (max-width: 640px) {
+    .lg-title { padding: 10px 12px; gap: 10px; }
+    .lg-mark { display: none; }
+    .lg-doc h1 { font-size: 15px; }
+    .lg-namebox { width: 56px; font-size: 12px; }
+    .lg-fx { width: 30px; }
+    .lg-formula { font-size: 13.5px; padding: 7px 10px; }
+    .lg-toolbar { padding: 8px 12px; }
+    .lg-igroup { width: 100%; }
+    .lg-hide-sm { display: none !important; }
+    .lg-grid { --rn: 36px; font-size: 12.5px; }
+    .lg-status .lg-opt { display: none; }
+    .lg-tab { padding: 0 12px; }
+    .lg-report { padding: 16px 12px 32px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+}
+</style>
+</head>
+<body class="bg-background text-foreground">
+<div class="lg-app" id="app">
+
+  <!-- Title bar -->
+  <header class="lg-title" data-slot="header">
+    <div class="lg-doc">
+      <span class="lg-mark" aria-hidden="true"><svg class="lg-ic" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg></span>
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <h1 id="eventName"></h1>
+          <span class="lg-badge" data-slot="badge" id="statusBadge"></span>
+          <span class="lg-badge lg-hide-sm" data-slot="badge" data-tone="edit" id="editBadge" hidden>Editing</span>
+        </div>
+        <div class="lg-meta" id="eventMeta"></div>
+      </div>
+    </div>
+    <div class="lg-actions" id="actions">
+      <button class="lg-btn lg-act-wide" data-slot="button" data-variant="ghost" id="btnRun"></button>
+      <button class="lg-btn lg-act-wide" data-slot="button" data-variant="outline" id="btnEdit"></button>
+      <button class="lg-btn lg-act-wide" data-slot="button" data-variant="default" id="btnLock"></button>
+      <button class="lg-btn" data-slot="dropdown-menu-trigger" data-variant="outline" id="btnExport" aria-haspopup="menu" aria-expanded="false"></button>
+      <button class="lg-btn lg-more" data-slot="dropdown-menu-trigger" data-variant="outline" data-size="icon" id="btnMore" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" title="More actions"></button>
+    </div>
+  </header>
+
+  <!-- Formula bar -->
+  <div class="lg-fbar" data-slot="input-group" role="region" aria-label="Selected cell">
+    <output class="lg-namebox" data-slot="input" id="nameBox" aria-label="Cell reference" title="Cell reference">A2</output>
+    <span class="lg-fx" aria-hidden="true">fx</span>
+    <div class="lg-formula" id="formula"></div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="lg-toolbar" role="toolbar" aria-label="Search and filters">
+    <div class="lg-igroup" data-slot="input-group">
+      <svg class="lg-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" data-slot="input-group-input" type="search" autocomplete="off" placeholder="Search buyer, organization or supplier" aria-label="Search buyers, organizations and suppliers">
+      <span class="lg-addon" data-slot="input-group-addon"><kbd class="lg-kbd lg-hide-sm" data-slot="kbd">/</kbd></span>
+    </div>
+    <div class="lg-select" data-slot="select" id="freeWrap">
+      <label for="freeSlot">Free in</label>
+      <select id="freeSlot" data-slot="select-trigger"></select>
+      <svg class="lg-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </div>
+    <div class="lg-chips" id="chips"></div>
+    <div class="lg-spacer"></div>
+    <button class="lg-btn" data-slot="popover-trigger" data-variant="ghost" data-size="sm" id="btnRules" aria-haspopup="dialog" aria-expanded="false"></button>
+    <button class="lg-btn lg-hide-sm" data-slot="button" data-variant="ghost" data-size="sm" id="btnPane" aria-pressed="false"></button>
+  </div>
+
+  <div class="lg-notice" data-slot="alert" role="status" id="notice" hidden></div>
+
+  <!-- Sheet + task pane -->
+  <div class="lg-work">
+    <main class="lg-scroll" data-slot="scroll-area" id="sheet" role="tabpanel" aria-labelledby="tab-slots"></main>
+    <div class="lg-backdrop" id="backdrop" hidden></div>
+    <aside class="lg-pane" data-slot="sheet-content" id="pane" role="dialog" aria-labelledby="paneTitle" hidden></aside>
+  </div>
+
+  <!-- Sheet tabs + status bar -->
+  <footer class="lg-foot">
+    <div class="lg-tabs" data-slot="tabs-list" role="tablist" aria-label="Sheets" id="tabs"></div>
+    <div class="lg-status" id="status" aria-live="polite"></div>
+  </footer>
+</div>
+
+<div class="lg-float" id="float" hidden></div>
+<dialog class="lg-dialog" data-slot="dialog" id="dialog" aria-labelledby="dlgTitle" aria-describedby="dlgBody">
+  <h2 id="dlgTitle" data-slot="dialog-title"></h2>
+  <p id="dlgBody" data-slot="dialog-description"></p>
+  <footer data-slot="dialog-footer">
+    <button class="lg-btn" data-slot="button" data-variant="outline" id="dlgCancel">Cancel</button>
+    <button class="lg-btn" data-slot="button" data-variant="default" id="dlgOk"></button>
+  </footer>
+</dialog>
+<ol class="lg-toaster" data-slot="sonner" id="toaster" aria-live="polite"></ol>
+
+<script src="../shared/aw-data.js"></script>
+<script>
+(() => {
+'use strict';
+
+/* ================= data ================= */
+const D = window.AW_DATA;
+const sheetEl = document.getElementById('sheet');
+if (!D) { sheetEl.innerHTML = '<div class="lg-empty"><h3>Schedule data did not load</h3><p>Open this page from the designs folder over http so ../shared/aw-data.js can load.</p></div>'; return; }
+
+const ST = D.event.settings;
+const TOP = ST.mutualTopN;
+const SLOTS = D.slots;
+const NS = SLOTS.length;
+const slotIdx = new Map(SLOTS.map((s, i) => [s.n, i]));
+const MATCH = { mutual: `Mutual top-${TOP}`, one: `One side top-${TOP}`, neither: `Neither top-${TOP}` };
+const MATCH_LC = { mutual: `mutual top-${TOP}`, one: `one side top-${TOP}`, neither: `neither top-${TOP}` };
+const typeName = t => t === 'business' ? 'Business' : 'Hotel';
+const inTop = r => r != null && r <= TOP;
+const fmtRank = r => r == null ? '–' : String(r);
+const pct = (n, d) => d ? (n / d * 100).toFixed(1) + '%' : '0.0%';
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+const L = i => String.fromCharCode(65 + i);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const listJoin = arr => arr.length <= 1 ? arr.join('') : arr.slice(0, -1).join(', ') + ' and ' + arr[arr.length - 1];
+
+const suppliers = D.suppliers.map(s => ({ ...s, kind: 'supplier', key: 's:' + s.name, lc: s.name.toLowerCase(), slots: Array(NS).fill(null) }));
+const buyers = D.buyers.map(b => ({ ...b, kind: 'buyer', key: 'b:' + b.name, lc: b.name.toLowerCase(), slots: Array(NS).fill(null) }));
+const supByName = new Map(suppliers.map(s => [s.name, s]));
+const buyByName = new Map(buyers.map(b => [b.name, b]));
+const appts = D.appointments.map((a, i) => ({
+  ...a, kind: 'appt', key: 'a:' + i,
+  match: inTop(a.buyerRank) && inTop(a.supplierRank) ? 'mutual' : (inTop(a.buyerRank) || inTop(a.supplierRank)) ? 'one' : 'neither',
+  slotObj: SLOTS[slotIdx.get(a.slot)], B: buyByName.get(a.buyer), S: supByName.get(a.supplier),
+})).filter(a => a.B && a.S && a.slotObj);
+appts.forEach(a => { const i = slotIdx.get(a.slot); a.B.slots[i] = a; a.S.slots[i] = a; });
+[...buyers, ...suppliers].forEach(p => {
+  p.count = p.slots.filter(Boolean).length;
+  p.mutual = p.slots.filter(a => a && a.match === 'mutual').length;
+  p.open = SLOTS.filter((s, i) => !p.slots[i]).map(s => s.n);
+});
+buyers.forEach(b => { b.health = b.count < ST.buyerMin ? 'low' : b.count > ST.buyerMax ? 'high' : 'ok'; });
+suppliers.forEach(s => { s.health = s.count === ST.supplierTarget ? 'ok' : s.count < ST.supplierTarget ? 'low' : 'high'; });
+const orgCount = {}; buyers.forEach(b => { orgCount[b.organization] = (orgCount[b.organization] || 0) + 1; });
+const sharedOrg = o => orgCount[o] > 1;
+const byKey = new Map([...appts, ...buyers, ...suppliers].map(x => [x.key, x]));
+
+const Q = (() => {
+  const total = appts.length;
+  const n = m => appts.filter(a => a.match === m).length;
+  const blankB = appts.filter(a => a.buyerRank == null).length;
+  const blankS = appts.filter(a => a.supplierRank == null).length;
+  const dist = new Map();
+  buyers.forEach(b => dist.set(b.count, (dist.get(b.count) || 0) + 1));
+  const counts = buyers.map(b => b.count);
+  const lo = Math.min(ST.buyerMin, ...counts), hi = Math.max(ST.buyerMax, ...counts);
+  return {
+    total, mutual: n('mutual'), one: n('one'), neither: n('neither'), blankB, blankS,
+    blankAppts: appts.filter(a => a.buyerRank == null || a.supplierRank == null).length,
+    supOk: suppliers.filter(s => s.health === 'ok').length,
+    buyOk: buyers.filter(b => b.health === 'ok').length,
+    low: buyers.filter(b => b.health === 'low').sort((a, b) => a.count - b.count || a.name.localeCompare(b.name)),
+    high: buyers.filter(b => b.health === 'high').sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+    supOff: suppliers.filter(s => s.health !== 'ok'),
+    dist, lo, hi,
+  };
+})();
+const ISSUES = Q.low.length + Q.high.length + Q.supOff.length;
+
+/* ================= state ================= */
+const S = {
+  sheet: 'slots', q: '', freeSlot: null, locked: false, editing: false,
+  filters: { slots: {}, buyers: {}, suppliers: {} },
+  sort: { slots: null, buyers: null, suppliers: null },
+  sel: { slots: { r: 0, c: 0, ar: 0, ac: 0 }, buyers: { r: 0, c: 0, ar: 0, ac: 0 }, suppliers: { r: 0, c: 0, ar: 0, ac: 0 } },
+  qSel: null,
+};
+const P = { open: false, cur: null, stack: [], view: 'buyer' };
+const V = { sheet: null, rows: [], cols: [], tds: [], rns: [], letters: [], painted: [] };
+const mqSmall = matchMedia('(max-width: 640px)');
+const mqDock = matchMedia('(min-width: 1024px)');
+
+/* ================= icons ================= */
+const ICONS = {
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>',
+  filter: '<path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/>',
+  up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  run: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  unlock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  export: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  back: '<path d="m15 18-6-6 6-6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  rules: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  pane: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  sheet: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>',
+};
+const ic = n => `<svg class="lg-ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
+
+/* ================= small renderers ================= */
+function hl(text) {
+  const t = String(text ?? '');
+  if (!S.q) return esc(t);
+  const lc = t.toLowerCase(), q = S.q;
+  let out = '', i = 0, j;
+  while ((j = lc.indexOf(q, i)) !== -1) { out += esc(t.slice(i, j)) + '<mark>' + esc(t.slice(j, j + q.length)) + '</mark>'; i = j + q.length; }
+  return out + esc(t.slice(i));
+}
+const tt = type => `<i class="lg-tt lg-tt-${type}" role="img" aria-label="${typeName(type)}">${type === 'business' ? 'B' : 'H'}</i>`;
+const rk = a => `<span class="lg-rk" aria-label="Buyer rank ${fmtRank(a.buyerRank)}, supplier rank ${fmtRank(a.supplierRank)}">${fmtRank(a.buyerRank)}<i>/</i>${fmtRank(a.supplierRank)}</span>`;
+const buyerCell = b => `<span class="lg-cv"><span class="lg-t">${hl(b.organization)} <span class="lg-sub">${hl(b.title)}</span></span></span>`;
+const supCell = s => `<span class="lg-cv">${tt(s.type)}<span class="lg-t">${hl(s.name)}</span></span>`;
+const rankCell = r => r == null ? { h: '<span class="lg-dash" aria-label="Blank">–</span>' } : { h: String(r), c: inTop(r) ? 'lg-top' : '' };
+const slotLabel = s => `Slot ${s.n}, ${s.start}`;
+const healthChip = p => {
+  if (p.kind === 'buyer') {
+    if (p.health === 'low') return `<span class="lg-chip lg-chip-bad">${ST.buyerMin - p.count} below the minimum of ${ST.buyerMin}</span>`;
+    if (p.health === 'high') return `<span class="lg-chip lg-chip-bad">${p.count - ST.buyerMax} above the maximum of ${ST.buyerMax}</span>`;
+    return '';
+  }
+  return p.health === 'ok' ? '' : `<span class="lg-chip lg-chip-bad">${Math.abs(p.count - ST.supplierTarget)} off the target of ${ST.supplierTarget}</span>`;
+};
+
+/* Formula bar sentences */
+function apptFx(a) {
+  const org = `<b>${esc(a.B.organization)}</b>${sharedOrg(a.B.organization) ? ` <span class="lg-mute">(${esc(a.B.title)})</span>` : ''}`;
+  return `<span>Slot ${a.slot}, ${a.slotObj.start}, Desk ${a.desk}, </span><b>${esc(a.supplier)}</b><span class="lg-x">×</span>${org}<span>, </span><span class="lg-pair">B:${fmtRank(a.buyerRank)} S:${fmtRank(a.supplierRank)}</span><span>, </span><span class="lg-chip lg-chip-${a.match}">${MATCH_LC[a.match]}</span>`;
+}
+function personFx(p) {
+  const name = p.kind === 'buyer' ? `<b>${esc(p.organization)}</b><span class="lg-mute">, ${esc(p.title)}</span>` : `<b>${esc(p.name)}</b><span>, Desk ${p.desk}, ${typeName(p.type).toLowerCase()}</span>`;
+  const open = p.open.length ? `open in ${p.open.length === 1 ? 'slot' : 'slots'} ${listJoin(p.open.map(String))}` : 'no open slots';
+  const chip = healthChip(p);
+  return `${name}<span>, ${plural(p.count, 'meeting')}, ${p.mutual} mutual top-${TOP}, ${open}${chip ? ', ' : ''}</span>${chip}`;
+}
+function openFx(p, s) {
+  const who = p.kind === 'buyer' ? esc(p.organization) : esc(p.name);
+  return `<span>Slot ${s.n}, ${s.start}, </span><span class="lg-chip">open</span><span>. </span><b>${who}</b><span> has no meeting in this slot. ${p.count} of ${NS} slots booked.</span>`;
+}
+function rowRange(sh, row) {
+  const first = sh.cols.findIndex(c => c.slot), last = first + NS - 1;
+  return `${L(first)}${row._n}:${L(last)}${row._n}`;
+}
+function countFx(sh, p) {
+  let note;
+  if (p.kind === 'buyer') note = p.health === 'ok' ? `Within ${ST.buyerMin} to ${ST.buyerMax}.` : p.health === 'low' ? `${ST.buyerMin - p.count} below the minimum of ${ST.buyerMin}.` : `${p.count - ST.buyerMax} above the maximum of ${ST.buyerMax}.`;
+  else note = p.health === 'ok' ? `On the target of ${ST.supplierTarget}.` : `${Math.abs(p.count - ST.supplierTarget)} off the target of ${ST.supplierTarget}.`;
+  return `<span class="lg-fn">=COUNTA(${rowRange(sh, p)})</span><span>${plural(p.count, 'meeting')}. ${note}</span>`;
+}
+const mutualFx = (sh, p) => `<span class="lg-fn">=COUNTIF(${rowRange(sh, p)},"${MATCH.mutual}")</span><span>${plural(p.mutual, 'mutual top-' + TOP + ' meeting')}.</span>`;
+
+/* Panel targets */
+const tA = a => ({ kind: 'appt', key: a.key });
+const tE = (p, slot) => ({ kind: p.kind, key: p.key, slot: slot ?? null });
+
+/* ================= sheet definitions ================= */
+function slotCol(s, i, kind) {
+  return {
+    id: 's' + s.n, slot: s.n, label: `Slot ${s.n}`, sub: s.start, w: 184, wm: 156,
+    cell: p => {
+      const a = p.slots[i];
+      if (!a) return { h: '<span class="lg-open">Open</span>', c: 'cf-open' };
+      const inner = kind === 'buyer'
+        ? `${tt(a.type)}<span class="lg-t">${hl(a.supplier)}</span>`
+        : `<span class="lg-t">${hl(a.B.organization)}${sharedOrg(a.B.organization) ? ` <span class="lg-sub">${hl(a.B.title)}</span>` : ''}</span>`;
+      return { h: `<span class="lg-cv">${inner}${rk(a)}</span>`, c: a.match === 'mutual' ? 'cf-good' : '' };
+    },
+    val: p => p.slots[i] ? MATCH[p.slots[i].match] : 'Open',
+    order: ['Open', MATCH.mutual, MATCH.one, MATCH.neither],
+    sv: p => p.slots[i] ? (kind === 'buyer' ? p.slots[i].supplier : p.slots[i].B.name) : null,
+    go: p => p.slots[i] ? tA(p.slots[i]) : tE(p, s.n),
+    ap: p => p.slots[i],
+    fx: (sh, p) => p.slots[i] ? apptFx(p.slots[i]) : openFx(p, s),
+  };
+}
+
+const SHEETS = {
+  slots: {
+    id: 'slots', label: 'Slots', rowNoun: 'meetings',
+    base: [...appts].sort((a, b) => a.slot - b.slot || a.desk - b.desk),
+    search: (a, q) => a.B.lc.includes(q) || a.S.lc.includes(q),
+    free: (a, n) => a.slot === n,
+    rowGo: a => tA(a), rowFx: (sh, a) => apptFx(a), rowAp: a => a,
+    cols: [
+      { id: 'slot', label: 'Slot', w: 116, wm: 92, cell: a => ({ h: `<span class="lg-cv"><span class="lg-sn">${a.slot}</span><span class="lg-mute">${a.slotObj.start}</span></span>` }),
+        val: a => slotLabel(a.slotObj), order: SLOTS.map(slotLabel), sv: a => a.slot * 1000 + a.desk },
+      { id: 'desk', label: 'Desk', num: true, w: 66, cell: a => ({ h: String(a.desk) }), val: a => String(a.desk), sv: a => a.desk },
+      { id: 'supplier', label: 'Supplier', w: 280, cell: a => ({ h: supCell(a.S) }), val: a => a.supplier, sv: a => a.supplier, go: a => tE(a.S, a.slot) },
+      { id: 'type', label: 'Type', w: 104, cell: a => ({ h: `<span class="lg-cv">${tt(a.type)}<span>${typeName(a.type)}</span></span>` }), val: a => typeName(a.type), sv: a => a.type },
+      { id: 'buyer', label: 'Buyer', w: 340, cell: a => ({ h: buyerCell(a.B) }), val: a => a.B.organization, sv: a => a.B.name, go: a => tE(a.B, a.slot) },
+      { id: 'brank', label: 'Buyer rank', num: true, w: 92, cell: a => rankCell(a.buyerRank), val: a => a.buyerRank == null ? '(Blanks)' : String(a.buyerRank), sv: a => a.buyerRank, nv: a => a.buyerRank },
+      { id: 'srank', label: 'Supplier rank', num: true, w: 104, cell: a => rankCell(a.supplierRank), val: a => a.supplierRank == null ? '(Blanks)' : String(a.supplierRank), sv: a => a.supplierRank, nv: a => a.supplierRank },
+      { id: 'match', label: 'Match', w: 148, cell: a => ({ h: a.match === 'neither' ? `<span class="lg-mute">${MATCH[a.match]}</span>` : MATCH[a.match], c: a.match === 'mutual' ? 'cf-good' : '' }),
+        val: a => MATCH[a.match], order: [MATCH.mutual, MATCH.one, MATCH.neither], sv: a => ['mutual', 'one', 'neither'].indexOf(a.match) },
+    ],
+  },
+  buyers: {
+    id: 'buyers', label: 'Buyers', rowNoun: 'buyers',
+    base: [...buyers],
+    search: (b, q) => b.lc.includes(q) || b.slots.some(a => a && a.S.lc.includes(q)),
+    free: (b, n) => !b.slots[slotIdx.get(n)],
+    rowGo: b => tE(b), rowFx: (sh, b) => personFx(b), rowAp: () => null,
+    cols: [
+      { id: 'buyer', label: 'Buyer', w: 300, wm: 150, cell: b => ({ h: buyerCell(b) }), val: b => b.organization, sv: b => b.name },
+      { id: 'count', label: 'Meetings', num: true, w: 92, cell: b => ({ h: String(b.count), c: b.health === 'ok' ? '' : 'cf-bad' }), val: b => String(b.count), sv: b => b.count, nv: b => b.count, fx: countFx },
+      { id: 'mutual', label: 'Mutual', num: true, w: 80, cell: b => ({ h: b.mutual ? String(b.mutual) : '<span class="lg-mute">0</span>' }), val: b => String(b.mutual), sv: b => b.mutual, nv: b => b.mutual, fx: mutualFx },
+      ...SLOTS.map((s, i) => slotCol(s, i, 'buyer')),
+    ],
+  },
+  suppliers: {
+    id: 'suppliers', label: 'Suppliers', rowNoun: 'suppliers',
+    base: [...suppliers].sort((a, b) => a.desk - b.desk),
+    search: (s, q) => s.lc.includes(q) || s.slots.some(a => a && a.B.lc.includes(q)),
+    free: (s, n) => !s.slots[slotIdx.get(n)],
+    rowGo: s => tE(s), rowFx: (sh, s) => personFx(s), rowAp: () => null,
+    cols: [
+      { id: 'supplier', label: 'Supplier', w: 280, wm: 150, cell: s => ({ h: supCell(s) }), val: s => s.name, sv: s => s.name },
+      { id: 'desk', label: 'Desk', num: true, w: 66, cell: s => ({ h: String(s.desk) }), val: s => String(s.desk), sv: s => s.desk },
+      { id: 'type', label: 'Type', w: 104, cell: s => ({ h: `<span class="lg-cv">${tt(s.type)}<span>${typeName(s.type)}</span></span>` }), val: s => typeName(s.type), sv: s => s.type },
+      { id: 'count', label: 'Meetings', num: true, w: 92, cell: s => ({ h: String(s.count), c: s.health === 'ok' ? '' : 'cf-bad' }), val: s => String(s.count), sv: s => s.count, nv: s => s.count, fx: countFx },
+      { id: 'mutual', label: 'Mutual', num: true, w: 80, cell: s => ({ h: s.mutual ? String(s.mutual) : '<span class="lg-mute">0</span>' }), val: s => String(s.mutual), sv: s => s.mutual, nv: s => s.mutual, fx: mutualFx },
+      ...SLOTS.map((s, i) => slotCol(s, i, 'supplier')),
+    ],
+  },
+};
+Object.values(SHEETS).forEach(sh => {
+  sh.base.forEach((r, i) => { r._n = i + 2; });
+  sh.colById = Object.fromEntries(sh.cols.map(c => [c.id, c]));
+  sh.frozen = 1;
+});
+const colRef = (sheet, id) => { const sh = SHEETS[sheet]; const i = sh.cols.findIndex(c => c.id === id); return `${sh.label}!${L(i)}2:${L(i)}${sh.base.length + 1}`; };
+
+/* ================= filtering ================= */
+function cmp(a, b) {
+  if (a == null && b == null) return 0; if (a == null) return 1; if (b == null) return -1;
+  return typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b));
+}
+function visibleRows(id) {
+  const sh = SHEETS[id];
+  let rows = sh.base;
+  if (S.q) rows = rows.filter(r => sh.search(r, S.q));
+  if (S.freeSlot != null) rows = rows.filter(r => sh.free(r, S.freeSlot));
+  for (const [cid, set] of Object.entries(S.filters[id])) { const col = sh.colById[cid]; rows = rows.filter(r => set.has(col.val(r))); }
+  const so = S.sort[id];
+  if (so) { const col = sh.colById[so.col]; rows = [...rows].sort((a, b) => { const x = col.sv(a), y = col.sv(b); if (x == null || y == null) return cmp(x, y); return cmp(x, y) * so.dir; }); }
+  return rows;
+}
+const isFiltered = id => !!S.q || S.freeSlot != null || Object.keys(S.filters[id] || {}).length > 0;
+
+/* ================= grid (shared by Slots, Buyers, Suppliers) ================= */
+function renderGrid(sh) {
+  const cols = sh.cols, rows = visibleRows(sh.id), small = mqSmall.matches;
+  V.sheet = sh.id; V.rows = rows; V.cols = cols;
+  const width = (small ? 36 : 48) + cols.reduce((t, c) => t + (small && c.wm ? c.wm : c.w), 0);
+  const so = S.sort[sh.id];
+  let h = `<table class="lg-grid${isFiltered(sh.id) ? ' is-filtered' : ''}" data-slot="table" role="grid" aria-label="${sh.label} sheet" aria-rowcount="${rows.length + 1}" aria-colcount="${cols.length}" aria-multiselectable="true" style="width:${width}px">`;
+  h += `<colgroup><col style="width:var(--rn)">${cols.map(c => `<col style="width:${small && c.wm ? c.wm : c.w}px">`).join('')}</colgroup>`;
+  h += `<thead data-slot="table-header"><tr class="r-letters" aria-hidden="true"><th class="corner rn"></th>${cols.map((c, i) => `<th class="lg-letter${i < sh.frozen ? ' fz' : ''}" data-lc="${i}">${L(i)}</th>`).join('')}</tr>`;
+  h += `<tr class="r-fields" role="row"><th class="rn" aria-hidden="true">1</th>${cols.map((c, i) => {
+    const filt = !!S.filters[sh.id][c.id] || (c.slot && S.freeSlot === c.slot);
+    const sorted = so && so.col === c.id;
+    const icon = filt ? 'filter' : sorted ? (so.dir > 0 ? 'up' : 'down') : 'chev';
+    return `<th role="columnheader" scope="col" class="${i < sh.frozen ? 'fz ' : ''}${c.num ? 'num' : ''}" ${sorted ? `aria-sort="${so.dir > 0 ? 'ascending' : 'descending'}"` : ''} data-slot="table-head">
+      <div class="lg-fh"><span class="lg-fh-l">${esc(c.label)}${c.sub ? `<small>${esc(c.sub)}</small>` : ''}</span>
+      <button class="lg-fh-b${filt || sorted ? ' is-on' : ''}" data-slot="dropdown-menu-trigger" data-col="${i}" aria-haspopup="menu" aria-expanded="false" aria-label="Sort and filter ${esc(c.label)}${c.sub ? ', ' + esc(c.sub) : ''}${filt ? ' (filtered)' : ''}" title="Sort and filter">${ic(icon)}</button></div></th>`;
+  }).join('')}</tr></thead><tbody data-slot="table-body">`;
+  const parts = [];
+  rows.forEach((row, r) => {
+    let tr = `<tr role="row" data-slot="table-row"><th class="rn" scope="row" data-rn="${r}">${row._n}</th>`;
+    cols.forEach((c, ci) => {
+      const o = c.cell(row);
+      tr += `<td role="gridcell" data-slot="table-cell" data-r="${r}" data-c="${ci}" tabindex="-1" class="${ci < sh.frozen ? 'fz ' : ''}${c.num ? 'num ' : ''}${o.c || ''}">${o.h}</td>`;
+    });
+    parts.push(tr + '</tr>');
+  });
+  h += parts.join('') + '</tbody></table>';
+  if (!rows.length) h += emptyHTML(sh);
+  sheetEl.innerHTML = h;
+  const trs = sheetEl.querySelectorAll('tbody tr');
+  V.tds = Array.from(trs, tr => Array.from(tr.children).slice(1));
+  V.rns = Array.from(trs, tr => tr.firstElementChild);
+  V.letters = Array.from(sheetEl.querySelectorAll('.lg-letter'));
+  V.painted = [];
+  const s = S.sel[sh.id];
+  s.r = Math.max(0, Math.min(s.r, rows.length - 1)); s.c = Math.max(0, Math.min(s.c, cols.length - 1));
+  s.ar = Math.max(0, Math.min(s.ar, rows.length - 1)); s.ac = Math.max(0, Math.min(s.ac, cols.length - 1));
+  paintSel();
+}
+
+function emptyHTML(sh) {
+  const why = [];
+  if (S.q) why.push(`match “${esc(S.q)}”`);
+  if (S.freeSlot != null) why.push(`are free in slot ${S.freeSlot}`);
+  if (Object.keys(S.filters[sh.id]).length) why.push('pass the column filters');
+  let hint = 'Clear the search or filters to see every row again.';
+  if (S.freeSlot != null && sh.id === 'suppliers') hint = `Every supplier is booked in slot ${S.freeSlot}. To add a meeting here, swap it with an existing meeting in another slot.`;
+  return `<div class="lg-empty" data-slot="empty"><div class="lg-empty-ic">${ic('filter')}</div><h3>No ${sh.rowNoun} ${listJoin(why) || 'to show'}</h3><p>${hint}</p><button class="lg-btn" data-slot="button" data-variant="outline" data-size="sm" data-act="clear-all">Clear search and filters</button></div>`;
+}
+
+/* selection */
+function rangeOf(s) { return { r0: Math.min(s.r, s.ar), r1: Math.max(s.r, s.ar), c0: Math.min(s.c, s.ac), c1: Math.max(s.c, s.ac) }; }
+function paintSel() {
+  V.painted.forEach(el => { el.classList.remove('in-range', 'is-active', 'is-hl'); if (el.tagName === 'TD') { el.tabIndex = -1; el.removeAttribute('aria-selected'); } });
+  V.painted = [];
+  if (!V.rows.length) return;
+  const s = S.sel[V.sheet], g = rangeOf(s);
+  const add = (el, cls) => { el.classList.add(cls); V.painted.push(el); };
+  const multi = g.r0 !== g.r1 || g.c0 !== g.c1;
+  if (multi) for (let r = g.r0; r <= g.r1; r++) for (let c = g.c0; c <= g.c1; c++) { const td = V.tds[r][c]; add(td, 'in-range'); td.setAttribute('aria-selected', 'true'); }
+  const td = V.tds[s.r][s.c];
+  add(td, 'is-active'); td.tabIndex = 0; td.setAttribute('aria-selected', 'true');
+  for (let r = g.r0; r <= g.r1; r++) add(V.rns[r], 'is-hl');
+  for (let c = g.c0; c <= g.c1; c++) add(V.letters[c], 'is-hl');
+}
+function setSel(r, c, extend, opt = {}) {
+  if (!V.rows.length) return;
+  const s = S.sel[V.sheet];
+  s.r = Math.max(0, Math.min(r, V.rows.length - 1));
+  s.c = Math.max(0, Math.min(c, V.cols.length - 1));
+  if (!extend) { s.ar = s.r; s.ac = s.c; }
+  paintSel(); updateFormula(); updateStatus();
+  const td = V.tds[s.r][s.c];
+  if (opt.focus !== false) { td.focus({ preventScroll: true }); td.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  if (P.open && mqDock.matches && !extend) openPanel(targetAt(s.r, s.c), { follow: true });
+}
+const targetAt = (r, c) => { const sh = SHEETS[V.sheet], col = V.cols[c], row = V.rows[r]; return (col.go || sh.rowGo)(row); };
+
+/* ================= formula bar + status ================= */
+const nameBox = document.getElementById('nameBox');
+const formulaEl = document.getElementById('formula');
+function updateFormula() {
+  if (S.sheet === 'quality') {
+    const m = S.qSel && QFX[S.qSel];
+    nameBox.textContent = m ? m.ref : 'Quality';
+    formulaEl.innerHTML = m ? m.fx : `<span class="lg-mute">Select a figure to see how it is worked out from the ${Q.total} appointments.</span>`;
+    return;
+  }
+  const sh = SHEETS[S.sheet];
+  if (!V.rows.length) { nameBox.textContent = '–'; formulaEl.innerHTML = '<span class="lg-mute">No rows to show with the current search and filters.</span>'; return; }
+  const s = S.sel[S.sheet], g = rangeOf(s), row = V.rows[s.r], col = V.cols[s.c];
+  const multi = g.r0 !== g.r1 || g.c0 !== g.c1;
+  nameBox.textContent = multi ? `${L(g.c0)}${V.rows[g.r0]._n}:${L(g.c1)}${V.rows[g.r1]._n}` : `${L(s.c)}${row._n}`;
+  formulaEl.innerHTML = (col.fx || sh.rowFx)(sh, row);
+}
+const statusEl = document.getElementById('status');
+function updateStatus() {
+  if (S.sheet === 'quality') {
+    statusEl.innerHTML = `<span class="lg-opt">Computed from<b>${Q.total} appointments</b></span><span>Manual changes<b>${D.event.manualChanges}</b></span>`;
+    return;
+  }
+  const sh = SHEETS[S.sheet], all = sh.base.length, n = V.rows.length;
+  let h = `<span class="${isFiltered(S.sheet) ? 'is-filtered' : ''}">${n === all ? `${all} ${sh.rowNoun}` : `${n} of ${all} ${sh.rowNoun} shown`}</span>`;
+  if (n) {
+    const s = S.sel[S.sheet], g = rangeOf(s);
+    const cells = (g.r1 - g.r0 + 1) * (g.c1 - g.c0 + 1);
+    if (cells > 1) {
+      const ap = new Map(), nums = [];
+      for (let r = g.r0; r <= g.r1; r++) for (let c = g.c0; c <= g.c1; c++) {
+        const col = V.cols[c], row = V.rows[r];
+        const a = (col.ap || sh.rowAp)(row); if (a) ap.set(a.key, a);
+        if (col.nv) { const v = col.nv(row); if (v != null) nums.push(v); }
+      }
+      const list = [...ap.values()];
+      const avg = arr => arr.length ? (arr.reduce((t, x) => t + x, 0) / arr.length).toFixed(1) : '–';
+      if (list.length) {
+        h += `<span>Meetings<b>${list.length}</b></span><span>Mutual top-${TOP}<b>${list.filter(a => a.match === 'mutual').length}</b></span>`;
+        h += `<span class="lg-opt">Avg buyer rank<b>${avg(list.map(a => a.buyerRank).filter(x => x != null))}</b></span><span class="lg-opt">Avg supplier rank<b>${avg(list.map(a => a.supplierRank).filter(x => x != null))}</b></span>`;
+      }
+      if (nums.length) h += `<span>Sum<b>${nums.reduce((t, x) => t + x, 0)}</b></span><span class="lg-opt">Average<b>${avg(nums)}</b></span>`;
+      if (!list.length && !nums.length) h += `<span>Count<b>${cells}</b></span>`;
+    } else {
+      h += `<span class="lg-opt lg-hide-sm">Shift + arrows selects a range</span><span class="lg-opt lg-hide-sm"><kbd class="lg-kbd" data-slot="kbd">Enter</kbd> opens details</span>`;
+    }
+  }
+  statusEl.innerHTML = h;
+}
+
+/* ================= header, toolbar, tabs ================= */
+const fmtDate = iso => new Date(iso + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+function renderHeader() {
+  document.getElementById('eventName').textContent = D.event.name;
+  const badge = document.getElementById('statusBadge');
+  badge.dataset.tone = S.locked ? 'locked' : 'draft';
+  badge.innerHTML = `<span class="dot"></span>${S.locked ? 'Locked' : 'Draft, not locked'}`;
+  document.getElementById('editBadge').hidden = !S.editing;
+  const outside = Q.low.length + Q.high.length;
+  document.getElementById('eventMeta').innerHTML =
+    `<span>${esc(D.event.client)}</span><span class="lg-hide-sm">${fmtDate(D.event.date)}</span>` +
+    `<span class="lg-hide-sm">${Q.total} meetings across ${NS} slots</span>` +
+    (ISSUES ? `<button class="lg-btn is-flag" data-variant="link" data-act="goto-quality">${outside ? `${plural(outside, 'buyer')} outside ${ST.buyerMin} to ${ST.buyerMax} meetings` : ''}${outside && Q.supOff.length ? ', ' : ''}${Q.supOff.length ? `${plural(Q.supOff.length, 'supplier')} not at ${ST.supplierTarget}` : ''}</button>`
+            : `<span>All counts on target</span>`);
+  const run = document.getElementById('btnRun'), edit = document.getElementById('btnEdit'), lock = document.getElementById('btnLock'), exp = document.getElementById('btnExport');
+  run.innerHTML = `${ic('run')}Run matching`; run.disabled = S.locked;
+  edit.innerHTML = `${ic('edit')}${S.editing ? 'Stop editing' : 'Edit schedule'}`; edit.disabled = S.locked; edit.setAttribute('aria-pressed', String(S.editing));
+  lock.innerHTML = S.locked ? `${ic('unlock')}Unlock` : `${ic('lock')}Lock schedule`;
+  lock.dataset.variant = S.locked ? 'outline' : 'default';
+  exp.innerHTML = `${ic('export')}<span class="lg-hide-sm">Export</span>${ic('chev')}`;
+  exp.dataset.variant = S.locked ? 'default' : 'outline';
+  exp.setAttribute('aria-label', 'Export');
+  document.getElementById('btnMore').innerHTML = ic('more');
+  document.getElementById('btnRules').innerHTML = `${ic('rules')}<span class="lg-hide-sm">Formatting rules</span>`;
+  document.getElementById('btnRules').setAttribute('aria-label', 'Formatting rules');
+  const pane = document.getElementById('btnPane');
+  pane.innerHTML = `${ic('pane')}Details`; pane.setAttribute('aria-pressed', String(P.open));
+}
+
+const freeSel = document.getElementById('freeSlot');
+freeSel.innerHTML = `<option value="">Any slot</option>` + SLOTS.map(s => `<option value="${s.n}">Slot ${s.n}, ${s.start}</option>`).join('');
+
+function renderChips() {
+  freeSel.value = S.freeSlot ?? '';
+  document.getElementById('freeWrap').classList.toggle('is-on', S.freeSlot != null);
+  const chips = [];
+  if (S.freeSlot != null && S.sheet !== 'quality') {
+    const what = S.sheet === 'slots' ? 'Meetings in' : 'Free in';
+    chips.push(`<span class="lg-badge" data-slot="badge">${what} slot ${S.freeSlot}<button data-act="clear-free" aria-label="Remove free in slot filter">${ic('x')}</button></span>`);
+  }
+  if (S.sheet !== 'quality') {
+    const sh = SHEETS[S.sheet];
+    for (const [cid, set] of Object.entries(S.filters[S.sheet])) {
+      const col = sh.colById[cid];
+      const label = set.size === 1 ? [...set][0] : `${set.size} values`;
+      chips.push(`<span class="lg-badge" data-slot="badge">${esc(col.label)}${col.sub ? ' ' + esc(col.sub) : ''}: ${esc(label)}<button data-act="clear-col" data-col="${cid}" aria-label="Remove ${esc(col.label)} filter">${ic('x')}</button></span>`);
+    }
+    if (S.sort[S.sheet]) {
+      const so = S.sort[S.sheet], col = sh.colById[so.col];
+      chips.push(`<span class="lg-badge" data-slot="badge">Sorted by ${esc(col.label)}${col.sub ? ' ' + esc(col.sub) : ''}<button data-act="clear-sort" aria-label="Remove sort">${ic('x')}</button></span>`);
+    }
+  }
+  document.getElementById('chips').innerHTML = chips.join('');
+}
+
+function renderNotice() {
+  const el = document.getElementById('notice');
+  if (S.sheet !== 'slots' || S.freeSlot == null) { el.hidden = true; el.innerHTML = ''; return; }
+  const n = S.freeSlot, i = slotIdx.get(n), s = SLOTS[i];
+  const fb = buyers.filter(b => !b.slots[i]).length, fs = suppliers.filter(x => !x.slots[i]).length;
+  el.hidden = false;
+  el.innerHTML = `<span><b>Slot ${n}, ${s.start} to ${s.end}.</b> ${plural(fb, 'buyer is', 'buyers are')} free and ${plural(fs, 'supplier is', 'suppliers are')} free in this slot.</span>
+    <button class="lg-btn" data-variant="link" data-act="free-buyers" data-slotn="${n}">Show free buyers</button>
+    <button class="lg-btn" data-variant="link" data-act="free-suppliers" data-slotn="${n}">Show free suppliers</button>`;
+}
+
+const TABS = [['slots', 'Slots'], ['buyers', 'Buyers'], ['suppliers', 'Suppliers'], ['quality', 'Quality']];
+function renderTabs() {
+  document.getElementById('tabs').innerHTML = TABS.map(([id, label]) =>
+    `<button class="lg-tab" data-slot="tabs-trigger" role="tab" id="tab-${id}" aria-controls="sheet" aria-selected="${S.sheet === id}" tabindex="${S.sheet === id ? 0 : -1}" data-sheet="${id}">${label}${id === 'quality' && ISSUES ? `<span class="lg-tab-n" aria-label="${ISSUES} issues">${ISSUES}</span>` : ''}</button>`).join('');
+  sheetEl.setAttribute('aria-labelledby', 'tab-' + S.sheet);
+}
+
+/* ================= views (one render function per view) ================= */
+function renderSlots() { renderGrid(SHEETS.slots); }
+function renderBuyers() { renderGrid(SHEETS.buyers); }
+function renderSuppliers() { renderGrid(SHEETS.suppliers); }
+
+let QFX = {};
+function renderQuality() {
+  V.sheet = 'quality'; V.rows = []; V.cols = [];
+  const total = Q.total;
+  const q = S.q;
+  const match = b => !q || b.lc.includes(q);
+  const supRange = colRef('suppliers', 'count'), buyRange = colRef('buyers', 'count'), matchRange = colRef('slots', 'match');
+  const brRange = colRef('slots', 'brank'), srRange = colRef('slots', 'srank');
+  QFX = {
+    total: { ref: 'Quality!B2', fx: `<span class="lg-fn">=COUNTA(${colRef('slots', 'supplier')})</span><span>${total} appointments across ${NS} slots and ${suppliers.length} desks.</span>` },
+    sup: { ref: 'Quality!B3', fx: `<span class="lg-fn">=COUNTIF(${supRange},${ST.supplierTarget})</span><span>${Q.supOk} of ${suppliers.length} suppliers have exactly ${ST.supplierTarget} meetings.</span>` },
+    buy: { ref: 'Quality!B4', fx: `<span class="lg-fn">=COUNTIFS(${buyRange},"&gt;=${ST.buyerMin}",${buyRange},"&lt;=${ST.buyerMax}")</span><span>${Q.buyOk} of ${buyers.length} buyers have ${ST.buyerMin} to ${ST.buyerMax} meetings.</span>` },
+    mutual: { ref: 'Quality!B5', fx: `<span class="lg-fn">=COUNTIF(${matchRange},"${MATCH.mutual}")</span><span>${Q.mutual} meetings, ${pct(Q.mutual, total)}, where both sides ranked each other ${TOP} or better.</span>` },
+    one: { ref: 'Quality!B6', fx: `<span class="lg-fn">=COUNTIF(${matchRange},"${MATCH.one}")</span><span>${Q.one} meetings, ${pct(Q.one, total)}, where only one side ranked the other ${TOP} or better.</span>` },
+    neither: { ref: 'Quality!B7', fx: `<span class="lg-fn">=COUNTIF(${matchRange},"${MATCH.neither}")</span><span>${Q.neither} meetings, ${pct(Q.neither, total)}, where neither side ranked the other in its top ${TOP}.</span>` },
+    blank: { ref: 'Quality!B8', fx: `<span class="lg-fn">=COUNTBLANK(${brRange})+COUNTBLANK(${srRange})</span><span>${Q.blankB + Q.blankS} blank ranks: ${Q.blankB} left blank by buyers, ${Q.blankS} by suppliers.</span>` },
+    manual: { ref: 'Quality!B9', fx: `<span>${D.event.manualChanges} manual changes applied since the last matching run.</span>` },
+  };
+  const row = (id, label, value, extra, cls = '') => `<tr tabindex="0" data-qfx="${id}" class="${S.qSel === id ? 'is-sel' : ''}"><td>${label}</td><td class="num lg-big ${cls}">${value}</td><td>${extra}</td></tr>`;
+  const prog = (n, d, bad) => `<div class="flex items-center gap-2"><div class="lg-prog flex-1${bad ? ' is-bad' : ''}" data-slot="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${d}" aria-valuenow="${n}"><div style="width:${d ? n / d * 100 : 0}%"></div></div><span class="text-muted-foreground text-xs">${pct(n, d)}</span></div>`;
+  const share = n => `<div class="flex items-center gap-2"><div class="lg-bar" style="width:${Math.max(2, n / total * 160)}px"></div><span class="text-muted-foreground text-xs">${pct(n, total)}</span></div>`;
+
+  const health = `<section class="lg-sec" aria-labelledby="q-health"><header><h2 id="q-health">Schedule health</h2><p>Every figure is counted from the Slots, Buyers and Suppliers sheets. Select one to see its formula.</p></header>
+    <table class="lg-qt" data-slot="table"><colgroup><col><col style="width:96px"><col style="width:42%"></colgroup>
+    <thead><tr><th>Measure</th><th class="num">Value</th><th>Share</th></tr></thead><tbody>
+    ${row('total', 'Total appointments', total, `<span class="text-muted-foreground">${NS} slots, ${suppliers.length} desks</span>`)}
+    ${row('sup', `Suppliers at ${ST.supplierTarget}`, `${Q.supOk}/${suppliers.length}`, prog(Q.supOk, suppliers.length, Q.supOk < suppliers.length), Q.supOk < suppliers.length ? 'cf-bad' : '')}
+    ${row('buy', `Buyers at ${ST.buyerMin} to ${ST.buyerMax}`, `${Q.buyOk}/${buyers.length}`, prog(Q.buyOk, buyers.length, Q.buyOk < buyers.length), Q.buyOk < buyers.length ? 'cf-bad' : '')}
+    ${row('mutual', `Mutual top-${TOP}`, Q.mutual, share(Q.mutual), 'cf-good')}
+    ${row('one', `One side top-${TOP}`, Q.one, share(Q.one))}
+    ${row('neither', `Neither top-${TOP}`, Q.neither, share(Q.neither))}
+    ${row('blank', 'Blank rankings', Q.blankB + Q.blankS, `<span class="text-muted-foreground">${Q.blankB} by buyers, ${Q.blankS} by suppliers</span>`)}
+    ${row('manual', 'Manual changes', D.event.manualChanges, `<span class="text-muted-foreground">${D.event.manualChanges} manual changes applied</span>`)}
+    </tbody></table></section>`;
+
+  const maxN = Math.max(...Q.dist.values());
+  let distRows = '';
+  for (let c = Q.lo; c <= Q.hi; c++) {
+    const n = Q.dist.get(c) || 0;
+    const bad = c < ST.buyerMin || c > ST.buyerMax;
+    const note = c < ST.buyerMin ? 'Below minimum' : c > ST.buyerMax ? 'Above maximum' : c === ST.buyerIdeal ? 'Ideal' : 'In range';
+    distRows += `<tr ${n ? `tabindex="0" data-act="buyers-count" data-count="${c}"` : ''} aria-label="${plural(n, 'buyer')} with ${c} meetings, ${note.toLowerCase()}${n ? '. Show them on the Buyers sheet' : ''}">
+      <td class="num ${bad ? 'cf-bad' : ''}">${c}</td><td class="num">${n}</td><td><div class="lg-bar${bad ? ' is-bad' : ''}" style="width:${n ? Math.max(3, n / maxN * 100) : 0}%"></div></td><td class="${bad ? 'text-destructive' : 'text-muted-foreground'}">${note}</td></tr>`;
+  }
+  const dist = `<section class="lg-sec" aria-labelledby="q-dist"><header><h2 id="q-dist">Meetings per buyer</h2><p>Target is ${ST.buyerMin} to ${ST.buyerMax}, ideally ${ST.buyerIdeal}. Select a row to open those buyers on the Buyers sheet.</p></header>
+    <table class="lg-qt" data-slot="table"><colgroup><col style="width:84px"><col style="width:72px"><col><col style="width:116px"></colgroup>
+    <thead><tr><th class="num">Meetings</th><th class="num">Buyers</th><th>Distribution</th><th>Status</th></tr></thead><tbody>${distRows}</tbody>
+    <tfoot><tr><td class="num">Total</td><td class="num">${buyers.length}</td><td colspan="2" class="text-muted-foreground">${Q.total} meetings, ${(Q.total / buyers.length).toFixed(2)} on average</td></tr></tfoot></table></section>`;
+
+  const slotRows = SLOTS.map((s, i) => {
+    const list = appts.filter(a => a.slot === s.n);
+    const m = list.filter(a => a.match === 'mutual').length, o = list.filter(a => a.match === 'one').length, nn = list.length - m - o;
+    const fb = buyers.filter(b => !b.slots[i]).length;
+    const w = x => list.length ? (x / list.length * 100) : 0;
+    return `<tr tabindex="0" data-act="slot-row" data-slotn="${s.n}" class="${S.freeSlot === s.n ? 'is-slot' : ''}" aria-label="Slot ${s.n}, ${s.start}: ${list.length} meetings, ${m} mutual. Show on the Slots sheet">
+      <td><span class="font-semibold">${s.n}</span> <span class="text-muted-foreground">${s.start}</span></td><td class="num">${list.length}</td><td class="num">${m}</td>
+      <td><div class="lg-stack" aria-hidden="true"><i style="width:${w(m)}%;background:var(--chart-1)"></i><i style="width:${w(o)}%;background:var(--chart-2)"></i><i style="width:${w(nn)}%;background:var(--chart-3)"></i></div></td>
+      <td class="num">${fb ? `<button class="lg-btn" data-variant="link" data-act="free-buyers" data-slotn="${s.n}" aria-label="Show ${fb} buyers free in slot ${s.n}">${fb}</button>` : '<span class="text-muted-foreground">0</span>'}</td></tr>`;
+  }).join('');
+  const slotsSec = `<section class="lg-sec" aria-labelledby="q-slots"><header><h2 id="q-slots">Match quality by slot</h2><p>Free buyers are where a meeting can still be added.</p></header>
+    <div class="lg-legend" data-slot="chart-legend"><span><i style="background:var(--chart-1)"></i>${MATCH.mutual}</span><span><i style="background:var(--chart-2)"></i>${MATCH.one}</span><span><i style="background:var(--chart-3)"></i>${MATCH.neither}</span></div>
+    <table class="lg-qt" data-slot="table"><colgroup><col style="width:108px"><col style="width:80px"><col style="width:64px"><col><col style="width:88px"></colgroup>
+    <thead><tr><th>Slot</th><th class="num">Meetings</th><th class="num">Mutual</th><th>Mix</th><th class="num">Free buyers</th></tr></thead><tbody>${slotRows}</tbody></table></section>`;
+
+  const personRows = (list, emptyText) => {
+    const shown = list.filter(match);
+    if (!shown.length) return `<tr><td colspan="3"><div class="text-muted-foreground py-2">${list.length ? `No buyers here match “${esc(q)}”.` : emptyText}</div></td></tr>`;
+    return shown.map(b => `<tr tabindex="0" data-open-key="${esc(b.key)}" aria-label="Open ${esc(b.organization)}, ${b.count} meetings">
+      <td>${buyerCell(b)}</td><td class="num cf-bad">${b.count}</td><td class="text-muted-foreground">${b.open.length ? b.open.join(', ') : 'None'}</td></tr>`).join('');
+  };
+  const listTable = (id, title, desc, list, empty) => `<section class="lg-sec" aria-labelledby="${id}"><header><h2 id="${id}">${title}</h2><p>${desc}</p></header>
+    <table class="lg-qt" data-slot="table"><colgroup><col><col style="width:84px"><col style="width:112px"></colgroup>
+    <thead><tr><th>Buyer</th><th class="num">Meetings</th><th>Open slots</th></tr></thead><tbody>${personRows(list, empty)}</tbody></table></section>`;
+  const supOff = Q.supOff.length
+    ? Q.supOff.map(s => `<tr tabindex="0" data-open-key="${esc(s.key)}"><td>${supCell(s)}</td><td class="num cf-bad">${s.count}</td><td class="text-muted-foreground">${s.open.join(', ') || 'None'}</td></tr>`).join('')
+    : `<tr><td colspan="3"><div class="flex items-center gap-2 py-2 text-muted-foreground" data-slot="empty">${ic('check')}All ${suppliers.length} suppliers have ${ST.supplierTarget} meetings.</div></td></tr>`;
+  const supSec = `<section class="lg-sec" aria-labelledby="q-sup"><header><h2 id="q-sup">Suppliers not at ${ST.supplierTarget}</h2><p>Each desk should host ${ST.supplierTarget} meetings.</p></header>
+    <table class="lg-qt" data-slot="table"><colgroup><col><col style="width:84px"><col style="width:112px"></colgroup><thead><tr><th>Supplier</th><th class="num">Meetings</th><th>Open slots</th></tr></thead><tbody>${supOff}</tbody></table></section>`;
+
+  sheetEl.innerHTML = `<div class="lg-report">${health}${dist}
+    ${listTable('q-low', `Buyers below ${ST.buyerMin}`, Q.low.length ? `${plural(Q.low.length, 'buyer needs', 'buyers need')} more meetings. Their open slots are where to add them.` : `Every buyer has at least ${ST.buyerMin} meetings.`, Q.low, `No buyers are below ${ST.buyerMin} meetings.`)}
+    ${listTable('q-high', `Buyers above ${ST.buyerMax}`, Q.high.length ? `${plural(Q.high.length, 'buyer')} could give a meeting to someone below target.` : `Nobody is over the maximum, so fixes come from open slots or swaps.`, Q.high, `No buyers are above ${ST.buyerMax} meetings.`)}
+    ${slotsSec}${supSec}</div>`;
+}
+
+/* ================= render dispatcher ================= */
+function render() {
+  closeFloat(false);
+  renderTabs(); renderHeader(); renderChips(); renderNotice();
+  ({ slots: renderSlots, buyers: renderBuyers, suppliers: renderSuppliers, quality: renderQuality })[S.sheet]();
+  updateFormula(); updateStatus();
+}
+function switchSheet(id, focusTab) {
+  if (!SHEETS[id] && id !== 'quality') return;
+  S.sheet = id; render();
+  if (focusTab) document.getElementById('tab-' + id).focus();
+  if (P.open && mqDock.matches && id !== 'quality' && V.rows.length) { const s = S.sel[id]; openPanel(targetAt(s.r, s.c), { follow: true }); }
+}
+
+/* ================= detail pane (Sheet) ================= */
+const paneEl = document.getElementById('pane');
+const backdrop = document.getElementById('backdrop');
+let paneReturn = null;
+function openPanel(t, opt = {}) {
+  if (!t) return;
+  if (opt.push && P.cur) P.stack.push(P.cur); else if (!opt.push) P.stack = [];
+  if (!opt.follow) paneReturn = document.activeElement;
+  P.cur = t; P.open = true;
+  renderPanel(); layoutPanel();
+  if (opt.focus || !mqDock.matches) paneEl.querySelector('[data-autofocus]')?.focus();
+}
+function closePanel() {
+  P.open = false; P.stack = []; layoutPanel();
+  const back = paneReturn && document.contains(paneReturn) ? paneReturn : (V.tds.length ? V.tds[S.sel[V.sheet]?.r ?? 0]?.[S.sel[V.sheet]?.c ?? 0] : null);
+  back?.focus?.({ preventScroll: true });
+}
+function layoutPanel() {
+  paneEl.hidden = !P.open;
+  const overlay = P.open && !mqDock.matches;
+  backdrop.hidden = !overlay;
+  paneEl.setAttribute('aria-modal', String(overlay));
+  document.getElementById('btnPane').setAttribute('aria-pressed', String(P.open));
+}
+function scheduleTable(p, curKey) {
+  const isBuyer = p.kind === 'buyer';
+  const rows = SLOTS.map((s, i) => {
+    const a = p.slots[i];
+    if (!a) {
+      const other = isBuyer ? 'suppliers' : 'buyers';
+      return `<tr class="cf-open"><td>${s.n}</td><td>${s.start}</td><td colspan="${isBuyer ? 4 : 3}"><span class="flex items-center gap-3"><span class="lg-open">Open</span>
+        <button class="lg-btn" data-variant="link" data-act="free-${other}" data-slotn="${s.n}">Find ${other} free in slot ${s.n}</button></span></td></tr>`;
+    }
+    const who = isBuyer ? `<span class="lg-cv">${tt(a.type)}<span class="lg-t">${esc(a.supplier)}</span></span>`
+                        : `<span class="lg-cv"><span class="lg-t">${esc(a.B.organization)}${sharedOrg(a.B.organization) ? ` <span class="lg-sub">${esc(a.B.title)}</span>` : ''}</span></span>`;
+    return `<tr tabindex="0" data-open-key="${a.key}" class="${a.match === 'mutual' ? 'cf-good ' : ''}${a.key === curKey ? 'is-cur' : ''}" aria-label="Slot ${s.n}, ${s.start}, ${esc(isBuyer ? a.supplier : a.B.organization)}, ${MATCH_LC[a.match]}">
+      <td>${s.n}</td><td>${s.start}</td>${isBuyer ? `<td class="num">${a.desk}</td>` : ''}<td>${who}</td><td class="num">${fmtRank(a.buyerRank)}</td><td class="num">${fmtRank(a.supplierRank)}</td></tr>`;
+  }).join('');
+  return `<table class="lg-st" data-slot="table"><colgroup><col style="width:38px"><col style="width:68px">${isBuyer ? '<col style="width:44px">' : ''}<col><col style="width:34px"><col style="width:34px"></colgroup>
+    <thead><tr><th>Slot</th><th>Time</th>${isBuyer ? '<th class="num">Desk</th>' : ''}<th>${isBuyer ? 'Supplier' : 'Buyer'}</th><th class="num" title="Buyer rank">B</th><th class="num" title="Supplier rank">S</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function renderPanel() {
+  const t = P.cur, x = byKey.get(t.key);
+  const back = P.stack.length ? `<button class="lg-btn" data-slot="button" data-variant="ghost" data-size="icon-sm" data-act="pane-back" aria-label="Back" title="Back">${ic('back')}</button>` : '';
+  const close = `<button class="lg-btn" data-slot="sheet-close" data-variant="ghost" data-size="icon-sm" data-act="pane-close" aria-label="Close details" title="Close" data-autofocus>${ic('x')}</button>`;
+  let head, body;
+  if (x.kind === 'appt') {
+    const a = x;
+    head = `<div class="lg-k">${tt(a.type)}Meeting</div><h2 id="paneTitle" data-slot="sheet-title">Slot ${a.slot}, ${a.slotObj.start} to ${a.slotObj.end}</h2><p data-slot="sheet-description">Desk ${a.desk}</p>`;
+    const view = P.view === 'supplier' ? a.S : a.B;
+    body = `<dl class="lg-rec">
+      <dt>Supplier</dt><dd>${tt(a.type)}<button class="lg-btn" data-variant="link" data-open-key="${esc(a.S.key)}">${esc(a.supplier)}</button></dd>
+      <dt>Buyer</dt><dd><button class="lg-btn" data-variant="link" data-open-key="${esc(a.B.key)}">${esc(a.B.organization)}</button><span class="text-muted-foreground text-xs w-full">${esc(a.B.title)}</span></dd>
+      <dt>Buyer rank</dt><dd class="${inTop(a.buyerRank) ? 'lg-top' : ''}">${a.buyerRank == null ? '<span class="lg-dash">–</span> <span class="text-muted-foreground text-xs">left blank</span>' : a.buyerRank}</dd>
+      <dt>Supplier rank</dt><dd class="${inTop(a.supplierRank) ? 'lg-top' : ''}">${a.supplierRank == null ? '<span class="lg-dash">–</span> <span class="text-muted-foreground text-xs">left blank</span>' : a.supplierRank}</dd>
+      <dt>Match</dt><dd><span class="lg-chip lg-chip-${a.match}">${MATCH[a.match]}</span></dd></dl>
+      ${S.editing ? `<div class="flex gap-2"><button class="lg-btn" data-variant="outline" data-size="sm" data-act="edit-move">Move meeting</button><button class="lg-btn" data-variant="ghost" data-size="sm" data-act="edit-remove">Remove meeting</button></div>` : ''}
+      <div class="lg-h3"><span>Full day</span>
+        <div class="lg-tg" data-slot="toggle-group" role="group" aria-label="Whose day to show">
+          <button data-slot="toggle-group-item" data-act="pane-view" data-view="buyer" aria-pressed="${P.view === 'buyer'}">Buyer</button>
+          <button data-slot="toggle-group-item" data-act="pane-view" data-view="supplier" aria-pressed="${P.view === 'supplier'}">Supplier</button></div></div>
+      ${scheduleTable(view, a.key)}`;
+  } else {
+    const p = x, isBuyer = p.kind === 'buyer';
+    head = isBuyer
+      ? `<div class="lg-k">Buyer</div><h2 id="paneTitle" data-slot="sheet-title">${esc(p.organization)}</h2><p data-slot="sheet-description">${esc(p.title)}</p>`
+      : `<div class="lg-k">${tt(p.type)}${typeName(p.type)} supplier</div><h2 id="paneTitle" data-slot="sheet-title">${esc(p.name)}</h2><p data-slot="sheet-description">Desk ${p.desk}</p>`;
+    const bad = p.health !== 'ok';
+    const target = isBuyer ? `${ST.buyerMin} to ${ST.buyerMax}` : `target ${ST.supplierTarget}`;
+    body = `<dl class="lg-cells"><div class="${bad ? 'cf-bad' : ''}"><dt>Meetings, ${target}</dt><dd>${p.count} of ${NS}</dd></div>
+      <div><dt>Mutual top-${TOP}</dt><dd>${p.mutual}</dd></div><div><dt>Open slots</dt><dd>${p.open.length ? p.open.join(', ') : 'None'}</dd></div></dl>
+      ${bad ? `<div class="lg-notice rounded-md" data-slot="alert" style="background:var(--flag);color:var(--flag-foreground);border:0">${isBuyer && p.health === 'low' ? `Below the minimum of ${ST.buyerMin}. Use an open slot below to add a meeting.` : isBuyer ? `Above the maximum of ${ST.buyerMax}. One of these meetings could go to a buyer below target.` : `Not at the target of ${ST.supplierTarget} meetings.`}</div>` : ''}
+      <div class="lg-h3"><span>${isBuyer ? 'Schedule' : 'Desk schedule'}</span><span class="text-muted-foreground text-xs font-normal">Ranks: B buyer, S supplier</span></div>
+      ${scheduleTable(p, null)}`;
+  }
+  paneEl.innerHTML = `<div class="lg-pane-h" data-slot="sheet-header">${back}<div class="flex-1 min-w-0">${head}</div>${close}</div><div class="lg-pane-b">${body}</div>`;
+  if (t.slot) paneEl.querySelector(`.lg-st tbody tr:nth-child(${slotIdx.get(t.slot) + 1})`)?.classList.add('is-cur');
+}
+
+/* ================= floating layer: DropdownMenu + Popover ================= */
+const floatEl = document.getElementById('float');
+let floatAnchor = null, floatHandlers = [];
+function placeFloat(anchor, align) {
+  floatEl.hidden = false;
+  const r = anchor.getBoundingClientRect(), w = floatEl.offsetWidth, h = floatEl.offsetHeight;
+  let x = align === 'end' ? r.right - w : r.left;
+  x = Math.max(8, Math.min(x, innerWidth - w - 8));
+  let y = r.bottom + 4;
+  if (y + h > innerHeight - 8) y = Math.max(8, r.top - h - 4);
+  floatEl.style.left = x + 'px'; floatEl.style.top = y + 'px';
+}
+function openFloat(anchor, html, { role = 'menu', label = '', align = 'start', handlers = [], focus = true } = {}) {
+  closeFloat(false);
+  floatHandlers = handlers; floatAnchor = anchor;
+  floatEl.setAttribute('role', role);
+  floatEl.setAttribute('data-slot', role === 'menu' ? 'dropdown-menu-content' : 'popover-content');
+  floatEl.setAttribute('aria-label', label);
+  floatEl.innerHTML = html;
+  anchor.setAttribute('aria-expanded', 'true');
+  placeFloat(anchor, align);
+  if (focus) (floatEl.querySelector('[data-autofocus]') || floatEl.querySelector('[data-mi]'))?.focus();
+}
+function closeFloat(refocus = true) {
+  if (floatEl.hidden) return;
+  floatEl.hidden = true; floatEl.innerHTML = '';
+  if (floatAnchor) {
+    floatAnchor.setAttribute('aria-expanded', 'false');
+    let target = floatAnchor;
+    if (!document.contains(target) && target.dataset.col) target = sheetEl.querySelector(`.lg-fh-b[data-col="${target.dataset.col}"]`);
+    if (refocus) target?.focus();
+  }
+  floatAnchor = null;
+}
+const mItem = (i, label, { icon, kind = 'item', checked, count, extra = '' } = {}) => {
+  const role = kind === 'checkbox' ? 'menuitemcheckbox' : kind === 'radio' ? 'menuitemradio' : 'menuitem';
+  const lead = kind === 'item' ? (icon ? ic(icon) : '') : `<span class="lg-cb" aria-hidden="true">${ic('check')}</span>`;
+  return `<button class="lg-mi" data-slot="dropdown-menu-${kind === 'item' ? 'item' : kind + '-item'}" role="${role}" data-mi="${i}" tabindex="-1" ${kind !== 'item' ? `aria-checked="${checked}"` : ''} ${extra}>${lead}<span class="lg-mi-t">${esc(label)}</span>${count != null ? `<span class="lg-mi-n">${count}</span>` : ''}</button>`;
+};
+
+function openColMenu(btn) {
+  const sh = SHEETS[S.sheet], ci = +btn.dataset.col, col = sh.cols[ci];
+  const H = [];
+  const add = fn => (H.push(fn), H.length - 1);
+  const so = S.sort[sh.id];
+  const sortA = col.num ? 'Sort smallest to largest' : 'Sort A to Z', sortD = col.num ? 'Sort largest to smallest' : 'Sort Z to A';
+  let html = `<div data-slot="dropdown-menu-group" role="group" aria-label="Sort"><div class="lg-mlabel" data-slot="dropdown-menu-label">${esc(col.label)}${col.sub ? ', ' + esc(col.sub) : ''}</div>`;
+  html += mItem(add(() => { S.sort[sh.id] = { col: col.id, dir: 1 }; closeFloat(); render(); }), sortA, { icon: 'up' });
+  html += mItem(add(() => { S.sort[sh.id] = { col: col.id, dir: -1 }; closeFloat(); render(); }), sortD, { icon: 'down' });
+  if (so && so.col === col.id) html += mItem(add(() => { S.sort[sh.id] = null; closeFloat(); render(); }), 'Clear sort', { icon: 'x' });
+  html += `</div>`;
+  if (col.slot) {
+    html += `<div class="lg-msep" data-slot="dropdown-menu-separator" role="separator"></div><div data-slot="dropdown-menu-group" role="group" aria-label="Open slot">`;
+    html += mItem(add(el => { S.freeSlot = S.freeSlot === col.slot ? null : col.slot; el.setAttribute('aria-checked', String(S.freeSlot === col.slot)); refreshGrid(); }),
+      `Only ${sh.rowNoun} free in slot ${col.slot}`, { kind: 'checkbox', checked: S.freeSlot === col.slot });
+    html += `</div>`;
+  }
+  // value checklist (Excel autofilter)
+  const counts = new Map();
+  sh.base.forEach(r => { const v = col.val(r); counts.set(v, (counts.get(v) || 0) + 1); });
+  let values = [...counts.keys()];
+  if (col.order) values = col.order.filter(v => counts.has(v)).concat(values.filter(v => !col.order.includes(v)));
+  else if (values.every(v => v === '(Blanks)' || /^\d+$/.test(v))) values.sort((a, b) => (a === '(Blanks)') - (b === '(Blanks)') || +a - +b);
+  else values.sort((a, b) => a.localeCompare(b));
+  const cur = () => S.filters[sh.id][col.id];
+  const isOn = v => !cur() || cur().has(v);
+  const setFilter = set => { if (set.size === values.length) delete S.filters[sh.id][col.id]; else S.filters[sh.id][col.id] = set; refreshGrid(); syncChecks(); };
+  html += `<div class="lg-msep" role="separator"></div><div data-slot="dropdown-menu-group" role="group" aria-label="Show values"><div class="lg-mlabel">Show values</div>`;
+  if (values.length > 10) html += `<label class="lg-msearch" data-slot="input-group">${ic('search')}<input data-slot="input-group-input" data-autofocus type="search" placeholder="Search values" aria-label="Search ${esc(col.label)} values"></label>`;
+  const allState = () => !cur() ? 'true' : cur().size === 0 ? 'false' : 'mixed';
+  html += mItem(add(() => setFilter(allState() === 'true' ? new Set() : new Set(values))), 'Select all', { kind: 'checkbox', checked: allState(), extra: 'data-all' });
+  html += `<div class="lg-mlist" data-slot="scroll-area">`;
+  values.forEach(v => {
+    html += mItem(add(() => { const set = new Set(cur() || values); set.has(v) ? set.delete(v) : set.add(v); setFilter(set); }), v, { kind: 'checkbox', checked: isOn(v), count: counts.get(v), extra: `data-v="${esc(v)}"` });
+  });
+  html += `</div></div>`;
+  if (cur()) html += `<div class="lg-msep" role="separator"></div>` + mItem(add(() => { delete S.filters[sh.id][col.id]; closeFloat(); render(); }), `Clear filter from ${col.label}`, { icon: 'x' });
+  function syncChecks() {
+    floatEl.querySelectorAll('[data-v]').forEach(el => el.setAttribute('aria-checked', String(isOn(el.dataset.v))));
+    floatEl.querySelector('[data-all]')?.setAttribute('aria-checked', allState());
+  }
+  openFloat(btn, html, { role: 'menu', label: `Sort and filter ${col.label}`, handlers: H });
+  const si = floatEl.querySelector('.lg-msearch input');
+  si?.addEventListener('input', () => { const q = si.value.trim().toLowerCase(); floatEl.querySelectorAll('[data-v]').forEach(el => { el.hidden = q && !el.dataset.v.toLowerCase().includes(q); }); });
+}
+function refreshGrid() {
+  const id = S.sheet;
+  if (id === 'quality') return;
+  renderChips(); renderNotice();
+  renderGrid(SHEETS[id]); updateFormula(); updateStatus();
+}
+
+function openExportMenu(btn) {
+  const H = [];
+  const add = fn => (H.push(fn), H.length - 1);
+  const people = suppliers.length + buyers.length;
+  let html = `<div data-slot="dropdown-menu-group" role="group"><div class="lg-mlabel">Export ${Q.total} appointments</div>`;
+  html += mItem(add(() => { closeFloat(); toast('Excel workbook exported', `Slots, Buyers, Suppliers and Quality sheets, ${Q.total} appointments.`); }), 'Excel workbook (.xlsx)', { icon: 'sheet' });
+  html += mItem(add(() => { closeFloat(); toast('CSV exported', `One row per appointment, ${Q.total} rows.`); }), 'CSV, one row per appointment', { icon: 'export' });
+  html += `</div><div class="lg-msep" role="separator"></div>`;
+  html += mItem(add(() => { closeFloat(); toast(S.locked ? 'Schedules queued for email' : 'Lock the schedule first', S.locked ? `${people} personal schedules, one per buyer and supplier.` : 'Schedules can be emailed once the schedule is locked.'); }), `Email schedules to ${people} people`, { icon: 'mail' });
+  openFloat(btn, html, { role: 'menu', label: 'Export', align: 'end', handlers: H });
+}
+function openMoreMenu(btn) {
+  const H = [];
+  const add = fn => (H.push(fn), H.length - 1);
+  let html = '';
+  if (!S.locked) {
+    html += mItem(add(() => { closeFloat(false); actRun(); }), 'Run matching', { icon: 'run' });
+    html += mItem(add(() => { closeFloat(); actEdit(); }), S.editing ? 'Stop editing' : 'Edit schedule', { icon: 'edit' });
+  }
+  html += mItem(add(() => { closeFloat(false); actLock(); }), S.locked ? 'Unlock' : 'Lock schedule', { icon: S.locked ? 'unlock' : 'lock' });
+  openFloat(btn, html, { role: 'menu', label: 'More actions', align: 'end', handlers: H });
+}
+function openRules(btn) {
+  const html = `<div class="lg-rules"><h3>Formatting rules</h3>
+    <div class="lg-rule"><span class="lg-sw" style="background:var(--mutual);color:var(--mutual-foreground)">8/6</span><span>Mutual top-${TOP}: both sides ranked each other ${TOP} or better.</span></div>
+    <div class="lg-rule"><span class="lg-sw" style="background:var(--flag);color:var(--flag-foreground);font-weight:600">${Q.lo}</span><span>Buyer outside ${ST.buyerMin} to ${ST.buyerMax} meetings, or supplier not at ${ST.supplierTarget}.</span></div>
+    <div class="lg-rule"><span class="lg-sw" style="background-image:repeating-linear-gradient(135deg,transparent 0 5px,var(--hatch) 5px 6px);font-style:italic;color:var(--muted-foreground)">Open</span><span>Open slot, no meeting booked.</span></div>
+    <div class="lg-rule"><span class="lg-sw">${tt('business')}${tt('hotel')}</span><span>Business supplier (filled) and hotel or destination (outlined).</span></div>
+    <div class="lg-rule"><span class="lg-sw">12<i class="text-muted-foreground not-italic">/</i>–</span><span>Buyer rank / supplier rank. A dash means the rank was left blank.</span></div>
+    <div class="lg-rule"><span class="lg-sw lg-top">7</span><span>A rank of ${TOP} or better.</span></div></div>`;
+  openFloat(btn, html, { role: 'dialog', label: 'Formatting rules', align: 'end', focus: false });
+  floatEl.tabIndex = -1; floatEl.focus();
+}
+
+/* ================= dialog + toast ================= */
+const dlg = document.getElementById('dialog');
+let dlgAction = null;
+function confirmDialog(title, body, okLabel, onOk) {
+  document.getElementById('dlgTitle').textContent = title;
+  document.getElementById('dlgBody').textContent = body;
+  document.getElementById('dlgOk').textContent = okLabel;
+  dlgAction = onOk; dlg.showModal(); document.getElementById('dlgOk').focus();
+}
+document.getElementById('dlgCancel').addEventListener('click', () => dlg.close());
+document.getElementById('dlgOk').addEventListener('click', () => { dlg.close(); dlgAction?.(); });
+dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+
+const toaster = document.getElementById('toaster');
+function toast(title, desc) {
+  const li = document.createElement('li');
+  li.className = 'lg-toast'; li.setAttribute('data-slot', 'sonner-toast');
+  li.innerHTML = `${ic('check')}<div><b>${esc(title)}</b>${desc ? `<span>${esc(desc)}</span>` : ''}</div>`;
+  toaster.appendChild(li);
+  while (toaster.children.length > 3) toaster.firstElementChild.remove();
+  setTimeout(() => li.remove(), 4200);
+}
+
+/* ================= actions ================= */
+function actRun() {
+  confirmDialog('Run matching again?', `This rebuilds all ${Q.total} appointments from the latest rankings. The ${D.event.manualChanges} manual changes you made will be replaced.`, 'Run matching',
+    () => toast('Matching started', `A new draft replaces this one when it finishes. ${D.event.manualChanges} manual changes will be cleared.`));
+}
+function actEdit() {
+  S.editing = !S.editing; renderHeader();
+  if (P.open) renderPanel();
+  toast(S.editing ? 'Editing on' : 'Editing off', S.editing ? 'Open any meeting to move or remove it.' : 'The schedule is read-only again.');
+}
+function actLock() {
+  if (S.locked) { S.locked = false; renderHeader(); toast('Schedule unlocked', 'You can run matching and edit again.'); return; }
+  const outside = Q.low.length + Q.high.length;
+  confirmDialog('Lock this schedule?', `Locking freezes ${Q.total} appointments for ${suppliers.length} suppliers and ${buyers.length} buyers so you can export and email schedules.${outside ? ` ${plural(outside, 'buyer is', 'buyers are')} still outside ${ST.buyerMin} to ${ST.buyerMax} meetings.` : ''} You can unlock it later.`, 'Lock schedule',
+    () => { S.locked = true; S.editing = false; renderHeader(); if (P.open) renderPanel(); toast('Schedule locked', 'Export and email are ready.'); });
+}
+document.getElementById('btnRun').addEventListener('click', actRun);
+document.getElementById('btnEdit').addEventListener('click', actEdit);
+document.getElementById('btnLock').addEventListener('click', actLock);
+document.getElementById('btnExport').addEventListener('click', e => openExportMenu(e.currentTarget));
+document.getElementById('btnMore').addEventListener('click', e => openMoreMenu(e.currentTarget));
+document.getElementById('btnRules').addEventListener('click', e => floatAnchor === e.currentTarget ? closeFloat() : openRules(e.currentTarget));
+document.getElementById('btnPane').addEventListener('click', () => {
+  if (P.open) { closePanel(); return; }
+  if (S.sheet === 'quality' || !V.rows.length) { toast('Select a cell first', 'Details follow the selected cell on the Slots, Buyers and Suppliers sheets.'); return; }
+  const s = S.sel[S.sheet]; openPanel(targetAt(s.r, s.c));
+});
+
+/* search + free slot */
+const searchEl = document.getElementById('search');
+let searchT;
+searchEl.addEventListener('input', () => {
+  clearTimeout(searchT);
+  searchT = setTimeout(() => { S.q = searchEl.value.trim().toLowerCase(); if (S.sheet === 'quality') { renderQuality(); updateFormula(); } else refreshGrid(); }, 90);
+});
+searchEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && searchEl.value) { e.stopPropagation(); searchEl.value = ''; S.q = ''; render(); }
+  if (e.key === 'Enter' || e.key === 'ArrowDown') { const td = V.tds[0]?.[0]; if (td) { e.preventDefault(); setSel(0, S.sel[S.sheet].c, false); } }
+});
+freeSel.addEventListener('change', () => { S.freeSlot = freeSel.value ? +freeSel.value : null; render(); });
+
+/* delegated clicks */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-act],[data-open-key],[data-mi],[data-sheet],.lg-fh-b,[data-qfx]');
+  if (!t) return;
+  if (t.matches('[data-mi]') && floatEl.contains(t)) { floatHandlers[+t.dataset.mi]?.(t); return; }
+  if (t.matches('.lg-fh-b')) { e.stopPropagation(); if (floatAnchor === t) closeFloat(); else openColMenu(t); return; }
+  if (t.matches('[data-sheet]')) { switchSheet(t.dataset.sheet); return; }
+  const act = t.dataset.act;
+  if (act) {
+    const n = +t.dataset.slotn;
+    switch (act) {
+      case 'clear-all': S.q = ''; searchEl.value = ''; S.freeSlot = null; S.filters[S.sheet] = {}; render(); return;
+      case 'clear-free': S.freeSlot = null; render(); return;
+      case 'clear-col': delete S.filters[S.sheet][t.dataset.col]; render(); return;
+      case 'clear-sort': S.sort[S.sheet] = null; render(); return;
+      case 'goto-quality': switchSheet('quality'); return;
+      case 'free-buyers': S.freeSlot = n; S.filters.buyers = {}; if (!mqDock.matches) closePanel(); switchSheet('buyers'); return;
+      case 'free-suppliers': S.freeSlot = n; S.filters.suppliers = {}; if (!mqDock.matches) closePanel(); switchSheet('suppliers'); return;
+      case 'buyers-count': S.filters.buyers = { count: new Set([t.dataset.count]) }; S.freeSlot = null; switchSheet('buyers'); return;
+      case 'slot-row': { const s = SLOTS[slotIdx.get(n)]; S.filters.slots = { slot: new Set([slotLabel(s)]) }; S.freeSlot = null; switchSheet('slots'); return; }
+      case 'pane-close': closePanel(); return;
+      case 'pane-back': P.cur = P.stack.pop(); renderPanel(); paneEl.querySelector('[data-autofocus]')?.focus(); return;
+      case 'pane-view': P.view = t.dataset.view; renderPanel(); paneEl.querySelector(`[data-view="${P.view}"]`)?.focus(); return;
+      case 'edit-move': toast('Choose a new slot', 'Open slots in this buyer’s row are where the meeting can go.'); return;
+      case 'edit-remove': toast('Meeting marked for removal', 'It comes off both schedules when you save your edits.'); return;
+    }
+  }
+  if (t.dataset.openKey) { const x = byKey.get(t.dataset.openKey); if (x) openPanel(x.kind === 'appt' ? tA(x) : tE(x), { push: paneEl.contains(t), focus: true }); return; }
+  if (t.dataset.qfx) { selectQ(t.dataset.qfx); }
+});
+function selectQ(id) {
+  S.qSel = id;
+  sheetEl.querySelectorAll('[data-qfx]').forEach(el => el.classList.toggle('is-sel', el.dataset.qfx === id));
+  updateFormula();
+}
+sheetEl.addEventListener('focusin', e => { const r = e.target.closest('[data-qfx]'); if (r) selectQ(r.dataset.qfx); });
+backdrop.addEventListener('click', closePanel);
+document.addEventListener('mousedown', e => { if (!floatEl.hidden && !floatEl.contains(e.target) && !floatAnchor?.contains(e.target)) closeFloat(false); });
+sheetEl.addEventListener('scroll', () => closeFloat(false), { passive: true });
+addEventListener('resize', () => { if (!floatEl.hidden) closeFloat(false); });
+
+/* grid mouse */
+let drag = null;
+sheetEl.addEventListener('mousedown', e => {
+  const td = e.target.closest('td[data-c]');
+  if (!td || e.button !== 0) return;
+  e.preventDefault();
+  drag = { moved: false };
+  setSel(+td.dataset.r, +td.dataset.c, e.shiftKey, {});
+});
+sheetEl.addEventListener('mouseover', e => {
+  if (!drag) return;
+  const td = e.target.closest('td[data-c]'); if (!td) return;
+  const s = S.sel[V.sheet];
+  if (+td.dataset.r !== s.r || +td.dataset.c !== s.c) { drag.moved = true; setSel(+td.dataset.r, +td.dataset.c, true, { focus: false }); }
+});
+addEventListener('mouseup', e => {
+  if (!drag) return;
+  const moved = drag.moved; drag = null;
+  if (!moved && !e.shiftKey && V.rows.length) { const s = S.sel[V.sheet]; openPanel(targetAt(s.r, s.c), { follow: mqDock.matches }); }
+});
+
+/* grid keyboard */
+sheetEl.addEventListener('keydown', e => {
+  const qrow = e.target.closest('tr[tabindex]');
+  if (qrow && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); qrow.click(); return; }
+  if (qrow && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    const rows = Array.from(sheetEl.querySelectorAll('tr[tabindex]')); const i = rows.indexOf(qrow);
+    rows[e.key === 'ArrowDown' ? Math.min(i + 1, rows.length - 1) : Math.max(i - 1, 0)]?.focus(); e.preventDefault(); return;
+  }
+  const td = e.target.closest('td[data-c]'); if (!td) return;
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && (e.key === 'PageDown' || e.key === 'PageUp')) return;
+  const s = S.sel[V.sheet], R = V.rows.length - 1, C = V.cols.length - 1;
+  const page = Math.max(1, Math.floor(sheetEl.clientHeight / 33) - 3);
+  let { r, c } = s;
+  switch (e.key) {
+    case 'ArrowUp': r = ctrl ? 0 : r - 1; break;
+    case 'ArrowDown': r = ctrl ? R : r + 1; break;
+    case 'ArrowLeft': c = ctrl ? 0 : c - 1; break;
+    case 'ArrowRight': c = ctrl ? C : c + 1; break;
+    case 'PageUp': r -= page; break;
+    case 'PageDown': r += page; break;
+    case 'Home': c = 0; if (ctrl) r = 0; break;
+    case 'End': c = C; if (ctrl) r = R; break;
+    case 'Enter': case ' ': e.preventDefault(); openPanel(targetAt(s.r, s.c), { focus: true }); return;
+    case 'Escape': if (P.open) { closePanel(); } else { s.ar = s.r; s.ac = s.c; paintSel(); updateFormula(); updateStatus(); } e.preventDefault(); return;
+    case 'a': if (ctrl) { e.preventDefault(); s.ar = 0; s.ac = 0; s.r = R; s.c = C; paintSel(); updateFormula(); updateStatus(); } return;
+    default: return;
+  }
+  e.preventDefault();
+  setSel(r, c, e.shiftKey);
+});
+
+/* pane keyboard */
+paneEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.stopPropagation(); closePanel(); return; }
+  const tr = e.target.closest('tr[data-open-key]');
+  if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); tr.click(); }
+});
+
+/* floating keyboard */
+floatEl.addEventListener('keydown', e => {
+  const items = Array.from(floatEl.querySelectorAll('[data-mi]')).filter(el => !el.hidden);
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFloat(); return; }
+  if (e.key === 'Tab') { closeFloat(false); return; }
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); items[i <= 0 ? items.length - 1 : i - 1].focus(); }
+  else if (e.key === 'Home') { e.preventDefault(); items[0].focus(); }
+  else if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus(); }
+});
+
+/* tabs keyboard + global shortcuts */
+document.getElementById('tabs').addEventListener('keydown', e => {
+  const ids = TABS.map(t => t[0]), i = ids.indexOf(S.sheet);
+  if (e.key === 'ArrowRight') { e.preventDefault(); switchSheet(ids[(i + 1) % ids.length], true); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); switchSheet(ids[(i - 1 + ids.length) % ids.length], true); }
+});
+document.addEventListener('keydown', e => {
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName);
+  if (e.key === '/' && !typing && !dlg.open) { e.preventDefault(); searchEl.focus(); searchEl.select(); return; }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'PageDown' || e.key === 'PageUp')) {
+    e.preventDefault();
+    const ids = TABS.map(t => t[0]), i = ids.indexOf(S.sheet);
+    switchSheet(ids[(i + (e.key === 'PageDown' ? 1 : -1) + ids.length) % ids.length]);
+    if (S.sheet !== 'quality' && V.rows.length) { const s = S.sel[S.sheet]; V.tds[s.r][s.c].focus({ preventScroll: true }); }
+  }
+  if (e.key === 'Escape' && P.open && !mqDock.matches && !dlg.open) closePanel();
+});
+
+/* breakpoints */
+mqSmall.addEventListener('change', () => { if (S.sheet !== 'quality') refreshGrid(); });
+mqDock.addEventListener('change', layoutPanel);
+
+/* ================= boot ================= */
+render();
+if (matchMedia('(min-width: 1280px)').matches && V.rows.length) openPanel(targetAt(0, 0), { follow: true });
+})();
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # AW Appointment Matching App
 
-Admin workspace and participant schedule pages for the AW appointment show, built by Olive Technologies for Dennison & Associates. Full requirements: `docs/PROJECT_SCOPE.md`. Decisions where the requirements were silent: `docs/DECISIONS.md`. Architecture and module boundaries: `docs/ARCHITECTURE.md`. Visual direction: `../designs/03-resource-timeline/index.html` (the design mockup, outside this repo).
+Admin workspace and participant schedule pages for the AW appointment show, built by Olive Technologies for Dennison & Associates. Full requirements: `docs/PROJECT_SCOPE.md`. Decisions where the requirements were silent: `docs/DECISIONS.md`. Architecture and module boundaries: `docs/ARCHITECTURE.md`. Visual direction: `docs/designs/03-resource-timeline/index.html` (the design mockup; open `docs/designs/index.html` for all ten).
 
 ## Commands
 

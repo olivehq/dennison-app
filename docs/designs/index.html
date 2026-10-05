@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AW matching app: design directions</title>
+<style>
+  :root { --bg:#f6f6f4; --ink:#1d1f1e; --muted:#62666a; --line:#d9dad6; --card:#fff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { max-width:1240px; margin:0 auto; padding:40px 24px 8px; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-0.01em; }
+  header p { margin:0; color:var(--muted); max-width:70ch; }
+  main { max-width:1240px; margin:0 auto; padding:24px; display:grid; gap:24px; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
+  a.tile { display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; color:inherit; text-decoration:none; }
+  a.tile:hover { border-color:#9a9d99; }
+  a.tile:focus-visible { outline:3px solid #2f6f5e; outline-offset:2px; }
+  .thumb { position:relative; height:225px; overflow:hidden; background:#ececea; border-bottom:1px solid var(--line); }
+  .thumb iframe { position:absolute; top:0; left:0; width:1440px; height:900px; border:0; transform:scale(.27); transform-origin:0 0; pointer-events:none; }
+  .meta { padding:14px 16px 16px; }
+  .meta h2 { font-size:16px; margin:0 0 4px; }
+  .meta p { margin:0; color:var(--muted); font-size:14px; }
+  footer { max-width:1240px; margin:0 auto; padding:8px 24px 40px; color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AW matching app: design directions</h1>
+  <p>Ten directions for the admin results workspace, all running on the real 2025 schedule (504 appointments, 65 buyers, 56 suppliers). Every one is buildable from shadcn/ui primitives. Open one to try it.</p>
+</header>
+<main id="grid"></main>
+<footer>Data: 2025 results extracted into shared/aw-data.js. Brief: shared/BRIEF.md.</footer>
+<script>
+const designs = [
+  ["01-floor-plan", "Floor plan", "The show floor as the main view. Scrub through the nine slots and see who sits at every desk."],
+  ["02-quality-matrix", "Quality matrix", "Every supplier by every slot in one dense grid, tinted by match quality. Hover a buyer to trace their afternoon."],
+  ["03-resource-timeline", "Resource timeline", "Appointments at their true times on a 3:10 to 4:48 axis, one lane per supplier or buyer, with a scrubbable now line."],
+  ["04-command-workspace", "Command workspace", "Keyboard-first three-pane workspace with a sidebar of saved filters and a Cmd-K palette."],
+  ["05-review-queue", "Review queue", "Opens on a lock-readiness checklist. Every failing check expands into the work needed to fix it."],
+  ["06-slot-board", "Slot board", "Nine slot columns of name-tag chips. Edit mode lets you drag buyers between suppliers with live conflict checks."],
+  ["07-olive-grove", "Olive grove", "Olive's botanical brand turned into a calm admin tool. Each buyer's afternoon drawn as a vine of nine nodes."],
+  ["08-concierge", "Concierge", "Hospitality vernacular: desks as room numbers, schedules as guest itineraries, slots as an arrivals board."],
+  ["09-dance-cards", "Dance cards", "A wall of nine-line cards, one per person. The same card is the participant's phone view."],
+  ["10-ledger", "Ledger", "A calmer, better-made spreadsheet with sheet tabs, a formula bar, cell selection and column filters."],
+];
+const grid = document.getElementById("grid");
+for (const [slug, name, blurb] of designs) {
+  const a = document.createElement("a");
+  a.className = "tile"; a.href = `${slug}/`;
+  a.innerHTML = `<div class="thumb"><iframe loading="lazy" tabindex="-1" aria-hidden="true" src="${slug}/"></iframe></div>
+    <div class="meta"><h2>${name}</h2><p>${blurb}</p></div>`;
+  grid.append(a);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1236 @@
+<!--
+  Design: 02, Quality matrix
+
+  Concept: The whole afternoon as one dense instrument, 56 supplier rows (or 65 buyer rows) by 9 slot
+  columns, every cell tinted by how strongly the two sides wanted the meeting. Hover any cell and that
+  counterpart lights up everywhere in the grid, so staff read a person's whole afternoon and the weak
+  spots without opening a single report.
+
+  Palette (OKLCH, approx hex):
+    Slide grey   oklch(0.972 0.004 247)  #F3F5F7  page background
+    Plate        oklch(0.993 0.002 247)  #FBFCFD  card / table surface
+    Graphite     oklch(0.235 0.018 257)  #1F252D  ink, primary buttons, focus ring
+    Rule         oklch(0.885 0.007 247)  #D9DEE3  borders
+    Quality ramp, one sequential hue walk from straw to spruce (light = weak, dark = strong):
+      Straw      oklch(0.935 0.042 108)  #ECEBC9  neither side top-10
+      Leaf       oklch(0.790 0.095 148)  #9FCB9E  one side top-10
+      Spruce     oklch(0.460 0.092 172)  #1F6E5F  mutual top-10
+    Signal       oklch(0.560 0.160 42)   #B9531F  off-target counts (the only warm colour on the page)
+    Slate        oklch(0.480 0.070 250)  #4B6584  business-vendor diamond marker
+
+  Type: Archivo (variable width axis) as the single family. Condensed (78%) inside the matrix so long
+  association names fit, regular for UI, expanded (116%) for the event title. Tabular figures everywhere.
+
+  Layout: Fixed-height app. Header with event and admin actions; a toolbar (view switch, search, free-in-slot
+  filter, sort, off-target toggle); a legend strip that is also the quality filter, with a live readout of
+  the hovered cell; then one scroll area holding the active view. Sticky column headers, sticky row
+  headers, sticky per-slot footer, sticky count column on wide screens. Left aligned throughout.
+
+  shadcn components (data-slot): Button, Badge, ToggleGroup, InputGroup, Kbd, Select, Table, Card,
+  Sheet, Tabs, Dialog, Command, Tooltip, Progress, Chart, Alert, Empty, Separator, Sonner (toast).
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AW appointment matching, quality matrix</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+  :root {
+    --radius: 0.375rem;
+    --background: oklch(0.972 0.004 247);
+    --foreground: oklch(0.235 0.018 257);
+    --card: oklch(0.993 0.002 247);
+    --card-foreground: oklch(0.235 0.018 257);
+    --popover: oklch(0.995 0.002 247);
+    --popover-foreground: oklch(0.235 0.018 257);
+    --primary: oklch(0.285 0.022 257);
+    --primary-foreground: oklch(0.985 0.003 247);
+    --secondary: oklch(0.938 0.006 247);
+    --secondary-foreground: oklch(0.235 0.018 257);
+    --muted: oklch(0.951 0.005 247);
+    --muted-foreground: oklch(0.505 0.016 257);
+    --accent: oklch(0.928 0.008 247);
+    --accent-foreground: oklch(0.235 0.018 257);
+    --destructive: oklch(0.56 0.19 28);
+    --border: oklch(0.885 0.007 247);
+    --input: oklch(0.855 0.009 247);
+    --ring: oklch(0.235 0.018 257);
+
+    /* Quality ramp: one sequential walk, straw to spruce. */
+    --neither: oklch(0.935 0.042 108);
+    --neither-foreground: oklch(0.34 0.03 110);
+    --oneside: oklch(0.79 0.095 148);
+    --oneside-foreground: oklch(0.25 0.04 160);
+    --mutual: oklch(0.46 0.092 172);
+    --mutual-foreground: oklch(0.985 0.012 170);
+    --open: oklch(0.993 0.002 247);
+    --open-foreground: oklch(0.6 0.014 257);
+
+    --business: oklch(0.48 0.07 250);
+    --hotel: oklch(0.62 0.014 257);
+    --warning: oklch(0.56 0.16 42);
+    --warning-foreground: oklch(0.42 0.12 40);
+    --warning-muted: oklch(0.955 0.03 55);
+
+    --chart-1: var(--mutual);
+    --chart-2: var(--oneside);
+    --chart-3: var(--neither);
+    --chart-4: oklch(0.72 0.012 257);
+    --chart-5: var(--warning);
+  }
+
+  @theme inline {
+    --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-mutual: var(--mutual);
+    --color-mutual-foreground: var(--mutual-foreground);
+    --color-oneside: var(--oneside);
+    --color-oneside-foreground: var(--oneside-foreground);
+    --color-neither: var(--neither);
+    --color-neither-foreground: var(--neither-foreground);
+    --color-business: var(--business);
+    --color-hotel: var(--hotel);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-warning-muted: var(--warning-muted);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --radius-sm: calc(var(--radius) - 2px);
+    --radius-md: var(--radius);
+    --radius-lg: calc(var(--radius) + 2px);
+  }
+
+  @layer base {
+    html, body { height: 100%; }
+    body { font-family: var(--font-sans); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+    :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+  }
+
+  @layer components {
+    .btn { @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-[13px] font-medium h-8 px-3 transition-colors cursor-pointer disabled:pointer-events-none disabled:opacity-45; }
+    .btn svg { @apply size-4 shrink-0; }
+    .btn-primary { @apply bg-primary text-primary-foreground hover:bg-primary/88; }
+    .btn-outline { @apply border border-input bg-card text-foreground hover:bg-accent; }
+    .btn-ghost { @apply text-foreground hover:bg-accent; }
+    .btn-icon { @apply size-8 px-0; }
+    .badge { @apply inline-flex items-center gap-1 rounded-sm border px-1.5 h-5 text-[11px] font-medium whitespace-nowrap; }
+    .badge svg { width: 12px; height: 12px; flex: none; }
+    .badge-outline { @apply border-border text-muted-foreground bg-card; }
+    .badge-warning { @apply border-transparent bg-warning-muted text-warning-foreground; }
+    .kbd { @apply inline-flex items-center rounded-sm border border-border bg-muted px-1 h-5 text-[11px] text-muted-foreground; }
+    .field { @apply h-8 rounded-md border border-input bg-card text-[13px] text-foreground; }
+    .tg { @apply inline-flex items-stretch rounded-md border border-input bg-card p-0.5 gap-0.5; }
+    .tg-item { @apply inline-flex items-center gap-1.5 rounded-sm px-2.5 h-7 text-[13px] text-muted-foreground cursor-pointer hover:text-foreground; }
+    .tg-item[aria-pressed="true"], .tg-item[aria-selected="true"] { @apply bg-primary text-primary-foreground; }
+    .tg-item .n { @apply text-[11px] opacity-70; }
+    .meta { @apply text-xs text-muted-foreground; }
+  }
+
+  /* Tier tokens, applied by attribute so the ramp is defined once. */
+  [data-tier="mutual"]  { --t-bg: var(--mutual);  --t-fg: var(--mutual-foreground); }
+  [data-tier="one"]     { --t-bg: var(--oneside); --t-fg: var(--oneside-foreground); }
+  [data-tier="neither"] { --t-bg: var(--neither); --t-fg: var(--neither-foreground); }
+  [data-tier="open"]    { --t-bg: var(--open);    --t-fg: var(--open-foreground); }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; background: var(--t-bg); flex: none; }
+  .swatch[data-tier="open"] { box-shadow: inset 0 0 0 1px var(--input); }
+  .biz { display: inline-block; width: 6px; height: 6px; transform: rotate(45deg); background: var(--business); flex: none; margin: 0 2px; }
+  .mx-cell .biz { background: currentColor; }
+
+  /* Matrix */
+  .mx { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: calc(var(--rowhead) + 9 * 6.25rem + 6.75rem); }
+  .mx[data-kind="suppliers"] { --rowhead: 15rem; --rowh: 28px; }
+  .mx[data-kind="buyers"] { --rowhead: 17rem; --rowh: 34px; }
+  .mx th, .mx td { padding: 1px; }
+  .mx thead th { position: sticky; top: 0; z-index: 3; background: var(--background); text-align: left; font-weight: 500; vertical-align: bottom; padding: 6px 4px 6px; border-bottom: 1px solid var(--border); }
+  .mx thead th.is-col { background: var(--accent); }
+  .mx .mx-corner { left: 0; z-index: 4; }
+  .mx tbody th { position: sticky; left: 0; z-index: 2; background: var(--background); text-align: left; font-weight: 400; }
+  .mx tfoot td, .mx tfoot th { position: sticky; bottom: 0; z-index: 3; background: var(--background); border-top: 1px solid var(--border); padding: 6px 4px; vertical-align: top; }
+  .mx tfoot th { left: 0; z-index: 4; text-align: left; font-weight: 400; }
+  @media (min-width: 900px) {
+    .mx .mx-count { position: sticky; right: 0; z-index: 2; background: var(--background); }
+    .mx thead .mx-count, .mx tfoot .mx-count { z-index: 4; }
+  }
+  .mx-rowbtn { display: flex; align-items: center; gap: 8px; width: 100%; height: var(--rowh); padding: 0 8px 0 4px; border-radius: 3px; text-align: left; cursor: pointer; }
+  .mx-rowbtn:hover { background: var(--accent); }
+  .mx-desk { width: 1.75rem; text-align: right; color: var(--muted-foreground); font-size: 11.5px; flex: none; }
+  .mx-rowname { min-width: 0; flex: 1; display: flex; flex-direction: column; line-height: 1.15; }
+  .mx-rowname > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mx-rowname .t1 { font-size: 12.5px; font-stretch: 92%; }
+  .mx-rowname .t2 { font-size: 11px; color: var(--muted-foreground); font-stretch: 86%; }
+  .mx-flag { color: var(--warning); flex: none; display: inline-flex; }
+  .mx-flag svg { width: 14px; height: 14px; }
+
+  .mx-cell { display: flex; align-items: center; gap: 4px; width: 100%; height: calc(var(--rowh) - 2px); padding: 0 4px 0 6px; border-radius: 3px; background: var(--t-bg); color: var(--t-fg); font-size: 11.5px; font-stretch: 78%; text-align: left; cursor: pointer; transition: opacity .12s ease; position: relative; }
+  .mx-cell[data-tier="open"] { box-shadow: inset 0 0 0 1px var(--border); background-image: repeating-linear-gradient(135deg, transparent 0 5px, oklch(0.94 0.005 247) 5px 6px); color: var(--open-foreground); }
+  .mx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 3px; }
+  .mx-name > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  .mx-rank { flex: none; display: flex; flex-direction: column; align-items: flex-end; font-size: 9.5px; line-height: 1.05; opacity: .82; font-stretch: 75%; min-width: 1.1em; }
+  .mx-cell:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; box-shadow: inset 0 0 0 3px var(--card); z-index: 1; }
+  .mx.is-tracing .mx-cell:not(.is-traced) { opacity: .22; }
+  .mx-cell.is-traced { box-shadow: inset 0 0 0 1.5px var(--foreground); }
+  .mx-cell.is-miss { opacity: .32; }
+  .mx-cell.is-hit .mx-name > span:last-child { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+  .mx-cell.is-off { opacity: .14; }
+  .mx.is-tracing .mx-cell.is-traced.is-off { opacity: .6; }
+
+  .mx.is-entering .mx-cell { animation: fill-in .38s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--c) * 55ms); }
+  @keyframes fill-in { from { opacity: 0; transform: scaleX(.4); transform-origin: left center; } to { opacity: 1; transform: none; } }
+
+  /* Sparkbar: one segment per slot, strongest first, target band underneath. */
+  .spark { position: relative; display: inline-grid; grid-auto-flow: column; grid-auto-columns: 6px; gap: 2px; padding-bottom: 4px; vertical-align: middle; }
+  .spark i { display: block; height: 12px; border-radius: 1px; background: var(--t-bg); }
+  .spark i[data-tier="open"] { background: transparent; box-shadow: inset 0 0 0 1px var(--input); }
+  .spark b { position: absolute; bottom: 0; height: 2px; border-radius: 1px; background: var(--muted-foreground); opacity: .55; }
+  .count-cell { display: flex; align-items: center; gap: 8px; padding: 0 6px; height: var(--rowh); font-size: 12px; }
+  .count-cell .n { width: 1.25rem; text-align: right; }
+  .count-cell.is-flag .n { color: var(--warning-foreground); font-weight: 650; }
+  .colbar { display: flex; height: 6px; border-radius: 1px; overflow: hidden; background: var(--muted); }
+  .colbar i { display: block; height: 100%; background: var(--t-bg); }
+
+  /* Legend ramp: items sit edge to edge so the legend reads as the scale itself. */
+  .ramp { display: inline-flex; border: 1px solid var(--input); border-radius: var(--radius); background: var(--card); overflow: hidden; }
+  .ramp-item { position: relative; display: flex; white-space: nowrap; flex: none; align-items: center; gap: 6px; padding: 7px 10px 5px; font-size: 12px; cursor: pointer; color: var(--foreground); }
+  .ramp-item + .ramp-item { border-left: 1px solid var(--border); }
+  .ramp-item::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--t-bg); }
+  .ramp-item[data-tier="open"]::before { background: var(--input); }
+  .ramp-item:hover { background: var(--accent); }
+  .ramp-item[aria-pressed="true"] { background: var(--accent); box-shadow: inset 0 -2px 0 var(--foreground); }
+  .ramp.has-iso .ramp-item[aria-pressed="false"] { color: var(--muted-foreground); }
+  .ramp-item .num { font-weight: 600; }
+  .ramp-item .pct { color: var(--muted-foreground); font-size: 11px; }
+
+  .readout { display: flex; flex-wrap: nowrap; align-items: center; gap: 20px; height: 44px; overflow: hidden; font-size: 12px; }
+  .readout dt { color: var(--muted-foreground); font-size: 11px; }
+  .readout dd { font-weight: 500; max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .readout > div { display: flex; flex-direction: column; min-width: 0; }
+
+  /* Layers: sheet, dialog, command */
+  .layer { position: fixed; inset: 0; z-index: 50; }
+  .layer-overlay { position: absolute; inset: 0; background: oklch(0.235 0.018 257 / .28); opacity: 0; transition: opacity .18s ease; }
+  .layer[data-state="open"] .layer-overlay { opacity: 1; }
+  .sheet-panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(31rem, 100vw); transform: translateX(100%); transition: transform .22s cubic-bezier(.2,.7,.2,1); display: flex; flex-direction: column; }
+  .layer[data-state="open"] .sheet-panel { transform: none; }
+  .dialog-panel { position: absolute; left: 50%; top: 14vh; width: min(30rem, calc(100vw - 2rem)); transform: translate(-50%, 6px); opacity: 0; transition: opacity .16s ease, transform .16s ease; max-height: 76vh; display: flex; flex-direction: column; }
+  .layer[data-state="open"] .dialog-panel { opacity: 1; transform: translate(-50%, 0); }
+
+  .sched { display: grid; grid-template-columns: 4.6rem 1fr auto; }
+  .sched > li { display: contents; }
+  .sched .c { padding: 7px 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; min-width: 0; }
+  .sched li.is-hi .c { background: var(--accent); }
+  .sched .tm { font-size: 12px; color: var(--muted-foreground); padding-left: 2px; }
+  .sched .who { gap: 8px; padding-right: 8px; }
+  .sched .rk { gap: 10px; font-size: 11px; color: var(--muted-foreground); justify-content: flex-end; padding-right: 2px; }
+  .sched .rk b { color: var(--foreground); font-weight: 600; }
+  .tierbar { width: 4px; align-self: stretch; border-radius: 2px; background: var(--t-bg); flex: none; }
+  .tierbar[data-tier="open"] { background: transparent; box-shadow: inset 0 0 0 1px var(--input); }
+
+  .tip { position: fixed; z-index: 70; max-width: 18rem; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--primary); color: var(--primary-foreground); font-size: 12px; line-height: 1.35; pointer-events: none; }
+
+  .toast { animation: toast-in .2s ease both; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition-duration: 0s !important; }
+  }
+  @media (max-width: 640px) {
+    .mx[data-kind="suppliers"] { --rowhead: 8.5rem; }
+    .mx[data-kind="buyers"] { --rowhead: 9.5rem; }
+    .mx { min-width: calc(var(--rowhead) + 9 * 5.25rem + 5.5rem); }
+    .mx-desk { width: 1.25rem; }
+  }
+</style>
+<script src="../shared/aw-data.js"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-background text-foreground">
+<div id="app" class="min-h-dvh sm:h-dvh flex flex-col">
+
+  <!-- Event header -->
+  <header class="shrink-0 border-b border-border bg-card">
+    <div class="flex flex-wrap items-center gap-x-8 gap-y-3 px-4 sm:px-6 py-3">
+      <div class="min-w-0 flex-1 flex flex-col gap-1">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 id="event-name" class="text-lg sm:text-[22px] leading-tight font-[640] tracking-[-0.01em]" style="font-stretch:116%"></h1>
+          <span id="status-badge" data-slot="badge" class="badge badge-outline"></span>
+        </div>
+        <p id="event-meta" class="meta"></p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Schedule actions">
+        <button type="button" id="act-run" aria-label="Run matching" data-slot="button" class="btn btn-outline"><i data-lucide="play"></i><span class="max-sm:sr-only">Run matching</span></button>
+        <button type="button" id="act-edit" aria-label="Edit schedule" data-slot="button" class="btn btn-outline"><i data-lucide="pencil"></i><span class="max-sm:sr-only">Edit schedule</span></button>
+        <button type="button" id="act-lock" data-slot="button" class="btn btn-outline"><i data-lucide="lock"></i><span>Lock schedule</span></button>
+        <button type="button" id="act-export" aria-label="Export" data-slot="button" class="btn btn-primary"><i data-lucide="download"></i><span class="max-sm:sr-only">Export</span></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Toolbar -->
+  <div class="shrink-0 flex flex-wrap items-center gap-2 px-4 sm:px-6 pt-3 pb-2">
+    <div data-slot="toggle-group" class="tg overflow-x-auto max-w-full" role="group" aria-label="View" id="view-switch"></div>
+    <div data-slot="input-group" class="field flex items-center gap-2 px-2 w-full sm:w-72 focus-within:outline-2 focus-within:outline-ring focus-within:outline-offset-1">
+      <i data-lucide="search" class="size-4 text-muted-foreground shrink-0"></i>
+      <input data-slot="input-group-input" id="search" type="search" autocomplete="off" placeholder="Search buyer, organization or supplier" aria-label="Search buyers, organizations and suppliers" class="flex-1 min-w-0 bg-transparent outline-none placeholder:text-muted-foreground">
+      <span data-slot="input-group-addon"><kbd data-slot="kbd" class="kbd" id="cmdk-hint">⌘K</kbd></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <label class="flex items-center gap-2 text-[13px]">
+        <span class="text-muted-foreground">Free in</span>
+        <select data-slot="select" id="free" class="field px-2 pr-7 max-sm:w-32"></select>
+      </label>
+      <label class="flex items-center gap-2 text-[13px]" id="sort-wrap">
+        <span class="text-muted-foreground max-sm:sr-only">Order</span>
+        <select data-slot="select" id="sort" class="field px-2 pr-7 max-sm:w-40"></select>
+      </label>
+    </div>
+    <button type="button" data-slot="toggle" id="flagged" aria-pressed="false" class="btn btn-outline aria-pressed:bg-warning-muted aria-pressed:border-warning aria-pressed:text-warning-foreground">
+      <i data-lucide="triangle-alert"></i><span>Off-target counts</span><span id="flagged-n" class="text-[11px] opacity-75"></span>
+    </button>
+    <p id="result-count" class="meta ml-auto" aria-live="polite"></p>
+  </div>
+
+  <!-- Legend strip: the ramp is the legend and the quality filter -->
+  <div class="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 sm:px-6 pb-3">
+    <div data-slot="toggle-group" role="group" aria-label="Isolate match quality" class="ramp max-w-full overflow-x-auto" id="ramp"></div>
+    <p class="meta flex flex-wrap items-center gap-1.5" id="legend-notes"></p>
+  </div>
+
+  <main id="main" class="flex-1 min-h-0 overflow-auto max-sm:flex-none max-sm:h-[88dvh] border-t border-border bg-background" tabindex="-1">
+    <section id="view-matrix" aria-label="Schedule matrix" class="px-2 sm:px-4 pb-0"></section>
+    <section id="view-slot" aria-label="Schedule by time slot" class="px-4 sm:px-6 py-5" hidden></section>
+    <section id="view-quality" aria-label="Schedule quality" class="px-4 sm:px-6 py-6" hidden></section>
+  </main>
+  <div id="readout-bar" class="shrink-0 hidden lg:block border-t border-border bg-card px-6">
+    <dl class="readout" id="readout" aria-live="off"></dl>
+  </div>
+</div>
+
+<!-- Sheet -->
+<div id="sheet" class="layer" hidden data-state="closed">
+  <div class="layer-overlay" data-close></div>
+  <aside data-slot="sheet-content" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-describedby="sheet-desc" class="sheet-panel bg-card border-l border-border shadow-[0_0_0_1px_var(--border),-12px_0_32px_-12px_oklch(0.235_0.018_257/.25)]">
+    <div data-slot="sheet-header" class="flex items-start gap-2 px-5 pt-4 pb-3 border-b border-border">
+      <button type="button" id="sheet-back" data-slot="button" class="btn btn-ghost btn-icon -ml-2" aria-label="Back" hidden><i data-lucide="chevron-left"></i></button>
+      <div class="min-w-0 flex-1">
+        <h2 id="sheet-title" data-slot="sheet-title" class="text-[17px] font-semibold leading-snug" style="font-stretch:104%"></h2>
+        <p id="sheet-desc" data-slot="sheet-description" class="meta mt-0.5"></p>
+      </div>
+      <button type="button" data-close data-slot="button" class="btn btn-ghost btn-icon -mr-2" aria-label="Close panel"><i data-lucide="x"></i></button>
+    </div>
+    <div id="sheet-body" class="flex-1 overflow-auto px-5 py-4"></div>
+  </aside>
+</div>
+
+<!-- Dialog -->
+<div id="dialog" class="layer" hidden data-state="closed">
+  <div class="layer-overlay" data-close></div>
+  <div data-slot="dialog-content" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-desc" class="dialog-panel bg-popover rounded-lg border border-border shadow-[0_18px_48px_-16px_oklch(0.235_0.018_257/.35)]">
+    <div data-slot="dialog-header" class="px-5 pt-5">
+      <h2 id="dialog-title" data-slot="dialog-title" class="text-base font-semibold"></h2>
+      <p id="dialog-desc" data-slot="dialog-description" class="text-[13px] text-muted-foreground mt-1"></p>
+    </div>
+    <div id="dialog-body" class="px-5 py-4 overflow-auto"></div>
+    <div data-slot="dialog-footer" class="flex justify-end gap-2 px-5 pb-5">
+      <button type="button" data-close data-slot="button" class="btn btn-outline">Cancel</button>
+      <button type="button" id="dialog-confirm" data-slot="button" class="btn btn-primary"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Command palette -->
+<div id="command" class="layer" hidden data-state="closed">
+  <div class="layer-overlay" data-close></div>
+  <div data-slot="command-dialog" role="dialog" aria-modal="true" aria-labelledby="command-title" class="dialog-panel bg-popover rounded-lg border border-border shadow-[0_18px_48px_-16px_oklch(0.235_0.018_257/.35)] overflow-hidden">
+    <h2 id="command-title" class="sr-only">Jump to a buyer, supplier or view</h2>
+    <div data-slot="command-input-wrapper" class="flex items-center gap-2 px-3 border-b border-border">
+      <i data-lucide="search" class="size-4 text-muted-foreground"></i>
+      <input data-slot="command-input" id="command-input" role="combobox" aria-expanded="true" aria-controls="command-list" aria-autocomplete="list" placeholder="Jump to a buyer, supplier or view" class="h-11 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground">
+    </div>
+    <div data-slot="command-list" id="command-list" role="listbox" class="overflow-auto max-h-[52vh] p-1"></div>
+  </div>
+</div>
+
+<ol id="toaster" data-slot="sonner" aria-live="polite" class="fixed z-[80] bottom-4 right-4 left-4 sm:left-auto sm:w-[22rem] flex flex-col gap-2"></ol>
+<div id="tip" class="tip" role="tooltip" data-slot="tooltip-content" hidden></div>
+
+<script>
+(() => {
+  'use strict';
+  const AW = window.AW_DATA;
+  const E = AW.event, CFG = E.settings, SLOTS = AW.slots, N = CFG.mutualTopN;
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const cn = (...a) => a.filter(Boolean).join(' ');
+  const pct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : 0;
+  const rk = r => (r == null ? '–' : String(r));
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+  const icon = (name, cls = '') => `<i data-lucide="${name}"${cls ? ` class="${cls}"` : ''}></i>`;
+  const paintIcons = () => { if (window.lucide) window.lucide.createIcons(); };
+  const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------- Model ---------- */
+  const SLOT = new Map(SLOTS.map(s => [s.n, s]));
+  const short = t => t.replace(/ (AM|PM)$/, '');
+  const slotRange = n => { const s = SLOT.get(n); return `${short(s.start)}–${s.end}`; };
+
+  const TIERS = ['mutual', 'one', 'neither'];
+  const TIER = {
+    mutual: { label: `Mutual top-${N}`, rule: `Both sides ranked each other ${N} or better.` },
+    one: { label: `One-side top-${N}`, rule: `Only one side ranked the other ${N} or better.` },
+    neither: { label: `Neither top-${N}`, rule: `Neither side put the other in its top ${N}.` },
+    open: { label: 'Open', rule: 'No meeting booked in this slot. Room to fix a buyer below target.' }
+  };
+  const inTop = r => r != null && r <= N;
+  const tierOf = a => (inTop(a.buyerRank) && inTop(a.supplierRank)) ? 'mutual' : (inTop(a.buyerRank) || inTop(a.supplierRank)) ? 'one' : 'neither';
+  const WEIGHT = { mutual: 2, one: 1, neither: 0 };
+
+  const mkSlots = () => Object.fromEntries(SLOTS.map(s => [s.n, null]));
+  const suppliers = AW.suppliers.map((s, i) => ({ ...s, id: 's' + i, kind: 'supplier', slots: mkSlots(), appts: [] }));
+  const buyers = AW.buyers.map((b, i) => ({ ...b, id: 'b' + i, kind: 'buyer', slots: mkSlots(), appts: [] }));
+  const byId = new Map([...suppliers, ...buyers].map(e => [e.id, e]));
+  const supByName = new Map(suppliers.map(s => [s.name, s]));
+  const buyByName = new Map(buyers.map(b => [b.name, b]));
+
+  const appts = AW.appointments.map((a, i) => {
+    const x = { ...a, i, tier: tierOf(a), blank: a.buyerRank == null || a.supplierRank == null, sup: supByName.get(a.supplier), buy: buyByName.get(a.buyer) };
+    x.sup.slots[a.slot] = x; x.sup.appts.push(x);
+    x.buy.slots[a.slot] = x; x.buy.appts.push(x);
+    return x;
+  });
+
+  const tierCounts = list => list.reduce((m, a) => (m[a.tier]++, m), { mutual: 0, one: 0, neither: 0 });
+  [...suppliers, ...buyers].forEach(e => {
+    e.count = e.appts.length;
+    e.mix = tierCounts(e.appts);
+    e.score = e.count ? (e.mix.mutual * 2 + e.mix.one) / e.count : 0;
+    e.open = SLOTS.filter(s => !e.slots[s.n]).map(s => s.n);
+  });
+
+  const health = e => e.kind === 'supplier'
+    ? (e.count === CFG.supplierTarget ? 'ok' : e.count < CFG.supplierTarget ? 'low' : 'high')
+    : (e.count < CFG.buyerMin ? 'low' : e.count > CFG.buyerMax ? 'high' : 'ok');
+  const targetText = e => e.kind === 'supplier' ? `target ${CFG.supplierTarget}` : `target ${CFG.buyerMin} to ${CFG.buyerMax}`;
+  const other = (a, e) => (e.kind === 'supplier' ? a.buy : a.sup);
+  const searchText = e => (e.kind === 'supplier' ? e.name : `${e.name} ${e.organization} ${e.title}`).toLowerCase();
+  const displayName = e => (e.kind === 'supplier' ? e.name : e.organization);
+  const typeLabel = s => (s.type === 'business' ? 'Business vendor' : 'Hotel or destination');
+
+  /* ---------- State ---------- */
+  const state = { view: 'suppliers', q: '', free: 0, sort: 'default', flagged: false, iso: new Set(), slot: SLOTS[0].n, locked: false, entered: false };
+
+  /* ---------- Header ---------- */
+  function renderHeader() {
+    $('#event-name').textContent = E.name;
+    const d = new Date(E.date + 'T12:00:00');
+    const dateText = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    $('#event-meta').textContent = `${E.client}. ${dateText}, ${SLOTS[0].start} to ${SLOTS[SLOTS.length - 1].end}. ${plural(E.manualChanges, 'manual change')} applied since the last matching run.`;
+    const b = $('#status-badge');
+    b.innerHTML = state.locked ? `${icon('lock')}Locked` : `<span class="size-1.5 rounded-full bg-warning"></span>Draft, not locked`;
+    b.className = cn('badge', state.locked ? 'bg-primary text-primary-foreground border-transparent' : 'badge-outline');
+    $('#act-run').disabled = state.locked;
+    $('#act-edit').disabled = state.locked;
+    $('#act-lock').innerHTML = state.locked ? `${icon('lock-open')}<span class="max-sm:sr-only">Unlock schedule</span>` : `${icon('lock')}<span class="max-sm:sr-only">Lock schedule</span>`;
+  }
+
+  /* ---------- Toolbar ---------- */
+  const VIEWS = [
+    { key: 'suppliers', label: 'Suppliers', n: suppliers.length },
+    { key: 'buyers', label: 'Buyers', n: buyers.length },
+    { key: 'slot', label: 'By time slot', n: SLOTS.length },
+    { key: 'quality', label: 'Quality', n: null }
+  ];
+  function renderToolbar() {
+    $('#view-switch').innerHTML = VIEWS.map(v => `<button type="button" data-slot="toggle-group-item" class="tg-item" data-view="${v.key}" aria-pressed="${state.view === v.key}">${esc(v.label)}${v.n != null ? `<span class="n">${v.n}</span>` : ''}</button>`).join('');
+
+    const free = $('#free');
+    if (!free.options.length) {
+      free.innerHTML = `<option value="0">Any slot</option>` + SLOTS.map(s => `<option value="${s.n}">Slot ${s.n}, ${esc(s.start)}</option>`).join('');
+    }
+    free.value = String(state.free);
+
+    const isSup = state.view === 'suppliers';
+    const sortOpts = [['default', isSup ? 'Desk number' : 'Organization A to Z'], ['weakest', 'Weakest matches first'], ['count', 'Fewest meetings first']];
+    const sort = $('#sort');
+    sort.innerHTML = sortOpts.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    sort.value = state.sort;
+    $('#sort-wrap').hidden = !(state.view === 'suppliers' || state.view === 'buyers');
+    $('#flagged').hidden = state.view === 'quality';
+
+    const list = state.view === 'suppliers' ? suppliers : buyers;
+    const nFlag = list.filter(e => health(e) !== 'ok').length;
+    $('#flagged').setAttribute('aria-pressed', String(state.flagged));
+    $('#flagged-n').textContent = state.view === 'suppliers' || state.view === 'buyers' ? String(nFlag) : '';
+  }
+
+  /* ---------- Legend ramp ---------- */
+  function renderLegend() {
+    const tc = tierCounts(appts);
+    const total = appts.length;
+    const kindList = state.view === 'suppliers' ? suppliers : buyers;
+    const openN = kindList.reduce((s, e) => s + e.open.length, 0);
+    const items = [
+      { key: 'open', n: openN, sub: state.view === 'suppliers' ? 'supplier slots' : 'buyer slots' },
+      { key: 'neither', n: tc.neither }, { key: 'one', n: tc.one }, { key: 'mutual', n: tc.mutual }
+    ];
+    const ramp = $('#ramp');
+    ramp.classList.toggle('has-iso', state.iso.size > 0);
+    ramp.innerHTML = items.map(it => `
+      <button type="button" data-slot="toggle-group-item" class="ramp-item" data-tier="${it.key}" data-iso="${it.key}" aria-pressed="${state.iso.has(it.key)}"
+        data-tip="${esc(TIER[it.key].rule)}${it.key === 'open' ? '' : ' Click to isolate in the grid.'}">
+        <span>${esc(TIER[it.key].label)}</span><span class="num">${it.n}</span>
+        <span class="pct">${it.key === 'open' ? esc(it.sub) : pct(it.n, total) + '%'}</span>
+      </button>`).join('');
+    $('#legend-notes').innerHTML = `<span class="biz" aria-hidden="true"></span><span>Business vendor.</span><span class="ml-2 max-sm:hidden">Cell edge: buyer's rank over supplier's rank, – when left blank.</span>`;
+  }
+
+  /* ---------- Readout ---------- */
+  const readoutIdle = () => {
+    const who = state.view === 'buyers' ? 'supplier' : 'buyer';
+    $('#readout').innerHTML = `<div><dt>Readout</dt><dd class="text-muted-foreground" style="font-weight:400">Point at a cell to trace that ${who} across the afternoon.</dd></div>`;
+  };
+  function readoutFor(a, rowEntity) {
+    if (!a) return readoutIdle();
+    const o = other(a, rowEntity);
+    const openTimes = o.open.map(n => short(SLOT.get(n).start));
+    $('#readout').innerHTML = `
+      <div><dt>Match</dt><dd class="flex items-center gap-1.5"><span class="swatch" data-tier="${a.tier}"></span>${esc(TIER[a.tier].label)}</dd></div>
+      <div><dt>Slot ${a.slot}</dt><dd>${esc(slotRange(a.slot))}</dd></div>
+      <div><dt>Desk</dt><dd>${a.desk}</dd></div>
+      <div><dt>Supplier</dt><dd class="flex items-center gap-1">${a.sup.type === 'business' ? '<span class="biz"></span>' : ''}${esc(a.sup.name)}</dd></div>
+      <div><dt>Buyer</dt><dd title="${esc(a.buy.name)}">${esc(a.buy.name)}</dd></div>
+      <div><dt>Buyer's rank</dt><dd>${rk(a.buyerRank)}</dd></div>
+      <div><dt>Supplier's rank</dt><dd>${rk(a.supplierRank)}</dd></div>
+      <div><dt>${o.kind === 'buyer' ? 'This buyer' : 'This supplier'}</dt><dd>${plural(o.count, 'meeting')}, ${openTimes.length ? 'open at ' + openTimes.join(', ') : 'no open slots'}</dd></div>`;
+  }
+  function readoutOpen(e, n) {
+    $('#readout').innerHTML = `
+      <div><dt>Match</dt><dd class="flex items-center gap-1.5"><span class="swatch" data-tier="open"></span>Open</dd></div>
+      <div><dt>Slot ${n}</dt><dd>${esc(slotRange(n))}</dd></div>
+      <div><dt>${e.kind === 'buyer' ? 'Buyer' : 'Supplier'}</dt><dd>${esc(e.name)}</dd></div>
+      <div><dt>Meetings</dt><dd>${e.count}, ${targetText(e)}</dd></div>`;
+  }
+
+  /* ---------- Matrix (suppliers or buyers) ---------- */
+  function filteredRows(kind) {
+    const list = kind === 'suppliers' ? suppliers : buyers;
+    const q = state.q.trim().toLowerCase();
+    const rows = list.filter(e => {
+      if (state.free && e.slots[state.free]) return false;
+      if (state.flagged && health(e) === 'ok') return false;
+      if (q && !searchText(e).includes(q) && !e.appts.some(a => searchText(other(a, e)).includes(q))) return false;
+      return true;
+    });
+    const byDefault = kind === 'suppliers' ? (a, b) => a.desk - b.desk : (a, b) => a.organization.localeCompare(b.organization) || a.title.localeCompare(b.title);
+    const sorters = {
+      default: byDefault,
+      weakest: (a, b) => a.score - b.score || a.count - b.count || byDefault(a, b),
+      count: (a, b) => a.count - b.count || a.score - b.score || byDefault(a, b)
+    };
+    return rows.sort(sorters[state.sort] || byDefault);
+  }
+
+  function sparkHTML(e) {
+    const segs = [...e.appts].sort((x, y) => WEIGHT[y.tier] - WEIGHT[x.tier]).map(a => a.tier);
+    while (segs.length < SLOTS.length) segs.push('open');
+    const lo = e.kind === 'supplier' ? CFG.supplierTarget : CFG.buyerMin;
+    const hi = e.kind === 'supplier' ? CFG.supplierTarget : CFG.buyerMax;
+    const step = 8; // 6px segment + 2px gap
+    const band = `<b style="left:${(lo - 1) * step}px;width:${(hi - lo) * step + 6}px"></b>`;
+    const label = `${e.count} meetings, ${targetText(e)}. ${e.mix.mutual} mutual, ${e.mix.one} one-side, ${e.mix.neither} neither.`;
+    return `<span class="spark" role="img" aria-label="${esc(label)}">${segs.map(t => `<i data-tier="${t}"></i>`).join('')}${band}</span>`;
+  }
+
+  let traceIndex = new Map();
+  let tracing = null;
+  function renderMatrix() {
+    const kind = state.view;
+    const host = $('#view-matrix');
+    const isSup = kind === 'suppliers';
+    const list = isSup ? suppliers : buyers;
+    const rows = filteredRows(kind);
+    const q = state.q.trim().toLowerCase();
+    const noun = isSup ? 'suppliers' : 'buyers';
+    $('#result-count').textContent = `${rows.length} of ${list.length} ${noun} shown`;
+
+    if (!rows.length) {
+      const reason = state.free
+        ? `Every ${isSup ? 'supplier' : 'buyer'} is booked at ${SLOT.get(state.free).start}${state.flagged ? ' or on target' : ''}.`
+        : state.flagged ? `Every ${isSup ? 'supplier has ' + CFG.supplierTarget + ' meetings' : 'buyer has ' + CFG.buyerMin + ' to ' + CFG.buyerMax + ' meetings'}.`
+        : `Nothing matches “${esc(state.q)}”.`;
+      const hint = isSup && state.free ? 'Switch to buyers to see who has room in this slot.' : 'Clear the filters to see the full schedule.';
+      host.innerHTML = `
+        <div data-slot="empty" class="mx-auto max-w-md py-16 text-center flex flex-col items-center gap-3">
+          <div data-slot="empty-media" class="size-10 rounded-md bg-muted grid place-items-center text-muted-foreground">${icon('filter-x')}</div>
+          <h3 data-slot="empty-title" class="text-[15px] font-semibold">No ${noun} to show</h3>
+          <p data-slot="empty-description" class="text-[13px] text-muted-foreground">${reason} ${hint}</p>
+          <div data-slot="empty-content" class="flex gap-2">
+            ${isSup && state.free ? `<button type="button" class="btn btn-primary" data-action="to-buyers">Show free buyers</button>` : ''}
+            <button type="button" class="btn btn-outline" data-action="clear">Clear filters</button>
+          </div>
+        </div>`;
+      paintIcons();
+      return;
+    }
+
+    const colStats = SLOTS.map(s => {
+      const inSlot = rows.map(e => e.slots[s.n]).filter(Boolean);
+      return { tc: tierCounts(inSlot), n: inSlot.length, open: rows.length - inSlot.length };
+    });
+
+    const head = `
+      <thead><tr>
+        <th scope="col" class="mx-corner"><span class="text-xs text-muted-foreground">${isSup ? 'Desk and supplier' : 'Buyer'}</span></th>
+        ${SLOTS.map(s => `<th scope="col" class="${state.free === s.n ? 'is-col' : ''}">
+          <span class="block text-[13px] font-semibold">${esc(short(s.start))}</span>
+          <span class="block text-[11px] text-muted-foreground">Slot ${s.n}<span class="max-sm:hidden">, to ${esc(s.end)}</span></span></th>`).join('')}
+        <th scope="col" class="mx-count"><span class="text-xs text-muted-foreground">Meetings</span></th>
+      </tr></thead>`;
+
+    const body = rows.map((e, r) => {
+      const h = health(e);
+      const rowHead = isSup
+        ? `<span class="mx-desk">${e.desk}</span><span class="mx-rowname"><span class="t1">${esc(e.name)}</span></span>${e.type === 'business' ? '<span class="biz" title="Business vendor"></span>' : ''}`
+        : `<span class="mx-rowname"><span class="t1">${esc(e.organization)}</span><span class="t2">${esc(e.title)}</span></span>`;
+      const flag = h !== 'ok' ? `<span class="mx-flag" title="${h === 'low' ? 'Below' : 'Above'} ${targetText(e)}">${icon('triangle-alert')}</span>` : '';
+      const rowHit = q && searchText(e).includes(q);
+      const cells = SLOTS.map((s, c) => {
+        const a = e.slots[s.n];
+        if (!a) {
+          return `<td><button type="button" class="mx-cell${state.iso.size && !state.iso.has('open') ? ' is-off' : ''}" data-tier="open" data-r="${r}" data-c="${c + 1}" data-row="${e.id}" data-n="${s.n}" tabindex="-1"
+            aria-label="${esc(displayName(e))} is open in slot ${s.n}, ${esc(s.start)}"><span class="mx-name"><span>Open</span></span></button></td>`;
+        }
+        const o = other(a, e);
+        const hit = q && !rowHit ? searchText(o).includes(q) : false;
+        const miss = q && !rowHit && !hit;
+        const off = state.iso.size && !state.iso.has(a.tier);
+        const lbl = `Slot ${s.n}, ${s.start}. Desk ${a.desk}, ${a.sup.name}, ${a.sup.type === 'business' ? 'business vendor' : 'hotel'}. Buyer ${a.buy.name}. Buyer's rank ${a.buyerRank ?? 'blank'}, supplier's rank ${a.supplierRank ?? 'blank'}. ${TIER[a.tier].label}.`;
+        return `<td><button type="button" class="${cn('mx-cell', hit && 'is-hit', miss && 'is-miss', off && 'is-off')}" data-tier="${a.tier}" data-key="${o.id}" data-a="${a.i}" data-row="${e.id}" data-r="${r}" data-c="${c + 1}" tabindex="-1" aria-label="${esc(lbl)}">
+          <span class="mx-name">${o.kind === 'supplier' && o.type === 'business' ? '<span class="biz" aria-hidden="true"></span>' : ''}<span>${esc(displayName(o))}</span></span>
+          <span class="mx-rank" aria-hidden="true"><span>${rk(a.buyerRank)}</span><span>${rk(a.supplierRank)}</span></span></button></td>`;
+      }).join('');
+      return `<tr>
+        <th scope="row"><button type="button" class="mx-rowbtn" data-entity="${e.id}" data-r="${r}" data-c="0" tabindex="${r === 0 ? 0 : -1}" aria-label="${esc(e.name)}, ${e.count} meetings. Open full schedule.">${rowHead}${flag}</button></th>
+        ${cells}
+        <td class="mx-count"><div class="count-cell${h !== 'ok' ? ' is-flag' : ''}">${sparkHTML(e)}<span class="n">${e.count}</span></div></td>
+      </tr>`;
+    }).join('');
+
+    const foot = `
+      <tfoot><tr>
+        <th scope="row"><span class="text-[11px] text-muted-foreground">Per slot, rows shown</span></th>
+        ${colStats.map(st => `<td>
+          <div class="colbar" role="img" aria-label="${st.tc.mutual} mutual, ${st.tc.one} one-side, ${st.tc.neither} neither, ${st.open} open">
+            ${TIERS.map(t => `<i data-tier="${t}" style="width:${pct(st.tc[t], rows.length)}%"></i>`).join('')}</div>
+          <span class="block mt-1 text-[11px] ${st.open ? 'text-foreground' : 'text-muted-foreground'}">${st.open ? `${st.open} open` : 'Full'}<span class="text-muted-foreground">, ${st.tc.mutual} mutual</span></span></td>`).join('')}
+        <td class="mx-count"><span class="text-[11px] text-muted-foreground">${rows.reduce((s, e) => s + e.count, 0)} total</span></td>
+      </tr></tfoot>`;
+
+    host.innerHTML = `
+      <table data-slot="table" role="grid" aria-label="${isSup ? 'Suppliers' : 'Buyers'} by slot, tinted by match quality" class="mx${state.entered ? '' : ' is-entering'}" data-kind="${kind}" style="--c:0">
+        <colgroup><col style="width:var(--rowhead)">${SLOTS.map(() => '<col>').join('')}<col style="width:6.75rem"></colgroup>
+        ${head}<tbody>${body}</tbody>${foot}
+      </table>`;
+    $$('.mx-cell', host).forEach(b => b.style.setProperty('--c', b.dataset.c));
+    if (!state.entered) { state.entered = true; setTimeout(() => $('.mx', host)?.classList.remove('is-entering'), 1400); }
+
+    traceIndex = new Map();
+    $$('.mx-cell[data-key]', host).forEach(b => {
+      const k = b.dataset.key;
+      if (!traceIndex.has(k)) traceIndex.set(k, []);
+      traceIndex.get(k).push(b);
+    });
+    tracing = null;
+    readoutIdle();
+    paintIcons();
+  }
+
+  function trace(btn) {
+    const table = $('.mx');
+    if (!table) return;
+    const key = btn?.dataset.key || null;
+    if (key !== tracing) {
+      if (tracing) (traceIndex.get(tracing) || []).forEach(b => b.classList.remove('is-traced'));
+      tracing = key;
+      table.classList.toggle('is-tracing', !!key);
+      if (key) (traceIndex.get(key) || []).forEach(b => b.classList.add('is-traced'));
+    }
+    if (!btn) return readoutIdle();
+    const row = byId.get(btn.dataset.row);
+    if (btn.dataset.a != null) readoutFor(appts[+btn.dataset.a], row);
+    else if (btn.dataset.n) readoutOpen(row, +btn.dataset.n);
+    else readoutIdle();
+  }
+
+  function wireMatrix() {
+    const host = $('#view-matrix');
+    host.addEventListener('pointerover', e => {
+      const b = e.target.closest('.mx-cell');
+      if (b) trace(b);
+    });
+    host.addEventListener('pointerleave', () => { if (!host.contains(document.activeElement)) trace(null); });
+    host.addEventListener('focusin', e => { const b = e.target.closest('.mx-cell'); trace(b || null); });
+    host.addEventListener('click', e => {
+      const act = e.target.closest('[data-action]');
+      if (act) return act.dataset.action === 'to-buyers' ? setView('buyers') : clearFilters();
+      const cell = e.target.closest('.mx-cell');
+      if (cell) {
+        if (cell.dataset.a != null) return openAppointment(appts[+cell.dataset.a], byId.get(cell.dataset.row));
+        return openEntity(byId.get(cell.dataset.row), { slot: +cell.dataset.n });
+      }
+      const rowBtn = e.target.closest('.mx-rowbtn');
+      if (rowBtn) openEntity(byId.get(rowBtn.dataset.entity));
+    });
+    host.addEventListener('keydown', e => {
+      const t = e.target.closest('[data-r]');
+      if (!t) return;
+      let r = +t.dataset.r, c = +t.dataset.c;
+      const maxR = $$('tbody tr', host).length - 1;
+      switch (e.key) {
+        case 'ArrowRight': c = Math.min(SLOTS.length, c + 1); break;
+        case 'ArrowLeft': c = Math.max(0, c - 1); break;
+        case 'ArrowDown': r = Math.min(maxR, r + 1); break;
+        case 'ArrowUp': r = Math.max(0, r - 1); break;
+        case 'Home': c = 0; break;
+        case 'End': c = SLOTS.length; break;
+        default: return;
+      }
+      const next = host.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+      if (next) { e.preventDefault(); t.tabIndex = -1; next.tabIndex = 0; next.focus(); next.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+    });
+  }
+
+  /* ---------- By time slot ---------- */
+  function renderSlotView() {
+    const n = state.free || state.slot;
+    state.slot = n;
+    const s = SLOT.get(n);
+    const q = state.q.trim().toLowerCase();
+    const inSlot = appts.filter(a => a.slot === n).sort((a, b) => a.desk - b.desk);
+    const shown = inSlot.filter(a => (!q || searchText(a.sup).includes(q) || searchText(a.buy).includes(q)) && (!state.iso.size || state.iso.has(a.tier)));
+    const freeBuyers = buyers.filter(b => !b.slots[n] && (!q || searchText(b).includes(q)) && (!state.flagged || health(b) !== 'ok'))
+      .sort((a, b) => a.count - b.count || a.organization.localeCompare(b.organization));
+    const freeSups = suppliers.filter(x => !x.slots[n]);
+    const tc = tierCounts(inSlot);
+    $('#result-count').textContent = `${shown.length} of ${inSlot.length} meetings shown`;
+
+    const picker = `<div data-slot="toggle-group" role="group" aria-label="Time slot" class="tg overflow-x-auto max-w-full">
+      ${SLOTS.map(x => `<button type="button" data-slot="toggle-group-item" class="tg-item" data-pick-slot="${x.n}" aria-pressed="${x.n === n}">${esc(short(x.start))}</button>`).join('')}</div>`;
+
+    const rows = shown.map(a => `
+      <tr data-open-appt="${a.i}" class="border-b border-border hover:bg-accent cursor-pointer">
+        <td class="py-1.5 pl-3 pr-2 text-muted-foreground text-right">${a.desk}</td>
+        <td class="py-1.5 px-2"><span class="flex items-center gap-1.5">${a.sup.type === 'business' ? '<span class="biz" title="Business vendor"></span>' : ''}<span>${esc(a.sup.name)}</span></span></td>
+        <td class="py-1.5 px-2 hidden md:table-cell"><span data-slot="badge" class="badge badge-outline">${a.sup.type === 'business' ? 'Business' : 'Hotel'}</span></td>
+        <td class="py-1.5 px-2"><button type="button" class="text-left hover:underline" data-open-appt="${a.i}"><span class="block">${esc(a.buy.organization)}</span><span class="block text-[11px] text-muted-foreground">${esc(a.buy.title)}</span></button></td>
+        <td class="py-1.5 px-2 text-right">${rk(a.buyerRank)}</td>
+        <td class="py-1.5 px-2 text-right">${rk(a.supplierRank)}</td>
+        <td class="py-1.5 px-2 pr-3"><span class="flex items-center gap-1.5 whitespace-nowrap"><span class="swatch" data-tier="${a.tier}"></span>${esc(TIER[a.tier].label)}</span></td>
+      </tr>`).join('');
+
+    $('#view-slot').innerHTML = `
+      <div class="flex flex-col gap-4">
+        <div class="flex flex-wrap items-end gap-x-6 gap-y-3">
+          <div>
+            <h2 class="text-[17px] font-semibold" style="font-stretch:108%">Slot ${n}, ${esc(slotRange(n))}</h2>
+            <p class="meta">${inSlot.length} meetings across ${suppliers.length} desks. ${tc.mutual} mutual top-${N}, ${tc.one} one-side, ${tc.neither} neither.</p>
+          </div>
+          ${picker}
+        </div>
+        ${state.free ? `<div data-slot="alert" role="status" class="flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">${icon('filter', 'size-4 mt-0.5 text-muted-foreground')}<span>Showing slot ${n} because the free-in filter is set. Clear it to pick another slot.</span></div>` : ''}
+        <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem] items-start">
+          <div data-slot="card" class="rounded-lg border border-border bg-card overflow-x-auto">
+            ${shown.length ? `<table data-slot="table" class="w-full text-[13px]">
+              <caption class="sr-only">Meetings in slot ${n}</caption>
+              <thead data-slot="table-header"><tr class="border-b border-border text-left text-xs text-muted-foreground">
+                <th scope="col" class="font-normal py-2 pl-3 pr-2 text-right">Desk</th>
+                <th scope="col" class="font-normal py-2 px-2">Supplier</th>
+                <th scope="col" class="font-normal py-2 px-2 hidden md:table-cell">Type</th>
+                <th scope="col" class="font-normal py-2 px-2">Buyer</th>
+                <th scope="col" class="font-normal py-2 px-2 text-right">Buyer's rank</th>
+                <th scope="col" class="font-normal py-2 px-2 text-right">Supplier's rank</th>
+                <th scope="col" class="font-normal py-2 px-2 pr-3">Match</th></tr></thead>
+              <tbody data-slot="table-body">${rows}</tbody></table>`
+            : `<div data-slot="empty" class="py-12 text-center text-[13px] text-muted-foreground">No meetings in this slot match your search or quality filter.</div>`}
+          </div>
+          <aside data-slot="card" class="rounded-lg border border-border bg-card">
+            <div data-slot="card-header" class="px-4 pt-3 pb-2">
+              <h3 data-slot="card-title" class="text-[14px] font-semibold">Free at ${esc(s.start)}</h3>
+              <p data-slot="card-description" class="meta">${plural(freeBuyers.length, 'buyer')} with nothing booked, fewest meetings first. ${freeSups.length ? plural(freeSups.length, 'supplier') + ' also free.' : 'Every supplier desk is booked.'}</p>
+            </div>
+            <div data-slot="separator" class="h-px bg-border"></div>
+            <ul data-slot="card-content" class="max-h-[60vh] overflow-auto py-1">
+              ${freeBuyers.map(b => `<li><button type="button" class="w-full flex items-center gap-2 px-4 py-1.5 text-left hover:bg-accent" data-open-entity="${b.id}">
+                <span class="min-w-0 flex-1"><span class="block truncate text-[13px]">${esc(b.organization)}</span><span class="block truncate text-[11px] text-muted-foreground">${esc(b.title)}</span></span>
+                <span class="text-[12px] ${health(b) !== 'ok' ? 'text-warning-foreground font-semibold' : 'text-muted-foreground'}">${b.count}</span></button></li>`).join('')
+                || `<li class="px-4 py-4 text-[13px] text-muted-foreground">No free buyers match.</li>`}
+            </ul>
+          </aside>
+        </div>
+      </div>`;
+    paintIcons();
+  }
+
+  /* ---------- Quality ---------- */
+  function renderQuality() {
+    const total = appts.length;
+    const tc = tierCounts(appts);
+    const supOk = suppliers.filter(s => health(s) === 'ok').length;
+    const buyOk = buyers.filter(b => health(b) === 'ok').length;
+    const q = state.q.trim().toLowerCase();
+    const listFilter = e => (!q || searchText(e).includes(q)) && (!state.free || !e.slots[state.free]);
+    const below = buyers.filter(b => health(b) === 'low').sort((a, b) => a.count - b.count);
+    const above = buyers.filter(b => health(b) === 'high').sort((a, b) => b.count - a.count);
+    const supOff = suppliers.filter(s => health(s) !== 'ok');
+    const blankAny = appts.filter(a => a.blank).length;
+    const blankB = appts.filter(a => a.buyerRank == null).length;
+    const blankS = appts.filter(a => a.supplierRank == null).length;
+    const counts = buyers.map(b => b.count);
+    const lo = Math.min(CFG.buyerMin, ...counts), hi = Math.max(CFG.buyerMax, ...counts);
+    const dist = []; for (let c = lo; c <= hi; c++) dist.push({ c, n: counts.filter(x => x === c).length });
+    const distMax = Math.max(...dist.map(d => d.n), 1);
+    const bySlot = SLOTS.map(s => { const l = appts.filter(a => a.slot === s.n); return { s, tc: tierCounts(l), n: l.length }; });
+    const outOfRange = buyers.length - buyOk;
+    $('#result-count').textContent = '';
+
+    const tierRow = t => `
+      <tr class="border-b border-border">
+        <td class="py-2 pr-3"><span class="flex items-center gap-2"><span class="swatch" data-tier="${t}"></span><span class="font-medium">${esc(TIER[t].label)}</span></span></td>
+        <td class="py-2 pr-3 text-muted-foreground hidden sm:table-cell">${esc(TIER[t].rule)}</td>
+        <td class="py-2 pr-3 text-right font-semibold">${tc[t]}</td>
+        <td class="py-2 text-right text-muted-foreground w-16">${pct(tc[t], total)}%</td>
+      </tr>`;
+
+    const buyerTable = (list, emptyText) => {
+      const shown = list.filter(listFilter);
+      if (!shown.length) return `<div data-slot="empty" class="px-4 py-6 text-[13px] text-muted-foreground flex items-center gap-2">${icon('circle-check', 'size-4')}${list.length ? 'None match your search or slot filter.' : emptyText}</div>`;
+      return `<table data-slot="table" class="w-full text-[13px]"><tbody>${shown.map(b => `
+        <tr class="border-b border-border last:border-0 hover:bg-accent cursor-pointer" data-open-entity="${b.id}">
+          <td class="py-2 pl-4 pr-2"><button type="button" class="text-left" data-open-entity="${b.id}"><span class="block">${esc(b.organization)}</span><span class="block text-[11px] text-muted-foreground">${esc(b.title)}</span></button></td>
+          <td class="py-2 px-2 text-right whitespace-nowrap"><span class="font-semibold text-warning-foreground">${b.count}</span><span class="text-muted-foreground"> of ${health(b) === 'low' ? CFG.buyerMin + ' min' : CFG.buyerMax + ' max'}</span></td>
+          <td class="py-2 pl-2 pr-4 text-right text-[12px] text-muted-foreground">${b.open.length ? 'Open ' + b.open.map(n => esc(short(SLOT.get(n).start))).join(', ') : 'No open slots'}</td>
+        </tr>`).join('')}</tbody></table>`;
+    };
+
+    $('#view-quality').innerHTML = `
+      <div class="max-w-[76rem] flex flex-col gap-6">
+        <div class="max-w-[46rem]">
+          <h2 class="text-[22px] sm:text-[26px] leading-tight font-[620] tracking-[-0.01em]" style="font-stretch:112%">${tc.mutual} of ${total} meetings are mutual top-${N} picks.</h2>
+          <p class="mt-2 text-[14px] text-muted-foreground">${outOfRange ? `${plural(outOfRange, 'buyer')} ${outOfRange === 1 ? 'sits' : 'sit'} outside ${CFG.buyerMin} to ${CFG.buyerMax} meetings` : `Every buyer has ${CFG.buyerMin} to ${CFG.buyerMax} meetings`}${supOff.length ? `, and ${plural(supOff.length, 'supplier')} ${supOff.length === 1 ? 'is' : 'are'} not at ${CFG.supplierTarget}.` : `, and every supplier has ${CFG.supplierTarget}.`} ${plural(E.manualChanges, 'manual change')} applied.</p>
+        </div>
+
+        <section data-slot="card" aria-labelledby="q-mix" class="rounded-lg border border-border bg-card px-4 sm:px-5 py-4">
+          <div data-slot="card-header" class="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 id="q-mix" data-slot="card-title" class="text-[14px] font-semibold">Match quality across all ${total} meetings</h3>
+            <p data-slot="card-description" class="meta">Click a band to see it in the grid.</p>
+          </div>
+          <div data-slot="chart" class="mt-3 flex h-9 rounded-md overflow-hidden" role="img" aria-label="${TIERS.map(t => `${TIER[t].label} ${tc[t]}`).join(', ')}">
+            ${[...TIERS].map(t => `<button type="button" data-tier="${t}" data-goto-tier="${t}" class="h-full flex items-center px-2 text-[12px] font-semibold min-w-0 overflow-hidden hover:brightness-95" style="width:${pct(tc[t], total)}%;background:var(--t-bg);color:var(--t-fg)" aria-label="Show ${esc(TIER[t].label)} in the grid">${pct(tc[t], total) > 6 ? tc[t] : ''}</button>`).join('')}
+          </div>
+          <table data-slot="table" class="mt-3 w-full text-[13px]">
+            <caption class="sr-only">Meetings by match quality</caption>
+            <tbody>
+              ${TIERS.map(tierRow).join('')}
+              <tr>
+                <td class="py-2 pr-3"><span class="flex items-center gap-2"><span class="swatch" style="--t-bg:transparent;box-shadow:inset 0 0 0 1px var(--input);background-image:repeating-linear-gradient(135deg,transparent 0 2px,var(--muted-foreground) 2px 3px)"></span><span class="font-medium">Blank rankings</span></span></td>
+                <td class="py-2 pr-3 text-muted-foreground hidden sm:table-cell">At least one side left the rank blank (buyer ${blankB}, supplier ${blankS}). Already counted above by the rank that exists.</td>
+                <td class="py-2 pr-3 text-right font-semibold">${blankAny}</td>
+                <td class="py-2 text-right text-muted-foreground w-16">${pct(blankAny, total)}%</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <div class="grid gap-6 lg:grid-cols-2 items-start">
+          <section data-slot="card" aria-labelledby="q-cover" class="rounded-lg border border-border bg-card px-4 sm:px-5 py-4">
+            <h3 id="q-cover" data-slot="card-title" class="text-[14px] font-semibold">Counts</h3>
+            <dl class="mt-3 flex flex-col gap-3 text-[13px]">
+              <div class="flex items-baseline justify-between gap-4"><dt class="text-muted-foreground">Total appointments</dt><dd class="font-semibold text-[15px]">${total}</dd></div>
+              <div data-slot="separator" class="h-px bg-border"></div>
+              <div class="flex flex-col gap-1.5">
+                <div class="flex items-baseline justify-between gap-4"><dt class="text-muted-foreground">Suppliers at ${CFG.supplierTarget}</dt><dd class="font-semibold text-[15px]">${supOk}<span class="text-muted-foreground font-normal">/${suppliers.length}</span></dd></div>
+                <div data-slot="progress" role="progressbar" aria-label="Suppliers at target" aria-valuemin="0" aria-valuemax="${suppliers.length}" aria-valuenow="${supOk}" class="h-1.5 rounded-full bg-muted overflow-hidden"><div class="h-full bg-primary" style="width:${pct(supOk, suppliers.length)}%"></div></div>
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <div class="flex items-baseline justify-between gap-4"><dt class="text-muted-foreground">Buyers at ${CFG.buyerMin} to ${CFG.buyerMax}</dt><dd class="font-semibold text-[15px]">${buyOk}<span class="text-muted-foreground font-normal">/${buyers.length}</span></dd></div>
+                <div data-slot="progress" role="progressbar" aria-label="Buyers in range" aria-valuemin="0" aria-valuemax="${buyers.length}" aria-valuenow="${buyOk}" class="h-1.5 rounded-full bg-muted overflow-hidden"><div class="h-full bg-primary" style="width:${pct(buyOk, buyers.length)}%"></div></div>
+              </div>
+              <div data-slot="separator" class="h-px bg-border"></div>
+              <div class="flex items-baseline justify-between gap-4"><dt class="text-muted-foreground">Manual edits</dt><dd class="font-medium">${plural(E.manualChanges, 'manual change')} applied</dd></div>
+            </dl>
+          </section>
+
+          <section data-slot="card" aria-labelledby="q-dist" class="rounded-lg border border-border bg-card px-4 sm:px-5 py-4">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 id="q-dist" data-slot="card-title" class="text-[14px] font-semibold">Meetings per buyer</h3>
+              <p class="meta">Target ${CFG.buyerMin} to ${CFG.buyerMax}, ideal ${CFG.buyerIdeal}</p>
+            </div>
+            <div data-slot="chart" class="mt-3 flex flex-col gap-1.5" role="img" aria-label="${dist.map(d => `${d.n} buyers with ${d.c} meetings`).join(', ')}">
+              ${dist.map(d => {
+                const ok = d.c >= CFG.buyerMin && d.c <= CFG.buyerMax;
+                return `<div class="grid grid-cols-[7.5rem_1fr_2.5rem] items-center gap-2 text-[12px]">
+                  <span class="${ok ? 'text-muted-foreground' : 'text-warning-foreground font-semibold'}">${plural(d.c, 'meeting')}${d.c === CFG.buyerIdeal ? ', ideal' : ''}</span>
+                  <span class="h-4 rounded-sm ${ok ? 'bg-muted' : 'bg-warning-muted'}"><span class="block h-full rounded-sm ${ok ? 'bg-primary' : 'bg-warning'}" style="width:${(d.n / distMax) * 100}%"></span></span>
+                  <span class="text-right font-semibold">${d.n}</span></div>`;
+              }).join('')}
+            </div>
+          </section>
+        </div>
+
+        <section data-slot="card" aria-labelledby="q-slot" class="rounded-lg border border-border bg-card px-4 sm:px-5 py-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 id="q-slot" data-slot="card-title" class="text-[14px] font-semibold">Quality by slot</h3>
+            <p class="meta">Share of each slot's meetings. Darker is stronger.</p>
+          </div>
+          <div data-slot="chart" class="mt-4 grid grid-cols-9 gap-1.5 sm:gap-3">
+            ${bySlot.map(({ s, tc: t, n }) => `
+              <button type="button" class="flex flex-col items-stretch gap-1 text-left rounded-sm" data-goto-slot="${s.n}" aria-label="Slot ${s.n}, ${esc(s.start)}: ${t.mutual} mutual, ${t.one} one-side, ${t.neither} neither. Open this slot.">
+                <span class="text-[11px] sm:text-[12px] font-semibold">${pct(t.mutual, n).toFixed(0)}%</span>
+                <span class="flex flex-col-reverse h-28 rounded-sm overflow-hidden bg-muted">
+                  ${TIERS.map(k => `<span data-tier="${k}" style="height:${pct(t[k], n)}%;background:var(--t-bg)"></span>`).join('')}
+                </span>
+                <span class="text-[11px] text-muted-foreground">${esc(short(s.start))}</span>
+              </button>`).join('')}
+          </div>
+        </section>
+
+        <div class="grid gap-6 lg:grid-cols-2 items-start">
+          <section data-slot="card" aria-labelledby="q-below" class="rounded-lg border border-border bg-card">
+            <div class="px-4 pt-3 pb-2">
+              <h3 id="q-below" data-slot="card-title" class="text-[14px] font-semibold flex items-center gap-2">Buyers below ${CFG.buyerMin}<span data-slot="badge" class="badge ${below.length ? 'badge-warning' : 'badge-outline'}">${below.length}</span></h3>
+              <p class="meta">Each open slot is room to add a meeting.</p>
+            </div>
+            <div data-slot="separator" class="h-px bg-border"></div>
+            ${buyerTable(below, `No buyers below ${CFG.buyerMin}.`)}
+          </section>
+          <section data-slot="card" aria-labelledby="q-above" class="rounded-lg border border-border bg-card">
+            <div class="px-4 pt-3 pb-2">
+              <h3 id="q-above" data-slot="card-title" class="text-[14px] font-semibold flex items-center gap-2">Buyers above ${CFG.buyerMax}<span data-slot="badge" class="badge ${above.length ? 'badge-warning' : 'badge-outline'}">${above.length}</span></h3>
+              <p class="meta">Suppliers not at ${CFG.supplierTarget}: ${supOff.length ? supOff.map(s => esc(s.name)).join(', ') : 'none'}.</p>
+            </div>
+            <div data-slot="separator" class="h-px bg-border"></div>
+            ${buyerTable(above, `No buyers above ${CFG.buyerMax}.`)}
+          </section>
+        </div>
+      </div>`;
+    paintIcons();
+  }
+
+  /* ---------- Render ---------- */
+  function render() {
+    renderToolbar();
+    renderLegend();
+    const v = state.view;
+    $('#view-matrix').hidden = !(v === 'suppliers' || v === 'buyers');
+    $('#view-slot').hidden = v !== 'slot';
+    $('#view-quality').hidden = v !== 'quality';
+    $('#readout-bar').hidden = !(v === 'suppliers' || v === 'buyers');
+    if (v === 'suppliers' || v === 'buyers') renderMatrix();
+    else if (v === 'slot') renderSlotView();
+    else renderQuality();
+    paintIcons();
+  }
+  function setView(v) {
+    if (state.view === v) return;
+    state.view = v;
+    state.sort = 'default';
+    $('#main').scrollTo(0, 0);
+    render();
+  }
+  function clearFilters() {
+    state.q = ''; state.free = 0; state.flagged = false; state.iso.clear();
+    $('#search').value = '';
+    render();
+  }
+
+  /* ---------- Layers (sheet, dialog, command) ---------- */
+  const stack = [];
+  const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+  function openLayer(el, focusEl) {
+    if (!stack.includes(el)) stack.push(el);
+    el._return = el._return || document.activeElement;
+    el.hidden = false;
+    requestAnimationFrame(() => { el.dataset.state = 'open'; (focusEl || el.querySelector(FOCUSABLE))?.focus(); });
+  }
+  function closeLayer(el) {
+    if (el.hidden) return;
+    el.dataset.state = 'closed';
+    stack.splice(stack.indexOf(el), 1);
+    const ret = el._return; el._return = null;
+    setTimeout(() => { el.hidden = true; }, reduceMotion() ? 0 : 200);
+    if (ret && document.contains(ret)) ret.focus();
+  }
+  document.addEventListener('click', e => {
+    const c = e.target.closest('[data-close]');
+    if (c) closeLayer(c.closest('.layer'));
+  });
+
+  /* Sheet */
+  const sheetHistory = [];
+  function scheduleHTML(e, hiSlot) {
+    return `<ol class="sched" aria-label="${esc(displayName(e))}, full afternoon">
+      ${SLOTS.map(s => {
+        const a = e.slots[s.n];
+        const hi = hiSlot === s.n ? ' is-hi' : '';
+        if (!a) return `<li class="${hi}">
+          <span class="c tm">${esc(short(s.start))}</span>
+          <span class="c who"><span class="tierbar" data-tier="open"></span><span data-slot="badge" class="badge badge-outline">Open</span><span class="text-[12px] text-muted-foreground">Nothing booked, ${esc(slotRange(s.n))}</span></span>
+          <span class="c rk"></span></li>`;
+        const o = other(a, e);
+        return `<li class="${hi}">
+          <span class="c tm">${esc(short(s.start))}</span>
+          <span class="c who"><span class="tierbar" data-tier="${a.tier}" title="${esc(TIER[a.tier].label)}"></span>
+            <button type="button" class="min-w-0 text-left hover:underline" data-open-entity="${o.id}">
+              <span class="flex items-center gap-1 text-[13px] leading-snug">${o.kind === 'supplier' && o.type === 'business' ? '<span class="biz" title="Business vendor"></span>' : ''}<span class="truncate">${esc(displayName(o))}</span></span>
+              <span class="block text-[11px] text-muted-foreground truncate">Desk ${a.desk}${o.kind === 'buyer' ? ', ' + esc(o.title) : ', ' + (o.type === 'business' ? 'business vendor' : 'hotel')}</span>
+            </button></span>
+          <span class="c rk"><span>Buyer <b>${rk(a.buyerRank)}</b></span><span>Supplier <b>${rk(a.supplierRank)}</b></span></span></li>`;
+      }).join('')}</ol>`;
+  }
+  function summaryHTML(e) {
+    const h = health(e);
+    return `<div class="flex flex-col gap-3 mb-4">
+      <div class="flex flex-wrap items-center gap-2">
+        <span data-slot="badge" class="badge ${h === 'ok' ? 'badge-outline' : 'badge-warning'}">${h === 'ok' ? '' : icon('triangle-alert', 'size-3')}${plural(e.count, 'meeting')}, ${targetText(e)}</span>
+        ${e.kind === 'supplier' ? `<span data-slot="badge" class="badge badge-outline">${e.type === 'business' ? '<span class="biz"></span>' : ''}${typeLabel(e)}</span><span data-slot="badge" class="badge badge-outline">Desk ${e.desk}</span>` : ''}
+        <span data-slot="badge" class="badge badge-outline">${e.open.length ? plural(e.open.length, 'open slot') : 'No open slots'}</span>
+      </div>
+      <div data-slot="chart" class="flex h-2 rounded-sm overflow-hidden bg-muted" role="img" aria-label="${e.mix.mutual} mutual, ${e.mix.one} one-side, ${e.mix.neither} neither">
+        ${TIERS.map(t => `<span data-tier="${t}" style="width:${(e.mix[t] / SLOTS.length) * 100}%;background:var(--t-bg)"></span>`).join('')}
+      </div>
+      <p class="meta">${TIERS.map(t => `${e.mix[t]} ${TIER[t].label.toLowerCase()}`).join(', ')}.</p>
+    </div>`;
+  }
+  function showSheet(view, push = true) {
+    if (push && $('#sheet').dataset.state === 'open' && sheetHistory.length) sheetHistory.push(view);
+    else if (push) { sheetHistory.length = 0; sheetHistory.push(view); }
+    paintSheet(view);
+    openLayer($('#sheet'), $('#sheet [data-close].btn'));
+  }
+  function paintSheet(view) {
+    $('#sheet-back').hidden = sheetHistory.length < 2;
+    if (view.type === 'entity') {
+      const e = view.e;
+      $('#sheet-title').textContent = displayName(e);
+      $('#sheet-desc').textContent = e.kind === 'buyer' ? `${e.title}. Buyer, full afternoon.` : `Supplier, full afternoon.`;
+      $('#sheet-body').innerHTML = summaryHTML(e) + scheduleHTML(e, view.slot);
+    } else {
+      const a = view.a;
+      const tab = view.tab || (view.row && view.row.kind === 'buyer' ? 'supplier' : 'buyer');
+      $('#sheet-title').textContent = `Slot ${a.slot}, ${slotRange(a.slot)}`;
+      $('#sheet-desc').textContent = `Desk ${a.desk}. ${TIER[a.tier].label}.`;
+      const ent = tab === 'buyer' ? a.buy : a.sup;
+      $('#sheet-body').innerHTML = `
+        <dl class="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-[13px] mb-4">
+          <dt class="text-muted-foreground">Supplier</dt><dd class="flex items-center gap-1.5">${a.sup.type === 'business' ? '<span class="biz"></span>' : ''}<button type="button" class="text-left hover:underline" data-open-entity="${a.sup.id}">${esc(a.sup.name)}</button></dd>
+          <dt class="text-muted-foreground">Type</dt><dd>${typeLabel(a.sup)}</dd>
+          <dt class="text-muted-foreground">Buyer</dt><dd><button type="button" class="text-left hover:underline" data-open-entity="${a.buy.id}">${esc(a.buy.organization)}</button><span class="block text-[12px] text-muted-foreground">${esc(a.buy.title)}</span></dd>
+          <dt class="text-muted-foreground">Time</dt><dd>${esc(slotRange(a.slot))}, desk ${a.desk}</dd>
+          <dt class="text-muted-foreground">Buyer's rank</dt><dd>${rk(a.buyerRank)}<span class="text-muted-foreground"> for this supplier</span></dd>
+          <dt class="text-muted-foreground">Supplier's rank</dt><dd>${rk(a.supplierRank)}<span class="text-muted-foreground"> for this buyer</span></dd>
+          <dt class="text-muted-foreground">Match</dt><dd class="flex items-center gap-1.5"><span class="swatch" data-tier="${a.tier}"></span>${esc(TIER[a.tier].label)}</dd>
+        </dl>
+        <div data-slot="tabs" class="flex flex-col gap-3">
+          <div data-slot="tabs-list" role="tablist" aria-label="Whose afternoon" class="tg self-start">
+            <button type="button" role="tab" data-slot="tabs-trigger" class="tg-item" aria-selected="${tab === 'buyer'}" data-sheet-tab="buyer">Buyer's afternoon</button>
+            <button type="button" role="tab" data-slot="tabs-trigger" class="tg-item" aria-selected="${tab === 'supplier'}" data-sheet-tab="supplier">Supplier's afternoon</button>
+          </div>
+          <div data-slot="tabs-content" role="tabpanel">${summaryHTML(ent)}${scheduleHTML(ent, a.slot)}</div>
+        </div>`;
+    }
+    paintIcons();
+  }
+  function openEntity(e, opts = {}) { if (e) showSheet({ type: 'entity', e, slot: opts.slot }); }
+  function openAppointment(a, row) { showSheet({ type: 'appt', a, row }); }
+  $('#sheet').addEventListener('click', e => {
+    const ent = e.target.closest('[data-open-entity]');
+    if (ent) { const view = { type: 'entity', e: byId.get(ent.dataset.openEntity) }; sheetHistory.push(view); paintSheet(view); $('#sheet-back').focus(); return; }
+    const tab = e.target.closest('[data-sheet-tab]');
+    if (tab) { const cur = sheetHistory[sheetHistory.length - 1]; cur.tab = tab.dataset.sheetTab; paintSheet(cur); $(`[data-sheet-tab="${cur.tab}"]`)?.focus(); }
+  });
+  $('#sheet-back').addEventListener('click', () => { sheetHistory.pop(); paintSheet(sheetHistory[sheetHistory.length - 1]); $('#sheet-back').hidden ? $('#sheet [data-close].btn').focus() : $('#sheet-back').focus(); });
+
+  /* Dialog */
+  let dialogConfirm = null;
+  function openDialog({ title, desc, body, confirm, onConfirm }) {
+    $('#dialog-title').textContent = title;
+    $('#dialog-desc').textContent = desc;
+    $('#dialog-body').innerHTML = body || '';
+    $('#dialog-body').hidden = !body;
+    $('#dialog-confirm').textContent = confirm;
+    dialogConfirm = onConfirm;
+    openLayer($('#dialog'), $('#dialog-confirm'));
+    paintIcons();
+  }
+  $('#dialog-confirm').addEventListener('click', () => { const fn = dialogConfirm; closeLayer($('#dialog')); fn && fn(); });
+
+  /* Toast */
+  function toast(title, desc) {
+    const li = document.createElement('li');
+    li.className = 'toast rounded-lg border border-border bg-popover px-4 py-3 shadow-[0_12px_32px_-12px_oklch(0.235_0.018_257/.3)]';
+    li.setAttribute('data-slot', 'toast');
+    li.innerHTML = `<p class="text-[13px] font-semibold">${esc(title)}</p>${desc ? `<p class="text-[12px] text-muted-foreground mt-0.5">${esc(desc)}</p>` : ''}`;
+    $('#toaster').appendChild(li);
+    setTimeout(() => li.remove(), 4800);
+  }
+
+  /* Command palette */
+  let cmdItems = [], cmdActive = 0;
+  function cmdRender() {
+    const q = $('#command-input').value.trim().toLowerCase();
+    const views = VIEWS.filter(v => !q || v.label.toLowerCase().includes(q)).map(v => ({ group: 'Views', label: `Show ${v.label.toLowerCase()}`, sub: '', run: () => setView(v.key) }));
+    const sup = suppliers.filter(s => !q || searchText(s).includes(q)).slice(0, q ? 8 : 4).map(s => ({ group: 'Suppliers', label: s.name, sub: `Desk ${s.desk}`, run: () => openEntity(s) }));
+    const buy = buyers.filter(b => !q || searchText(b).includes(q)).slice(0, q ? 10 : 4).map(b => ({ group: 'Buyers', label: b.organization, sub: b.title, run: () => openEntity(b) }));
+    cmdItems = [...views, ...sup, ...buy];
+    cmdActive = Math.min(cmdActive, Math.max(0, cmdItems.length - 1));
+    let html = '', g = '';
+    cmdItems.forEach((it, i) => {
+      if (it.group !== g) { if (g) html += '</div>'; g = it.group; html += `<div data-slot="command-group" role="group" aria-label="${g}"><p class="px-2 pt-2 pb-1 text-[11px] text-muted-foreground">${g}</p>`; }
+      html += `<div data-slot="command-item" role="option" id="cmd-${i}" aria-selected="${i === cmdActive}" data-cmd="${i}" class="flex items-baseline gap-2 rounded-sm px-2 py-1.5 text-[13px] cursor-pointer aria-selected:bg-accent"><span class="truncate">${esc(it.label)}</span><span class="truncate text-[11px] text-muted-foreground">${esc(it.sub)}</span></div>`;
+    });
+    if (g) html += '</div>';
+    $('#command-list').innerHTML = html || `<div data-slot="command-empty" class="px-3 py-6 text-center text-[13px] text-muted-foreground">No buyer or supplier matches that.</div>`;
+    $('#command-input').setAttribute('aria-activedescendant', cmdItems.length ? `cmd-${cmdActive}` : '');
+  }
+  function openCommand() { $('#command-input').value = ''; cmdActive = 0; cmdRender(); openLayer($('#command'), $('#command-input')); }
+  function runCmd(i) { const it = cmdItems[i]; if (!it) return; closeLayer($('#command')); it.run(); }
+  $('#command-input').addEventListener('input', () => { cmdActive = 0; cmdRender(); });
+  $('#command-input').addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); cmdActive = Math.min(cmdItems.length - 1, cmdActive + 1); cmdRender(); $(`#cmd-${cmdActive}`)?.scrollIntoView({ block: 'nearest' }); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); cmdActive = Math.max(0, cmdActive - 1); cmdRender(); $(`#cmd-${cmdActive}`)?.scrollIntoView({ block: 'nearest' }); }
+    else if (e.key === 'Enter') { e.preventDefault(); runCmd(cmdActive); }
+  });
+  $('#command-list').addEventListener('click', e => { const it = e.target.closest('[data-cmd]'); if (it) runCmd(+it.dataset.cmd); });
+
+  /* Tooltip */
+  const tip = $('#tip');
+  const showTip = el => {
+    tip.textContent = el.dataset.tip; tip.hidden = false;
+    const r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
+    tip.style.left = Math.max(8, Math.min(window.innerWidth - t.width - 8, r.left)) + 'px';
+    tip.style.top = (r.bottom + 6) + 'px';
+  };
+  document.addEventListener('pointerover', e => { const el = e.target.closest('[data-tip]'); el ? showTip(el) : (tip.hidden = true); });
+  document.addEventListener('focusin', e => { const el = e.target.closest('[data-tip]'); el ? showTip(el) : (tip.hidden = true); });
+
+  /* ---------- Global wiring ---------- */
+  $('#view-switch').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
+  $('#ramp').addEventListener('click', e => {
+    const b = e.target.closest('[data-iso]'); if (!b) return;
+    const t = b.dataset.iso;
+    if (state.view === 'quality') { state.view = 'suppliers'; state.sort = 'default'; state.iso.clear(); }
+    state.iso.has(t) ? state.iso.delete(t) : state.iso.add(t);
+    render();
+    $(`#ramp [data-iso="${t}"]`)?.focus();
+  });
+  let qTimer;
+  $('#search').addEventListener('input', e => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; render(); }, 90); });
+  $('#free').addEventListener('change', e => { state.free = +e.target.value; render(); });
+  $('#sort').addEventListener('change', e => { state.sort = e.target.value; render(); });
+  $('#flagged').addEventListener('click', () => { state.flagged = !state.flagged; render(); });
+
+  $('#view-slot').addEventListener('click', e => {
+    const p = e.target.closest('[data-pick-slot]');
+    if (p) { state.slot = +p.dataset.pickSlot; if (state.free) state.free = state.slot; render(); $(`[data-pick-slot="${state.slot}"]`)?.focus(); return; }
+    const ent = e.target.closest('[data-open-entity]');
+    if (ent) return openEntity(byId.get(ent.dataset.openEntity));
+    const ap = e.target.closest('[data-open-appt]');
+    if (ap) openAppointment(appts[+ap.dataset.openAppt]);
+  });
+  $('#view-quality').addEventListener('click', e => {
+    const ent = e.target.closest('[data-open-entity]');
+    if (ent) return openEntity(byId.get(ent.dataset.openEntity));
+    const t = e.target.closest('[data-goto-tier]');
+    if (t) { state.iso = new Set([t.dataset.gotoTier]); state.view = 'suppliers'; state.sort = 'default'; return render(); }
+    const s = e.target.closest('[data-goto-slot]');
+    if (s) { state.slot = +s.dataset.gotoSlot; state.free = 0; setView('slot'); }
+  });
+
+  $('#act-run').addEventListener('click', () => openDialog({
+    title: 'Run matching again?',
+    desc: `A new run replaces this draft, including the ${plural(E.manualChanges, 'manual change')} made since the last run.`,
+    body: `<dl class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[13px]">
+      <dt class="text-muted-foreground">Meetings per supplier</dt><dd class="text-right">${CFG.supplierTarget}</dd>
+      <dt class="text-muted-foreground">Meetings per buyer</dt><dd class="text-right">${CFG.buyerMin} to ${CFG.buyerMax}, ideal ${CFG.buyerIdeal}</dd>
+      <dt class="text-muted-foreground">Mutual pick threshold</dt><dd class="text-right">Top ${N}</dd>
+      <dt class="text-muted-foreground">Hotel rank cutoff</dt><dd class="text-right">${CFG.hotelRankCutoff}</dd></dl>`,
+    confirm: 'Run matching',
+    onConfirm: () => toast('Matching started', 'This draft stays on screen until the new result is ready to review.')
+  }));
+  $('#act-edit').addEventListener('click', () => toast('Editing schedule', 'Pick a meeting, then an open slot to move it there. Each move is logged as a manual change.'));
+  $('#act-lock').addEventListener('click', () => {
+    if (state.locked) { state.locked = false; renderHeader(); paintIcons(); return toast('Schedule unlocked', 'Edits and new matching runs are allowed again.'); }
+    openDialog({
+      title: 'Lock schedule?',
+      desc: `Locking freezes all ${appts.length} meetings so schedules can be exported and emailed. You can unlock it later.`,
+      confirm: 'Lock schedule',
+      onConfirm: () => { state.locked = true; renderHeader(); paintIcons(); toast('Schedule locked', 'Export is ready when you are.'); }
+    });
+  });
+  $('#act-export').addEventListener('click', () => openDialog({
+    title: 'Export',
+    desc: state.locked ? 'Choose what to download.' : 'The schedule is still a draft. Exports will be marked draft until you lock it.',
+    body: `<fieldset data-slot="radio-group" class="flex flex-col gap-2 text-[13px]"><legend class="sr-only">Export format</legend>
+      ${[['xlsx', 'Excel workbook', 'Every meeting, one sheet per view.'], ['buyers', 'One schedule per buyer', `${buyers.length} PDFs, ready to email.`], ['suppliers', 'One schedule per supplier', `${suppliers.length} PDFs with desk numbers.`]].map(([v, l, d], i) => `
+        <label class="flex items-start gap-2.5 rounded-md border border-border px-3 py-2 cursor-pointer has-[:checked]:border-foreground">
+          <input type="radio" name="export" value="${v}" ${i === 0 ? 'checked' : ''} class="mt-0.5 accent-[var(--primary)]">
+          <span><span class="block font-medium">${l}</span><span class="block text-[12px] text-muted-foreground">${d}</span></span></label>`).join('')}
+      </fieldset>`,
+    confirm: 'Export',
+    onConfirm: () => {
+      const v = document.querySelector('input[name="export"]:checked')?.value || 'xlsx';
+      const label = { xlsx: 'Excel workbook', buyers: 'Buyer schedules', suppliers: 'Supplier schedules' }[v];
+      toast('Exported', `${label} for ${E.name}${state.locked ? '' : ', marked draft'}.`);
+    }
+  }));
+
+  document.addEventListener('keydown', e => {
+    const top = stack[stack.length - 1];
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); return top === $('#command') ? closeLayer(top) : openCommand(); }
+    if (top && e.key === 'Escape') { e.preventDefault(); return closeLayer(top); }
+    if (top && e.key === 'Tab') {
+      const f = $$(FOCUSABLE, top).filter(x => x.offsetParent !== null);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      return;
+    }
+    if (!top && e.key === '/' && !/input|select|textarea/i.test(document.activeElement.tagName)) { e.preventDefault(); $('#search').focus(); }
+  });
+  if (!/Mac|iPhone|iPad/.test(navigator.platform)) $('#cmdk-hint').textContent = 'Ctrl K';
+  $('#cmdk-hint').addEventListener('click', openCommand);
+
+  wireMatrix();
+  renderHeader();
+  render();
+})();
+</script>
+</body>
+</html>

@@ -162,7 +162,7 @@ An ESLint `no-restricted-imports` rule keeps `src/engine` free of Next.js and da
 
 ## 4. Design direction
 
-Ten design directions were built on the real 2025 data. D&A's favourites are Floor plan, Resource timeline, and Command workspace. The mockups are in `designs/`, numbers 01, 03, and 04.
+Ten design directions were built on the real 2025 data. D&A's favourites are Floor plan, Resource timeline, and Command workspace. The mockups are in `docs/designs/`, numbers 01, 03, and 04.
 
 Recommendation: combine them into one workspace rather than pick one.
 

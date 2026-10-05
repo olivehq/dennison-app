@@ -1,0 +1,1146 @@
+<!--
+Design: 09 Dance cards
+Concept: Every buyer and every supplier gets a dance card, the nine-line program card used at appointment shows, and staff review the schedule by scanning a wall of these cards instead of a grid of slots. The card a staff member reviews is the same card the participant sees on their phone, so the admin view doubles as a preview of what goes out.
+Palette: blush board oklch(0.935 0.018 12) ~#F1E3E3, card stock oklch(0.992 0.004 40) ~#FFFCFA, teal ink oklch(0.27 0.04 220) ~#1C3540, deep teal oklch(0.43 0.075 200) ~#1F5E66 (primary, healthy, mutual top-10), oxblood oklch(0.40 0.13 18) ~#7E2133 (attention, destructive), rose cord oklch(0.64 0.13 8) ~#CF6577 (open slots), copper oklch(0.55 0.12 50) ~#A85F2E (business), slate oklch(0.48 0.035 250) ~#5A6577 (hotel).
+Type: Bodoni Moda italic (optical sizes) for people and event names and card numerals; Schibsted Grotesk with tabular figures for all data.
+Layout: event header with admin actions, divider-style index tabs (Buyers, Suppliers, By time slot, Quality), one toolbar (search, sort, show, free-in-slot, participant preview), then a responsive wall of dance cards; preview docks a 390px phone beside the wall (dialog on small screens); detail opens in a right sheet.
+shadcn components: Button, Badge, Tabs, Card, Table, Input, InputGroup, ToggleGroup, Toggle, Select, Command (cmd-K), Sheet, Dialog, Tooltip, Popover, Separator, ScrollArea, Progress, Chart, Alert, Empty, sonner toast, Kbd.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dance cards, AW appointment matching</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..800;1,6..96,400..800&family=Schibsted+Grotesk:wght@400..800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+:root {
+  --radius: 0.375rem;
+  --background: oklch(0.935 0.018 12);
+  --foreground: oklch(0.27 0.04 220);
+  --card: oklch(0.992 0.004 40);
+  --card-foreground: oklch(0.27 0.04 220);
+  --popover: oklch(0.992 0.004 40);
+  --popover-foreground: oklch(0.27 0.04 220);
+  --primary: oklch(0.43 0.075 200);
+  --primary-foreground: oklch(0.985 0.01 200);
+  --secondary: oklch(0.905 0.028 12);
+  --secondary-foreground: oklch(0.34 0.09 16);
+  --muted: oklch(0.955 0.012 15);
+  --muted-foreground: oklch(0.49 0.03 220);
+  --accent: oklch(0.93 0.03 195);
+  --accent-foreground: oklch(0.3 0.06 200);
+  --destructive: oklch(0.4 0.13 18);
+  --destructive-foreground: oklch(0.985 0.01 20);
+  --border: oklch(0.86 0.022 12);
+  --input: oklch(0.8 0.03 12);
+  --ring: oklch(0.52 0.1 200);
+  --chart-1: oklch(0.43 0.075 200);
+  --chart-2: oklch(0.64 0.13 8);
+  --chart-3: oklch(0.4 0.13 18);
+  --chart-4: oklch(0.72 0.11 75);
+  --chart-5: oklch(0.62 0.03 230);
+  /* custom semantic tokens */
+  --mutual: oklch(0.45 0.08 195);
+  --mutual-soft: oklch(0.94 0.032 195);
+  --attention: oklch(0.4 0.13 18);
+  --attention-soft: oklch(0.94 0.03 15);
+  --attention-foreground: oklch(0.98 0.012 25);
+  --open: oklch(0.6 0.14 8);
+  --open-soft: oklch(0.95 0.03 8);
+  --business: oklch(0.55 0.12 50);
+  --hotel: oklch(0.48 0.035 250);
+  --warning: oklch(0.78 0.12 75);
+  --warning-foreground: oklch(0.32 0.07 50);
+  --band: oklch(0.955 0.018 195);
+  --band-foreground: oklch(0.32 0.06 205);
+  --card-edge: oklch(0.83 0.025 14);
+  --rule: oklch(0.91 0.014 20);
+  --cord: oklch(0.64 0.13 8);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-mutual: var(--mutual);
+  --color-mutual-soft: var(--mutual-soft);
+  --color-attention: var(--attention);
+  --color-attention-soft: var(--attention-soft);
+  --color-attention-foreground: var(--attention-foreground);
+  --color-open: var(--open);
+  --color-open-soft: var(--open-soft);
+  --color-business: var(--business);
+  --color-hotel: var(--hotel);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-band: var(--band);
+  --color-band-foreground: var(--band-foreground);
+  --color-rule: var(--rule);
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bodoni Moda", "Didot", Georgia, serif;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background-color: var(--background);
+    background-image: radial-gradient(oklch(0.895 0.024 12 / .7) 0.7px, transparent 0.9px);
+    background-size: 5px 5px;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  [hidden] { display: none !important; }
+}
+
+@layer components {
+  /* Button (shadcn cva mimic) */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:.45rem; white-space:nowrap; border-radius:var(--radius-md); font-size:.875rem; font-weight:560; height:2.25rem; padding:0 .9rem; border:1px solid transparent; transition: background-color .15s, color .15s, border-color .15s; }
+  .btn svg { width:1rem; height:1rem; flex:none; }
+  .btn:disabled { opacity:.5; }
+  .btn-default { background:var(--primary); color:var(--primary-foreground); }
+  .btn-default:hover:not(:disabled) { background:oklch(0.38 0.075 200); }
+  .btn-outline { background:var(--card); border-color:var(--input); color:var(--foreground); }
+  .btn-outline:hover:not(:disabled) { background:var(--accent); color:var(--accent-foreground); }
+  .btn-ghost { background:transparent; color:var(--foreground); }
+  .btn-ghost:hover:not(:disabled) { background:var(--secondary); }
+  .btn-destructive { background:var(--destructive); color:var(--destructive-foreground); }
+  .btn-sm { height:2rem; padding:0 .7rem; font-size:.8125rem; }
+  .btn-icon { width:2.25rem; padding:0; }
+  .btn[aria-pressed="true"] { background:var(--foreground); color:var(--card); border-color:var(--foreground); }
+
+  /* Badge */
+  .badge { display:inline-flex; align-items:center; gap:.3rem; border-radius:999px; border:1px solid transparent; padding:.1rem .5rem; font-size:.72rem; font-weight:600; line-height:1.3; white-space:nowrap; }
+  .badge svg { width:.75rem; height:.75rem; }
+  .badge-secondary { background:var(--secondary); color:var(--secondary-foreground); }
+  .badge-outline { border-color:var(--input); color:var(--foreground); }
+  .badge-destructive { background:var(--attention); color:var(--attention-foreground); }
+  .badge-mutual { background:var(--mutual-soft); color:var(--mutual); }
+  .badge-hotel { border-color:color-mix(in oklch, var(--hotel) 40%, transparent); color:var(--hotel); }
+  .badge-business { border-color:color-mix(in oklch, var(--business) 45%, transparent); color:var(--business); }
+  .badge-open { background:var(--open-soft); color:var(--open); }
+
+  /* Input / select */
+  .field { height:2.25rem; border:1px solid var(--input); background:var(--card); border-radius:var(--radius-md); font-size:.875rem; color:var(--foreground); }
+  .input-group { display:flex; align-items:center; gap:.4rem; padding:0 .6rem; }
+  .input-group:focus-within { outline:2px solid var(--ring); outline-offset:1px; }
+  .input-group input { flex:1; min-width:0; background:transparent; border:0; outline:none; height:100%; }
+  .input-group svg { width:1rem; height:1rem; color:var(--muted-foreground); flex:none; }
+  select.field { padding:0 2rem 0 .65rem; appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%235d6b75' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right .55rem center; }
+  .kbd { display:inline-flex; align-items:center; height:1.25rem; min-width:1.25rem; padding:0 .3rem; border-radius:4px; border:1px solid var(--border); background:var(--muted); font-size:.7rem; color:var(--muted-foreground); font-weight:600; }
+
+  /* Index tabs, cut like card-file dividers */
+  .tabs-list { display:flex; gap:.25rem; overflow-x:auto; scrollbar-width:none; border-bottom:1px solid var(--card-edge); padding:0 .25rem; }
+  .tab { position:relative; display:inline-flex; align-items:center; gap:.5rem; padding:.55rem 1rem .5rem; border:1px solid transparent; border-bottom:0; border-radius:10px 10px 0 0; font-weight:600; font-size:.9rem; color:var(--muted-foreground); white-space:nowrap; margin-bottom:-1px; }
+  .tab:hover { color:var(--foreground); }
+  .tab[aria-selected="true"] { background:var(--card); color:var(--foreground); border-color:var(--card-edge); }
+  .tab[aria-selected="true"]::before { content:""; position:absolute; left:12px; right:12px; top:-1px; height:3px; border-radius:0 0 3px 3px; background:var(--primary); }
+  .tab .tab-n { font-family:var(--font-display); font-style:italic; font-weight:600; font-size:1rem; color:var(--foreground); }
+
+  /* ToggleGroup */
+  .toggle-group { display:inline-flex; flex-wrap:wrap; border:1px solid var(--input); border-radius:var(--radius-md); background:var(--card); padding:2px; gap:2px; }
+  .toggle-item { display:flex; flex-direction:column; align-items:center; padding:.3rem .65rem; border-radius:calc(var(--radius) - 1px); font-size:.8rem; color:var(--muted-foreground); line-height:1.15; }
+  .toggle-item b { font-family:var(--font-display); font-style:italic; font-size:1.05rem; color:var(--foreground); font-weight:600; }
+  .toggle-item:hover { background:var(--muted); }
+  .toggle-item[aria-pressed="true"] { background:var(--foreground); color:var(--card); }
+  .toggle-item[aria-pressed="true"] b { color:var(--card); }
+
+  /* ---------- The dance card ---------- */
+  .wall { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 19.5rem), 1fr)); gap:2rem 1.5rem; align-items:start; }
+  .dcard { position:relative; margin-top:12px; background:var(--card); color:var(--card-foreground); border-radius:4px;
+    box-shadow: 0 0 0 1px var(--card-edge), 3px 4px 0 -1px var(--card), 3px 4px 0 0 var(--card-edge), 0 18px 26px -22px oklch(0.3 0.09 15 / .55); }
+  .dcard.is-selected { box-shadow: 0 0 0 2px var(--foreground), 3px 4px 0 -1px var(--card), 3px 4px 0 1px var(--foreground), 0 18px 26px -22px oklch(0.3 0.09 15 / .55); }
+  .dcard-cord { position:absolute; left:0; top:-17px; width:44px; height:44px; overflow:visible; pointer-events:none; z-index:2; color:var(--cord); }
+  .dcard-head { position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:.15rem .75rem; padding:.85rem .9rem .7rem 2.55rem; background:var(--band); color:var(--band-foreground); border-radius:4px 4px 0 0; }
+  .dcard-head::before { content:""; position:absolute; left:14px; top:16px; width:12px; height:12px; border-radius:50%; background:var(--background); box-shadow: inset 0 1.5px 2px oklch(0.3 0.06 15 / .5), 0 0 0 1px oklch(0.8 0.03 15 / .5); }
+  .dcard[data-health="attention"] .dcard-head { background:var(--attention); color:var(--attention-foreground); }
+  .dcard-name { text-align:left; min-width:0; border-radius:2px; color:inherit; }
+  .dcard-name h3 { font-family:var(--font-display); font-style:italic; font-weight:600; font-size:1.18rem; line-height:1.15; letter-spacing:-.005em; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; color:var(--foreground); }
+  .dcard[data-health="attention"] .dcard-name h3 { color:var(--attention-foreground); }
+  .dcard-name:hover h3 { text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; }
+  .dcard-sub { grid-column:1 / 2; font-size:.76rem; line-height:1.3; opacity:.85; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .dcard-count { grid-row:1 / 3; grid-column:2; text-align:right; line-height:1; }
+  .dcard-count b { display:block; font-family:var(--font-display); font-weight:700; font-size:2.35rem; letter-spacing:-.02em; }
+  .dcard-count span { font-size:.7rem; font-weight:600; opacity:.85; }
+  .dcard-status { grid-column:1 / -1; margin-top:.35rem; display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; font-size:.74rem; font-weight:600; }
+  .dcard-perf { height:9px; background: radial-gradient(circle at 5px 4.5px, var(--background) 2.1px, transparent 2.7px) 0 0 / 10px 9px repeat-x, var(--card); }
+  .dcard-perf + .dl-list { border-top:0; }
+  .dl-list, .desk-meta, table, .leader dd, .toggle-item, .progress { font-variant-numeric: tabular-nums; }
+  .dl-list { list-style:none; margin:0; padding:.1rem .7rem .35rem; }
+  .dl, .dl-headrow { display:grid; grid-template-columns: 2.15rem .7rem minmax(0,1fr) .95rem 1.45rem 1.35rem 1.35rem; align-items:center; column-gap:.4rem; width:100%; min-height:1.8rem; padding:0 .25rem; font-size:.79rem; text-align:left; border-bottom:1px solid var(--rule); color:var(--card-foreground); }
+  .dl-headrow { min-height:1.45rem; font-size:.66rem; color:var(--muted-foreground); font-weight:600; border-bottom-color:var(--card-edge); }
+  .dl-headrow span:nth-child(n+5), .dl > .dl-desk, .dl > .dl-rk { text-align:right; }
+  button.dl:hover { background:var(--muted); }
+  .dl-t { font-variant-numeric:normal; font-weight:600; color:var(--muted-foreground); font-size:.74rem; }
+  .dl-mark { display:flex; color:var(--muted-foreground); }
+  .dl-mark svg { width:.7rem; height:.7rem; }
+  .dl-who { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dl-desk { font-weight:600; }
+  .dl-rk { color:var(--muted-foreground); font-size:.74rem; }
+  .dl-rk.top { color:var(--mutual); font-weight:700; }
+  .dl.q-mutual { background:linear-gradient(90deg, var(--mutual-soft), transparent 85%); }
+  .dl.q-mutual .dl-who { font-weight:650; }
+  .dl.q-mutual .dl-mark, .dl.q-one .dl-mark { color:var(--mutual); }
+  .dl.is-q { box-shadow: inset 3px 0 0 var(--warning); }
+  .dl.is-q .dl-who { background:color-mix(in oklch, var(--warning) 35%, transparent); }
+  .dl-open .dl-who { font-family:var(--font-display); font-style:italic; color:var(--open); font-weight:600; display:flex; align-items:baseline; gap:.4rem; }
+  .dl-open .dl-who::after { content:""; flex:1; border-bottom:1px dashed color-mix(in oklch, var(--open) 55%, transparent); transform:translateY(-3px); }
+  .dl-open.is-free { background:var(--open-soft); box-shadow: inset 3px 0 0 var(--open); }
+  .ty { display:flex; }
+  .ty svg { width:.8rem; height:.8rem; }
+  .ty-hotel { color:var(--hotel); }
+  .ty-business { color:var(--business); }
+  .dcard-foot { display:flex; flex-wrap:wrap; gap:.2rem .75rem; padding:.45rem .95rem .7rem; font-size:.72rem; color:var(--muted-foreground); }
+  .dcard-foot span { display:inline-flex; align-items:center; gap:.25rem; }
+  .dcard-foot svg { width:.65rem; height:.65rem; }
+  .dcard-foot .m { color:var(--mutual); font-weight:600; }
+
+  /* participant variant: same card, staff-only data removed */
+  .dcard[data-variant="participant"] { margin-top:14px; }
+  .dcard[data-variant="participant"] .dl { grid-template-columns: 2.6rem .7rem minmax(0,1fr) .95rem 2.6rem; font-size:.86rem; min-height:2.35rem; }
+  .dcard[data-variant="participant"] .dl-headrow { grid-template-columns: 2.6rem .7rem minmax(0,1fr) .95rem 2.6rem; }
+  .dcard[data-variant="participant"] .dl-who { white-space:normal; line-height:1.2; padding:.3rem 0; }
+  .dcard[data-variant="participant"] .dl-desk { font-family:var(--font-display); font-style:italic; font-size:1.05rem; }
+
+  /* deal-in, the single orchestrated moment */
+  .wall.is-dealing .dcard { animation: deal .55s cubic-bezier(.2,.8,.25,1) both; animation-delay: calc(var(--i) * 22ms); }
+  @keyframes deal { from { opacity:0; transform: translateY(14px) rotate(-1.2deg); } to { opacity:1; transform:none; } }
+
+  /* Desk tiles (time slot view): table tents on the floor */
+  .floor { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 16.5rem), 1fr)); gap:.9rem; }
+  .desk { position:relative; display:grid; grid-template-columns:2.6rem minmax(0,1fr); gap:.1rem .7rem; padding:.7rem .8rem .65rem; background:var(--card); border-radius:3px; box-shadow:0 0 0 1px var(--card-edge), 0 3px 0 -1px var(--card-edge); border-top:3px solid var(--hotel); }
+  .desk[data-type="business"] { border-top-color:var(--business); }
+  .desk.q-mutual { background:linear-gradient(180deg, var(--mutual-soft), var(--card) 70%); }
+  .desk-n { grid-row:1 / 4; font-family:var(--font-display); font-style:italic; font-weight:700; font-size:1.9rem; line-height:1; color:var(--foreground); }
+  .desk-sup { font-size:.78rem; color:var(--muted-foreground); font-weight:600; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .desk-buy { font-family:var(--font-display); font-style:italic; font-weight:600; font-size:1rem; line-height:1.15; text-align:left; }
+  .desk-meta { display:flex; align-items:center; gap:.5rem; font-size:.72rem; color:var(--muted-foreground); }
+  .desk-meta svg { width:.7rem; height:.7rem; }
+  .desk.is-empty { background:var(--open-soft); box-shadow:0 0 0 1px color-mix(in oklch, var(--open) 40%, transparent); }
+
+  /* Programme (quality) */
+  .programme { background:var(--card); border-radius:4px; box-shadow: 0 0 0 1px var(--card-edge), 4px 5px 0 -1px var(--card), 4px 5px 0 0 var(--card-edge); }
+  .leaders { display:flex; flex-direction:column; }
+  .leader { display:flex; align-items:baseline; gap:.5rem; padding:.55rem 0; border-bottom:1px solid var(--rule); font-size:.9rem; }
+  .leader dt { display:flex; align-items:baseline; gap:.5rem; flex:1; min-width:0; }
+  .leader dt::after { content:""; flex:1; min-width:1rem; border-bottom:1.5px dotted var(--card-edge); transform:translateY(-4px); }
+  .leader dd { font-family:var(--font-display); font-weight:700; font-size:1.25rem; white-space:nowrap; }
+  .leader dd small { font-family:var(--font-sans); font-size:.75rem; font-weight:600; color:var(--muted-foreground); margin-left:.3rem; }
+  .progress { height:.35rem; background:var(--muted); border-radius:99px; overflow:hidden; }
+  .progress > div { height:100%; background:var(--primary); border-radius:99px; }
+
+  /* Phone */
+  .phone { width:390px; max-width:100%; border-radius:46px; padding:11px; background:var(--foreground); box-shadow: 0 30px 50px -30px oklch(0.25 0.06 220 / .7), inset 0 0 0 2px oklch(0.4 0.04 220); }
+  .phone-screen { position:relative; height:min(760px, calc(100dvh - 11rem)); overflow-y:auto; border-radius:36px; background:var(--background); padding:0 14px 24px; scrollbar-width:thin; }
+  .phone-bar { position:sticky; top:0; z-index:3; display:flex; justify-content:space-between; align-items:center; padding:14px 14px 8px; margin:0 -14px; background:var(--background); font-size:.78rem; font-weight:700; }
+  .dialog .phone-screen { height:calc(100dvh - 13rem); }
+  .phone-island { width:96px; height:26px; border-radius:20px; background:var(--foreground); }
+
+  /* Sheet, dialog, popover, command, toast, tooltip */
+  .overlay { position:fixed; inset:0; z-index:40; background:oklch(0.25 0.04 220 / .35); opacity:0; transition:opacity .2s; }
+  [data-state="open"] > .overlay { opacity:1; }
+  .sheet { position:fixed; z-index:41; top:0; right:0; bottom:0; width:min(100%, 34rem); background:var(--card); box-shadow:-1px 0 0 var(--card-edge), -20px 0 40px -30px oklch(0.25 0.06 15 / .6); display:flex; flex-direction:column; transform:translateX(100%); transition:transform .25s cubic-bezier(.2,.8,.25,1); }
+  [data-state="open"] > .sheet { transform:none; }
+  .dialog { position:fixed; z-index:41; left:50%; top:50%; width:min(calc(100% - 2rem), 30rem); max-height:calc(100dvh - 2rem); overflow:auto; transform:translate(-50%, -48%) scale(.98); opacity:0; transition:transform .2s, opacity .2s; background:var(--card); border-radius:var(--radius-xl); box-shadow:0 0 0 1px var(--card-edge), 0 30px 60px -30px oklch(0.25 0.06 15 / .6); }
+  [data-state="open"] > .dialog { transform:translate(-50%, -50%); opacity:1; }
+  .dialog.dialog-top { top:12vh; transform:translate(-50%, 0) scale(.98); }
+  [data-state="open"] > .dialog.dialog-top { transform:translate(-50%, 0); }
+  .popover { position:absolute; z-index:45; min-width:17rem; background:var(--popover); border-radius:var(--radius-lg); box-shadow:0 0 0 1px var(--card-edge), 0 16px 30px -18px oklch(0.25 0.06 15 / .55); padding:.35rem; }
+  .menu-item { display:flex; width:100%; gap:.6rem; align-items:flex-start; text-align:left; padding:.55rem .6rem; border-radius:var(--radius-sm); font-size:.85rem; }
+  .menu-item:hover:not(:disabled), .menu-item[aria-selected="true"] { background:var(--accent); }
+  .menu-item:disabled { opacity:.55; }
+  .menu-item svg { width:1rem; height:1rem; margin-top:.1rem; flex:none; color:var(--muted-foreground); }
+  .toaster { position:fixed; z-index:60; right:1rem; bottom:1rem; display:flex; flex-direction:column; gap:.5rem; width:min(calc(100% - 2rem), 22rem); pointer-events:none; }
+  .toast { pointer-events:auto; display:flex; gap:.6rem; align-items:flex-start; background:var(--foreground); color:var(--card); padding:.75rem .9rem; border-radius:var(--radius-lg); font-size:.85rem; box-shadow:0 16px 30px -16px oklch(0.2 0.05 220 / .7); animation:toast-in .25s ease-out both; }
+  .toast svg { width:1rem; height:1rem; flex:none; margin-top:.1rem; color:var(--warning); }
+  .toast p + p { opacity:.75; font-size:.78rem; margin-top:.1rem; }
+  @keyframes toast-in { from { opacity:0; transform:translateY(8px); } }
+  .tooltip { position:fixed; z-index:70; max-width:18rem; pointer-events:none; background:var(--foreground); color:var(--card); font-size:.75rem; line-height:1.35; padding:.4rem .55rem; border-radius:var(--radius-sm); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:0s !important; animation-delay:0s !important; transition-duration:0s !important; scroll-behavior:auto !important; }
+}
+</style>
+</head>
+<body class="min-h-dvh">
+<a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 btn btn-outline">Skip to cards</a>
+
+<div class="mx-auto max-w-[1680px] px-4 sm:px-6 lg:px-8">
+  <!-- Event header -->
+  <header class="flex flex-col gap-4 pt-6 pb-5 lg:flex-row lg:items-end lg:justify-between" data-slot="card">
+    <div class="flex min-w-0 flex-col gap-1.5">
+      <p class="text-sm text-muted-foreground" id="ev-client"></p>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h1 id="ev-name" class="font-display text-[2rem] leading-none font-semibold italic tracking-[-0.01em] sm:text-[2.6rem]"></h1>
+        <span id="ev-status" data-slot="badge"></span>
+      </div>
+      <p class="text-sm text-muted-foreground" id="ev-when"></p>
+    </div>
+    <div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center" role="group" aria-label="Schedule actions">
+      <button class="btn btn-outline" data-slot="button" id="act-run"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Run matching</button>
+      <button class="btn btn-outline" data-slot="button" id="act-edit" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/></svg>Edit schedule</button>
+      <button class="btn btn-outline" data-slot="button" id="act-lock"></button>
+      <div class="relative">
+        <button class="btn btn-default w-full" data-slot="popover-trigger" id="act-export" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>Export</button>
+        <div class="popover right-0 top-[calc(100%+6px)]" id="export-menu" role="menu" data-slot="popover-content" hidden></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Views -->
+  <nav data-slot="tabs" aria-label="Views">
+    <div class="tabs-list" role="tablist" data-slot="tabs-list" id="tabs"></div>
+  </nav>
+
+  <!-- Toolbar -->
+  <div class="flex flex-col gap-3 border-b border-border py-4" id="toolbar">
+    <div class="flex flex-wrap items-center gap-2">
+      <label class="field input-group w-full sm:w-80" data-slot="input-group">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <span class="sr-only">Search buyers, organizations and suppliers</span>
+        <input id="q" type="search" autocomplete="off" placeholder="Search buyer, organization or supplier" data-slot="input-group-control">
+        <button type="button" class="kbd" id="open-cmd" data-slot="kbd" data-tip="Jump to anyone (Ctrl or Cmd + K)" aria-label="Open jump to person">⌘K</button>
+      </label>
+      <label class="flex items-center gap-2 text-sm" data-ctl="sort">
+        <span class="text-muted-foreground">Sort</span>
+        <select id="sort" class="field" data-slot="select">
+          <option value="count">Count, problems first</option>
+          <option value="name">Name, A to Z</option>
+          <option value="best">Match quality, strongest first</option>
+          <option value="weak">Match quality, weakest first</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2 text-sm" data-ctl="show">
+        <span class="text-muted-foreground">Show</span>
+        <select id="show" class="field" data-slot="select"></select>
+      </label>
+      <label class="flex items-center gap-2 text-sm">
+        <span class="text-muted-foreground">Free in</span>
+        <select id="free" class="field" data-slot="select"></select>
+      </label>
+      <button type="button" class="btn btn-outline w-full sm:ml-auto sm:w-auto" id="preview-toggle" data-slot="toggle" aria-pressed="false" data-ctl="preview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></svg>Preview participant view
+      </button>
+    </div>
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-muted-foreground" id="legend" aria-label="Key"></div>
+  </div>
+
+  <main id="main" class="grid gap-8 py-6 pb-24" tabindex="-1">
+    <div id="view" class="min-w-0"></div>
+  </main>
+</div>
+
+<!-- Sheet -->
+<div id="sheet-root" hidden data-slot="sheet">
+  <div class="overlay" data-close></div>
+  <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" data-slot="sheet-content" id="sheet"></section>
+</div>
+<!-- Dialog -->
+<div id="dialog-root" hidden data-slot="dialog">
+  <div class="overlay" data-close></div>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" data-slot="dialog-content" id="dialog"></section>
+</div>
+<!-- Command -->
+<div id="cmd-root" hidden data-slot="dialog">
+  <div class="overlay" data-close></div>
+  <section class="dialog dialog-top" role="dialog" aria-modal="true" aria-label="Jump to a buyer or supplier" data-slot="command">
+    <label class="flex items-center gap-2 border-b border-border px-4" data-slot="command-input">
+      <svg class="size-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <span class="sr-only">Find a person</span>
+      <input id="cmd-q" class="h-12 flex-1 bg-transparent text-sm outline-none" placeholder="Type a buyer, organization or supplier" autocomplete="off" role="combobox" aria-controls="cmd-list" aria-expanded="true">
+    </label>
+    <div id="cmd-list" role="listbox" class="max-h-[60vh] overflow-y-auto p-2" data-slot="command-list"></div>
+  </section>
+</div>
+<!-- Phone dialog for small screens -->
+<div id="phone-root" hidden data-slot="dialog">
+  <div class="overlay" data-close></div>
+  <section class="dialog !w-auto !bg-transparent !shadow-none" role="dialog" aria-modal="true" aria-label="Participant view" data-slot="dialog-content" id="phone-dialog"></section>
+</div>
+
+<div class="toaster" id="toaster" data-slot="sonner" aria-live="polite"></div>
+<div class="tooltip" id="tooltip" role="tooltip" data-slot="tooltip" hidden></div>
+
+<script src="../shared/aw-data.js"></script>
+<script>
+(() => {
+  "use strict";
+  const D = window.AW_DATA;
+  const SET = D.event.settings;
+  const TOPN = SET.mutualTopN;
+  const SLOTS = [...D.slots].sort((a, b) => a.n - b.n);
+  const NS = SLOTS.length;
+  const slotIdx = new Map(SLOTS.map((s, i) => [s.n, i]));
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const cn = (...xs) => xs.filter(Boolean).join(" ");
+  const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + "s")}`;
+  const shortTime = (t) => t.replace(/\s?[AP]M$/i, "");
+  const inTop = (r) => r != null && r <= TOPN;
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const wide = matchMedia("(min-width: 1100px)");
+
+  // ---------- icons ----------
+  const svg = (p, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${p}</svg>`;
+  const ICON = {
+    hotel: svg('<path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/>'),
+    business: svg('<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>'),
+    x: svg('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+    lock: svg('<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+    unlock: svg('<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>'),
+    alert: svg('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+    check: svg('<path d="M20 6 9 17l-5-5"/>'),
+    sheet: svg('<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/>'),
+    file: svg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
+    mail: svg('<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>'),
+    phone: svg('<rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/>'),
+    info: svg('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
+  };
+  const MARK = {
+    mutual: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="currentColor"/></svg>',
+    one: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 1.8a4.2 4.2 0 0 1 0 8.4z" fill="currentColor"/></svg>',
+    neither: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+  };
+  const Q_TEXT = { mutual: `Mutual top-${TOPN}`, one: `Top-${TOPN} on one side`, neither: `Top-${TOPN} on neither side` };
+  const TYPE_TEXT = { hotel: "Hotel or destination", business: "Business vendor" };
+  const CORD = '<svg class="dcard-cord" viewBox="0 0 44 44" aria-hidden="true"><path d="M20 39 C19 25 13 7 22 4.5 C31 2 31.5 11 30.5 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+
+  // ---------- model ----------
+  const quality = (a) => (inTop(a.buyerRank) && inTop(a.supplierRank) ? "mutual" : inTop(a.buyerRank) || inTop(a.supplierRank) ? "one" : "neither");
+  D.appointments.forEach((a) => { a.q = quality(a); });
+
+  const buyers = D.buyers.map((b) => ({ kind: "buyer", id: b.name, title: b.organization || b.name, sub: b.title || "", rec: b, slots: Array(NS).fill(null), appts: [] }));
+  const suppliers = D.suppliers.map((s) => ({ kind: "supplier", id: s.name, title: s.name, sub: "", type: s.type, desk: s.desk, rec: s, slots: Array(NS).fill(null), appts: [] }));
+  const BUY = new Map(buyers.map((p) => [p.id, p]));
+  const SUP = new Map(suppliers.map((p) => [p.id, p]));
+  D.appointments.forEach((a) => {
+    const i = slotIdx.get(a.slot);
+    const b = BUY.get(a.buyer), s = SUP.get(a.supplier);
+    if (b) { b.appts.push(a); if (i != null) b.slots[i] = a; }
+    if (s) { s.appts.push(a); if (i != null) s.slots[i] = a; }
+  });
+  [...buyers, ...suppliers].forEach((p) => {
+    p.count = p.appts.length;
+    p.mutual = p.appts.filter((a) => a.q === "mutual").length;
+    p.one = p.appts.filter((a) => a.q === "one").length;
+    p.neither = p.appts.filter((a) => a.q === "neither").length;
+    p.score = p.count ? (2 * p.mutual + p.one) / (2 * p.count) : 0;
+    if (p.kind === "buyer") p.health = p.count < SET.buyerMin ? "under" : p.count > SET.buyerMax ? "over" : "ok";
+    else p.health = p.count === SET.supplierTarget ? "ok" : p.count < SET.supplierTarget ? "under" : "over";
+  });
+  const getP = (kind, id) => (kind === "buyer" ? BUY : SUP).get(id);
+  const people = (kind) => (kind === "buyer" ? buyers : suppliers);
+  const partnerOf = (p, a) => (p.kind === "buyer" ? SUP.get(a.supplier) : BUY.get(a.buyer));
+  const partnerKind = (p) => (p.kind === "buyer" ? "supplier" : "buyer");
+  const partnerLabel = (p, a) => (p.kind === "buyer" ? a.supplier : (BUY.get(a.buyer)?.title || a.buyer));
+  const flagged = (list) => list.filter((p) => p.health !== "ok");
+  const rk = (r) => (r == null ? "–" : r);
+
+  function healthText(p) {
+    if (p.kind === "buyer") {
+      if (p.health === "under") return `${SET.buyerMin - p.count} below the minimum of ${SET.buyerMin}`;
+      if (p.health === "over") return `${p.count - SET.buyerMax} over the maximum of ${SET.buyerMax}`;
+      return p.count === NS ? "Full card" : `${plural(NS - p.count, "open slot")}`;
+    }
+    if (p.health === "ok") return "Full card";
+    return p.health === "under" ? `${SET.supplierTarget - p.count} short of ${SET.supplierTarget}` : `${p.count - SET.supplierTarget} over ${SET.supplierTarget}`;
+  }
+
+  // ---------- state ----------
+  const state = { view: "buyer", q: "", sort: "count", show: "all", free: 0, slot: SLOTS[0].n, preview: false, locked: false, editing: false, sel: { buyer: null, supplier: null }, dealt: false };
+
+  // ---------- search ----------
+  function matchSelf(p, q) {
+    return [p.id, p.title, p.sub].some((s) => s.toLowerCase().includes(q));
+  }
+  function partnerHit(p, a, q) {
+    if (!q) return false;
+    if (p.kind === "buyer") return a.supplier.toLowerCase().includes(q);
+    const b = BUY.get(a.buyer);
+    return [a.buyer, b?.title || ""].some((s) => s.toLowerCase().includes(q));
+  }
+  function matches(p, q) {
+    if (!q) return true;
+    return matchSelf(p, q) || p.appts.some((a) => partnerHit(p, a, q));
+  }
+
+  // ---------- dance card ----------
+  function lineHTML(p, a, i, o) {
+    const s = SLOTS[i];
+    const t = shortTime(s.start);
+    if (!a) {
+      const isFree = o.free === s.n;
+      return `<li class="${cn("dl dl-open", isFree && !o.participant && "is-free")}" aria-label="Slot ${s.n}, ${s.start}: open"><span class="dl-t">${t}</span><span></span><span class="dl-who">Open</span></li>`;
+    }
+    const partner = partnerOf(p, a);
+    const label = partnerLabel(p, a);
+    const full = p.kind === "buyer" ? a.supplier : a.buyer;
+    const typeCell = p.kind === "buyer" ? `<span class="ty ty-${a.type}" title="${TYPE_TEXT[a.type]}"><span class="sr-only">${a.type}</span>${ICON[a.type]}</span>` : "<span></span>";
+    if (o.participant) {
+      return `<li class="dl q-${a.q}"><span class="dl-t">${t}</span><span class="dl-mark">${MARK[a.q]}</span><span class="dl-who">${esc(label)}</span>${typeCell}<span class="dl-desk">${a.desk}</span></li>`;
+    }
+    const tip = `${full}. ${s.start} to ${s.end}, desk ${a.desk}. Buyer rank ${rk(a.buyerRank)}, supplier rank ${rk(a.supplierRank)}. ${Q_TEXT[a.q]}. ${a.type === "hotel" ? "Hotel" : "Business"}.`;
+    return `<li><button type="button" class="${cn("dl", "q-" + a.q, partnerHit(p, a, o.q) && "is-q")}" data-act="open" data-kind="${partnerKind(p)}" data-id="${esc(partner ? partner.id : full)}" data-n="${s.n}" data-tip="${esc(tip)}" aria-label="${esc(tip)}">
+      <span class="dl-t">${t}</span><span class="dl-mark">${MARK[a.q]}</span><span class="dl-who">${esc(label)}</span>${typeCell}<span class="dl-desk">${a.desk}</span><span class="${cn("dl-rk", inTop(a.buyerRank) && "top")}">${rk(a.buyerRank)}</span><span class="${cn("dl-rk", inTop(a.supplierRank) && "top")}">${rk(a.supplierRank)}</span></button></li>`;
+  }
+
+  function cardHTML(p, o = {}) {
+    const participant = !!o.participant;
+    const attention = !participant && p.health !== "ok";
+    const lo = { participant, q: state.q.toLowerCase(), free: state.free };
+    const sub = p.kind === "buyer" ? esc(p.sub) : `Desk ${p.desk}`;
+    const head = participant
+      ? `<li class="dl-headrow" aria-hidden="true"><span>Time</span><span></span><span>${p.kind === "buyer" ? "Supplier" : "Buyer"}</span><span></span><span style="text-align:right">Desk</span></li>`
+      : `<li class="dl-headrow" aria-hidden="true"><span>Time</span><span></span><span>${p.kind === "buyer" ? "Supplier" : "Buyer"}</span><span></span><span>Desk</span><span data-tip="Buyer's rank of the supplier">B</span><span data-tip="Supplier's rank of the buyer">S</span></li>`;
+    const status = participant
+      ? (p.kind === "supplier" ? `<span>Stay at desk ${p.desk}. Buyers come to you.</span>` : `<span>Go to the desk number on each line.</span>`)
+      : `${attention ? ICON.alert.replace("<svg", '<svg width="13" height="13"') : ""}<span>${healthText(p)}</span>${p.kind === "supplier" ? `<span class="badge ${attention ? "border-current" : "badge-" + p.type}" data-slot="badge">${ICON[p.type]}${p.type === "hotel" ? "Hotel" : "Business"}</span>` : ""}`;
+    const nameEl = participant
+      ? `<div class="dcard-name"><h3 data-slot="card-title">${esc(p.title)}</h3></div>`
+      : `<button type="button" class="dcard-name" data-act="person" data-kind="${p.kind}" data-id="${esc(p.id)}" aria-label="${esc(p.title)}, ${p.count} of ${NS} slots booked. Open full schedule"><h3 data-slot="card-title">${esc(p.title)}</h3></button>`;
+    const foot = participant ? "" : `<footer class="dcard-foot" data-slot="card-footer">
+        <span class="m">${MARK.mutual}${p.mutual} mutual</span><span>${MARK.one}${p.one} one side</span><span>${MARK.neither}${p.neither} neither</span></footer>`;
+    const selected = !participant && state.sel[p.kind] === p.id && state.preview;
+    return `<article class="${cn("dcard", selected && "is-selected")}" data-slot="card" data-health="${attention ? "attention" : "ok"}" data-variant="${participant ? "participant" : "staff"}" style="--i:${Math.min(o.index || 0, 28)}">
+      ${CORD}
+      <header class="dcard-head" data-slot="card-header">
+        ${nameEl}
+        <div class="dcard-count" aria-hidden="true"><b>${p.count}</b><span>of ${NS}</span></div>
+        <p class="dcard-sub" data-slot="card-description">${sub}</p>
+        <div class="dcard-status">${status}</div>
+      </header>
+      <div class="dcard-perf" aria-hidden="true"></div>
+      <ol class="dl-list" data-slot="card-content">${head}${p.slots.map((a, i) => lineHTML(p, a, i, lo)).join("")}</ol>
+      ${foot}
+    </article>`;
+  }
+
+  // ---------- filters / sorts ----------
+  const sev = (p) => (p.health === "ok" ? 0 : 1);
+  const byName = (a, b) => a.title.localeCompare(b.title);
+  const SORTS = {
+    count: (a, b) => sev(b) - sev(a) || a.count - b.count || a.score - b.score || byName(a, b),
+    name: byName,
+    best: (a, b) => b.score - a.score || b.mutual - a.mutual || byName(a, b),
+    weak: (a, b) => a.score - b.score || a.mutual - b.mutual || byName(a, b),
+  };
+  function visible(kind) {
+    const q = state.q.trim().toLowerCase();
+    let list = people(kind).filter((p) => matches(p, q));
+    if (state.show === "attention") list = list.filter((p) => p.health !== "ok");
+    if (state.show === "ok") list = list.filter((p) => p.health === "ok");
+    if (state.show === "hotel" || state.show === "business") list = list.filter((p) => p.type === state.show);
+    if (state.free) { const i = slotIdx.get(state.free); list = list.filter((p) => !p.slots[i]); }
+    return list.sort(SORTS[state.sort]);
+  }
+
+  // ---------- header ----------
+  function renderHeader() {
+    $("#ev-name").textContent = D.event.name;
+    $("#ev-client").textContent = `${D.event.client}, appointment matching`;
+    const d = new Date(D.event.date + "T12:00:00");
+    const date = isNaN(d) ? D.event.date : d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    $("#ev-when").textContent = `${date}, ${SLOTS[0].start} to ${SLOTS[NS - 1].end}. ${NS} slots, ${suppliers.length} supplier desks, ${buyers.length} buyers.`;
+    $("#ev-status").className = cn("badge", state.locked ? "badge-mutual" : "badge-secondary");
+    $("#ev-status").innerHTML = state.locked ? `${ICON.lock}Locked` : `Draft, not locked${state.editing ? ", editing" : ""}`;
+    const lock = $("#act-lock");
+    lock.innerHTML = state.locked ? `${ICON.unlock}Unlock schedule` : `${ICON.lock}Lock schedule`;
+    $("#act-run").disabled = state.locked;
+    $("#act-edit").disabled = state.locked;
+    $("#act-edit").setAttribute("aria-pressed", String(state.editing && !state.locked));
+  }
+
+  const VIEWS = [
+    { id: "buyer", label: "Buyers", n: () => buyers.length, flags: () => flagged(buyers).length },
+    { id: "supplier", label: "Suppliers", n: () => suppliers.length, flags: () => flagged(suppliers).length },
+    { id: "slot", label: "By time slot", n: () => NS },
+    { id: "quality", label: "Quality and alerts", flags: () => flagged(buyers).length + flagged(suppliers).length },
+  ];
+  function renderTabs() {
+    $("#tabs").innerHTML = VIEWS.map((v) => {
+      const f = v.flags ? v.flags() : 0;
+      return `<button type="button" role="tab" class="tab" id="tab-${v.id}" data-slot="tabs-trigger" aria-selected="${state.view === v.id}" tabindex="${state.view === v.id ? 0 : -1}" aria-controls="view" data-view="${v.id}">
+        ${v.label}${v.n ? `<span class="tab-n">${v.n()}</span>` : ""}${f ? `<span class="badge badge-destructive" data-slot="badge" aria-label="${f} flagged">${f}</span>` : ""}</button>`;
+    }).join("");
+  }
+
+  function renderToolbar() {
+    const wall = state.view === "buyer" || state.view === "supplier";
+    document.querySelectorAll('[data-ctl="sort"],[data-ctl="show"],[data-ctl="preview"]').forEach((el) => (el.hidden = !wall));
+    const opts = [["all", "Everyone"], ["attention", "Needs attention"], ["ok", "Healthy"]];
+    if (state.view === "supplier") opts.push(["hotel", "Hotels"], ["business", "Business vendors"]);
+    if (!opts.some(([v]) => v === state.show)) state.show = "all";
+    $("#show").innerHTML = opts.map(([v, l]) => `<option value="${v}" ${v === state.show ? "selected" : ""}>${l}</option>`).join("");
+    $("#free").innerHTML = `<option value="0">Any slot</option>` + SLOTS.map((s) => `<option value="${s.n}" ${s.n === state.free ? "selected" : ""}>Slot ${s.n}, ${s.start}</option>`).join("");
+    $("#sort").value = state.sort;
+    const pt = $("#preview-toggle");
+    pt.setAttribute("aria-pressed", String(state.preview));
+    $("#legend").innerHTML = `
+      <span class="inline-flex items-center gap-1.5"><span class="flex size-3 text-mutual">${MARK.mutual}</span>Mutual top-${TOPN}</span>
+      <span class="inline-flex items-center gap-1.5"><span class="flex size-3 text-mutual">${MARK.one}</span>Top-${TOPN} on one side</span>
+      <span class="inline-flex items-center gap-1.5"><span class="flex size-3">${MARK.neither}</span>Neither</span>
+      <span>B is the buyer's rank, S the supplier's. A dash means left blank.</span>
+      <span class="inline-flex items-center gap-1.5"><span class="flex size-3.5 text-hotel">${ICON.hotel}</span>Hotel</span>
+      <span class="inline-flex items-center gap-1.5"><span class="flex size-3.5 text-business">${ICON.business}</span>Business</span>
+      <span class="inline-flex items-center gap-1.5"><span class="font-display italic font-semibold text-open">Open</span>free slot</span>`;
+  }
+
+  // ---------- views ----------
+  function emptyHTML(title, body, action) {
+    return `<div class="flex flex-col items-center gap-2 rounded-md border border-dashed border-input px-6 py-14 text-center" data-slot="empty">
+      <p class="font-display text-xl italic font-semibold" data-slot="empty-title">${title}</p>
+      <p class="max-w-md text-sm text-muted-foreground" data-slot="empty-description">${body}</p>
+      ${action ? `<div class="mt-2" data-slot="empty-content">${action}</div>` : ""}</div>`;
+  }
+  const clearBtn = `<button type="button" class="btn btn-outline btn-sm" data-act="clear">Clear search and filters</button>`;
+
+  function renderWall(kind) {
+    const list = visible(kind);
+    const all = people(kind);
+    const noun = kind === "buyer" ? "buyer" : "supplier";
+    const f = flagged(all).length;
+    if (state.preview && (!state.sel[kind] || !list.some((p) => p.id === state.sel[kind])) && list[0]) state.sel[kind] = list[0].id;
+    const filtersOn = state.q || state.show !== "all" || state.free;
+    const summary = `<p class="text-sm text-muted-foreground" aria-live="polite">${plural(all.length, noun)}, ${f ? `<strong class="text-destructive">${f} need${f === 1 ? "s" : ""} attention</strong>` : "none need attention"}.${filtersOn ? ` Showing ${list.length}.` : ""}${state.free ? ` Free in slot ${state.free} (${SLOTS[slotIdx.get(state.free)].start}).` : ""}</p>`;
+    let body;
+    if (!list.length) {
+      body = state.free && !state.q && state.show === "all"
+        ? emptyHTML(`Every ${noun} is booked in slot ${state.free}`, `No ${noun} has a free line at ${SLOTS[slotIdx.get(state.free)].start}. Try another slot, or ${kind === "supplier" ? "look at buyers, who have the open lines" : "check suppliers"}.`, clearBtn)
+        : emptyHTML(`No ${noun}s match`, `Nothing matches "${esc(state.q)}" with the current filters. Search covers buyer names, organizations and suppliers.`, clearBtn);
+    } else {
+      body = `<div class="${cn("wall", !state.dealt && "is-dealing")}" id="wall">${list.map((p, i) => cardHTML(p, { index: i })).join("")}</div>`;
+    }
+    const usePhone = state.preview && wide.matches;
+    $("#view").innerHTML = `<div class="${cn("grid gap-8", usePhone && "grid-cols-[minmax(0,1fr)_410px]")}">
+      <section class="flex min-w-0 flex-col gap-4" aria-labelledby="tab-${kind}">${summary}${body}</section>
+      ${usePhone ? `<aside class="sticky top-4 self-start" aria-label="Participant preview" id="phone-dock"></aside>` : ""}</div>`;
+    state.dealt = true;
+    if (usePhone) renderPhone($("#phone-dock"));
+  }
+
+  function phoneHTML(p, inDialog = false) {
+    if (!p) return emptyHTML("Nobody selected", "Choose a card name on the wall to preview it.");
+    return `<div class="flex flex-col items-center gap-3">
+      ${inDialog ? `<h2 class="sr-only">Participant view</h2>` : ""}
+      <div class="phone" role="img" aria-label="Phone preview of ${esc(p.title)}'s schedule">
+        <div class="phone-screen" data-slot="scroll-area">
+          <div class="phone-bar" aria-hidden="true"><span>9:41</span><span class="phone-island"></span><span>5G</span></div>
+          <p class="mt-2 text-xs text-muted-foreground">${esc(D.event.name)}</p>
+          <p class="font-display text-2xl font-semibold italic leading-tight">Your appointments</p>
+          <p class="text-xs text-muted-foreground">${esc($("#ev-when").textContent.split(".")[0])}</p>
+          ${cardHTML(p, { participant: true })}
+          <p class="mt-5 text-center text-xs text-muted-foreground">Each appointment is ten minutes. ${p.count < NS ? `Your open ${NS - p.count === 1 ? "slot is" : "slots are"} free time.` : ""}</p>
+        </div>
+      </div>
+      <div class="${cn("flex max-w-[390px] flex-col items-center gap-2", inDialog && "w-full rounded-lg bg-card p-3")}">
+        <p class="text-center text-xs text-muted-foreground">What ${esc(p.title)} sees. Ranks, match quality labels and staff flags stay hidden.</p>
+        <div class="flex flex-wrap justify-center gap-2">
+          <button type="button" class="btn btn-outline btn-sm" data-act="person-sheet" data-kind="${p.kind}" data-id="${esc(p.id)}">Open full schedule</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-act="email-one" data-id="${esc(p.title)}">${ICON.mail}Email this card</button>
+          ${inDialog ? `<button type="button" class="btn btn-default btn-sm" data-close-phone>Close preview</button>` : ""}
+        </div></div></div>`;
+  }
+  function renderPhone(target) {
+    const kind = state.view === "supplier" ? "supplier" : "buyer";
+    const p = getP(kind, state.sel[kind]);
+    target.innerHTML = phoneHTML(p);
+  }
+
+  function renderSlots() {
+    const n = state.free || state.slot;
+    state.slot = n;
+    const i = slotIdx.get(n);
+    const s = SLOTS[i];
+    const q = state.q.trim().toLowerCase();
+    const tiles = [...suppliers].sort((a, b) => a.desk - b.desk).filter((sp) => {
+      if (!q) return true;
+      const a = sp.slots[i];
+      return matchSelf(sp, q) || (a && matchSelf(BUY.get(a.buyer) || { id: a.buyer, title: "", sub: "" }, q));
+    });
+    const freeBuyers = buyers.filter((b) => !b.slots[i]).filter((b) => !q || matchSelf(b, q)).sort(SORTS.count);
+    const booked = suppliers.filter((sp) => sp.slots[i]).length;
+    const mutualHere = suppliers.filter((sp) => sp.slots[i] && sp.slots[i].q === "mutual").length;
+
+    const toggles = `<div class="toggle-group" role="group" aria-label="Time slot" data-slot="toggle-group">${SLOTS.map((x) => `<button type="button" class="toggle-item" data-slot="toggle-group-item" aria-pressed="${x.n === n}" data-act="slot" data-n="${x.n}"><b>${x.n}</b>${shortTime(x.start)}</button>`).join("")}</div>`;
+    const tileHTML = (sp) => {
+      const a = sp.slots[i];
+      if (!a) return `<div class="desk is-empty" data-type="${sp.type}" data-slot="card"><span class="desk-n">${sp.desk}</span>
+        <button type="button" class="desk-sup" data-act="open" data-kind="supplier" data-id="${esc(sp.id)}" data-n="${n}">${esc(sp.title)}</button>
+        <span class="desk-buy text-open">Open</span><span class="desk-meta">No buyer at this desk</span></div>`;
+      const b = BUY.get(a.buyer);
+      const tip = `${a.supplier} meets ${a.buyer}. Buyer rank ${rk(a.buyerRank)}, supplier rank ${rk(a.supplierRank)}. ${Q_TEXT[a.q]}.`;
+      return `<div class="desk q-${a.q}" data-type="${a.type}" data-slot="card">
+        <span class="desk-n" aria-label="Desk ${a.desk}">${a.desk}</span>
+        <button type="button" class="desk-sup" data-act="open" data-kind="supplier" data-id="${esc(sp.id)}" data-n="${n}" data-tip="${esc(a.supplier)}">${esc(a.supplier)}</button>
+        <button type="button" class="desk-buy" data-act="open" data-kind="buyer" data-id="${esc(a.buyer)}" data-n="${n}" data-tip="${esc(tip)}">${esc(b ? b.title : a.buyer)}</button>
+        <span class="desk-meta"><span class="flex ${a.q === "neither" ? "" : "text-mutual"}">${MARK[a.q]}</span><span class="ty ty-${a.type}">${ICON[a.type]}</span><span>B ${rk(a.buyerRank)}</span><span>S ${rk(a.supplierRank)}</span>${a.q === "mutual" ? `<span class="font-semibold text-mutual">Mutual</span>` : ""}</span>
+      </div>`;
+    };
+    $("#view").innerHTML = `<section class="flex flex-col gap-5" aria-labelledby="tab-slot">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div><p class="font-display text-3xl font-semibold italic leading-none">Slot ${n}, ${s.start} to ${s.end}</p>
+        <p class="mt-1.5 text-sm text-muted-foreground">${booked} of ${suppliers.length} desks booked, ${mutualHere} mutual top-${TOPN}. ${plural(buyers.filter((b) => !b.slots[i]).length, "buyer")} free.</p></div>
+        ${toggles}
+      </div>
+      <div class="rounded-md bg-open-soft px-4 py-3" data-slot="alert">
+        <p class="text-sm font-semibold">${freeBuyers.length ? `Free at ${s.start}: ${plural(freeBuyers.length, "buyer")}` : `No buyer${q ? " matching your search" : ""} is free at ${s.start}`}</p>
+        ${freeBuyers.length ? `<div class="mt-2 flex flex-wrap gap-1.5">${freeBuyers.map((b) => `<button type="button" class="${cn("badge", b.health === "ok" ? "badge-outline bg-card" : "badge-destructive")}" data-slot="badge" data-act="open" data-kind="buyer" data-id="${esc(b.id)}" data-n="${n}" data-tip="${esc(b.id)}, ${b.count} of ${NS}">${esc(b.title)} <span class="opacity-75">${b.count}</span></button>`).join("")}</div>` : ""}
+      </div>
+      ${tiles.length ? `<div class="floor">${tiles.map(tileHTML).join("")}</div>` : emptyHTML("No desks match", `Nobody at a desk in slot ${n} matches "${esc(state.q)}".`, clearBtn)}
+    </section>`;
+  }
+
+  function renderQuality() {
+    const A = D.appointments;
+    const total = A.length;
+    const mutual = A.filter((a) => a.q === "mutual").length;
+    const one = A.filter((a) => a.q === "one").length;
+    const neither = A.filter((a) => a.q === "neither").length;
+    const blankB = A.filter((a) => a.buyerRank == null).length;
+    const blankS = A.filter((a) => a.supplierRank == null).length;
+    const blankAny = A.filter((a) => a.buyerRank == null || a.supplierRank == null).length;
+    const supOk = suppliers.filter((p) => p.health === "ok").length;
+    const buyOk = buyers.filter((p) => p.health === "ok").length;
+    const q = state.q.trim().toLowerCase();
+    const below = buyers.filter((p) => p.health === "under" && matches(p, q)).sort(SORTS.count);
+    const above = buyers.filter((p) => p.health === "over" && matches(p, q)).sort(SORTS.count);
+    const supOff = suppliers.filter((p) => p.health !== "ok" && matches(p, q));
+    const counts = buyers.map((b) => b.count);
+    const lo = Math.min(SET.buyerMin - 2, ...counts), hi = Math.max(SET.buyerMax, ...counts);
+    const dist = []; for (let k = lo; k <= hi; k++) dist.push({ k, n: counts.filter((c) => c === k).length });
+    const maxN = Math.max(1, ...dist.map((d) => d.n));
+
+    const listRow = (p) => {
+      const open = p.slots.map((a, i) => (a ? null : SLOTS[i])).filter(Boolean);
+      return `<tr class="border-b border-rule" data-slot="table-row">
+        <td class="py-2 pr-3" data-slot="table-cell"><button type="button" class="text-left font-display italic font-semibold hover:underline" data-act="open" data-kind="${p.kind}" data-id="${esc(p.id)}">${esc(p.title)}</button><div class="text-xs text-muted-foreground">${esc(p.kind === "buyer" ? p.sub : "Desk " + p.desk)}</div></td>
+        <td class="py-2 pr-3 text-right font-semibold" data-slot="table-cell">${p.count}</td>
+        <td class="py-2 text-sm text-muted-foreground" data-slot="table-cell">${open.length ? open.map((s) => `<span class="badge badge-open mr-1 mb-1" data-slot="badge">${s.n}, ${s.start}</span>`).join("") : "None"}</td></tr>`;
+    };
+    const table = (rows, emptyTitle, emptyBody) => rows.length
+      ? `<div class="overflow-x-auto"><table class="w-full text-sm" data-slot="table"><thead data-slot="table-header"><tr class="border-b border-border text-left text-xs text-muted-foreground"><th class="py-1.5 pr-3 font-semibold">Name</th><th class="py-1.5 pr-3 text-right font-semibold">Count</th><th class="py-1.5 font-semibold">Open slots</th></tr></thead><tbody data-slot="table-body">${rows.map(listRow).join("")}</tbody></table></div>`
+      : `<div class="rounded-md border border-dashed border-input px-4 py-5 text-center" data-slot="empty"><p class="font-display italic font-semibold">${emptyTitle}</p><p class="text-xs text-muted-foreground">${emptyBody}</p></div>`;
+
+    const leader = (label, value, extra = "", bar = null) => `<div class="leader flex-col !items-stretch gap-1.5"><div class="flex items-baseline gap-2"><dt>${label}</dt><dd>${value}${extra ? `<small>${extra}</small>` : ""}</dd></div>${bar != null ? `<div class="progress" data-slot="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${bar}" aria-label="${label}"><div style="width:${bar}%"></div></div>` : ""}</div>`;
+
+    let searchBlock = "";
+    if (q) {
+      const hits = [...buyers, ...suppliers].filter((p) => matchSelf(p, q)).slice(0, 24);
+      searchBlock = `<section class="programme p-5" data-slot="card"><h2 class="font-display text-xl italic font-semibold" data-slot="card-title">Matches for "${esc(state.q)}"</h2>
+        ${hits.length ? `<div class="mt-3 flex flex-wrap gap-1.5">${hits.map((p) => `<button type="button" class="${cn("badge", p.health === "ok" ? "badge-outline" : "badge-destructive")}" data-slot="badge" data-act="open" data-kind="${p.kind}" data-id="${esc(p.id)}">${p.kind === "supplier" ? ICON[p.type] : ""}${esc(p.title)} <span class="opacity-75">${p.count}</span></button>`).join("")}</div>` : `<p class="mt-2 text-sm text-muted-foreground">Nobody's name, organization or supplier matches. Check the spelling, or search a shorter part of the name.</p>`}</section>`;
+    }
+    let freeBlock = "";
+    if (state.free) {
+      const i = slotIdx.get(state.free);
+      const fb = buyers.filter((b) => !b.slots[i]).sort(SORTS.count);
+      const fs = suppliers.filter((s) => !s.slots[i]);
+      freeBlock = `<section class="programme p-5" data-slot="card"><h2 class="font-display text-xl italic font-semibold" data-slot="card-title">Free in slot ${state.free}, ${SLOTS[i].start}</h2>
+        <p class="mt-1 text-sm text-muted-foreground">${plural(fb.length, "buyer")} and ${plural(fs.length, "supplier")} free.${fs.length ? "" : " Every desk is booked, so filling a buyer here means swapping a meeting."}</p>
+        ${fb.length ? `<div class="mt-3 flex flex-wrap gap-1.5">${fb.map((b) => `<button type="button" class="${cn("badge", b.health === "ok" ? "badge-outline" : "badge-destructive")}" data-slot="badge" data-act="open" data-kind="buyer" data-id="${esc(b.id)}" data-n="${state.free}">${esc(b.title)} <span class="opacity-75">${b.count}</span></button>`).join("")}</div>` : ""}</section>`;
+    }
+
+    $("#view").innerHTML = `<section class="grid gap-8 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]" aria-labelledby="tab-quality">
+      <div class="flex flex-col gap-6">
+        <div class="flex items-start gap-3 rounded-md border border-border bg-card px-4 py-3" role="status" data-slot="alert">
+          <span class="mt-0.5 flex size-4 text-primary">${ICON.info}</span>
+          <div><p class="text-sm font-semibold" data-slot="alert-title">${plural(D.event.manualChanges, "manual change")} applied</p>
+          <p class="text-sm text-muted-foreground" data-slot="alert-description">Staff edits made after the last matching run. Running matching again replaces them.</p></div>
+        </div>
+        ${searchBlock}${freeBlock}
+        <article class="programme px-5 pt-5 pb-3 sm:px-7" data-slot="card">
+          <header data-slot="card-header" class="mb-2">
+            <h2 class="font-display text-[1.7rem] italic font-semibold leading-tight" data-slot="card-title">Programme summary</h2>
+            <p class="text-sm text-muted-foreground" data-slot="card-description">Every number here is counted from the current schedule.</p>
+          </header>
+          <dl class="leaders" data-slot="card-content">
+            ${leader("Appointments scheduled", total)}
+            ${leader(`Suppliers with a full card of ${SET.supplierTarget}`, `${supOk}<small>of ${suppliers.length}</small>`, "", pct(supOk, suppliers.length))}
+            ${leader(`Buyers within ${SET.buyerMin} to ${SET.buyerMax}`, `${buyOk}<small>of ${buyers.length}</small>`, "", pct(buyOk, buyers.length))}
+            ${leader(`Mutual top-${TOPN}`, mutual, `${pct(mutual, total)}%`)}
+            ${leader(`Top-${TOPN} on one side only`, one, `${pct(one, total)}%`)}
+            ${leader(`Top-${TOPN} on neither side`, neither, `${pct(neither, total)}%`)}
+            ${leader("Blank rankings", blankAny, `${blankB} by buyers, ${blankS} by suppliers`)}
+            ${leader("Manual changes applied", D.event.manualChanges)}
+          </dl>
+        </article>
+      </div>
+      <div class="flex flex-col gap-6">
+        <article class="programme p-5 sm:px-7" data-slot="card">
+          <h2 class="font-display text-xl italic font-semibold" data-slot="card-title">Match quality</h2>
+          <p class="text-sm text-muted-foreground" data-slot="card-description">How each of the ${total} appointments was ranked by both sides.</p>
+          <div class="mt-4 flex h-9 overflow-hidden rounded-sm" data-slot="chart" role="img" aria-label="Mutual ${mutual}, one side ${one}, neither ${neither}">
+            <div class="bg-chart-1" style="width:${(mutual / total) * 100}%" data-tip="Mutual top-${TOPN}: ${mutual}"></div>
+            <div class="bg-chart-1/45" style="width:${(one / total) * 100}%" data-tip="One side: ${one}"></div>
+            <div class="bg-chart-5/35" style="width:${(neither / total) * 100}%" data-tip="Neither: ${neither}"></div>
+          </div>
+          <div class="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+            <span class="inline-flex items-center gap-1.5"><i class="size-2.5 rounded-[2px] bg-chart-1"></i>Mutual ${mutual} (${pct(mutual, total)}%)</span>
+            <span class="inline-flex items-center gap-1.5"><i class="size-2.5 rounded-[2px] bg-chart-1/45"></i>One side ${one} (${pct(one, total)}%)</span>
+            <span class="inline-flex items-center gap-1.5"><i class="size-2.5 rounded-[2px] bg-chart-5/35"></i>Neither ${neither} (${pct(neither, total)}%)</span>
+          </div>
+        </article>
+        <article class="programme p-5 sm:px-7" data-slot="card">
+          <h2 class="font-display text-xl italic font-semibold" data-slot="card-title">Buyers by appointment count</h2>
+          <p class="text-sm text-muted-foreground" data-slot="card-description">Target is ${SET.buyerMin} to ${SET.buyerMax}, ideally ${SET.buyerIdeal}.</p>
+          <div class="mt-4 grid h-44 items-end gap-2" style="grid-template-columns:repeat(${dist.length},minmax(0,1fr))" data-slot="chart" role="img" aria-label="${dist.map((d) => `${d.n} buyers with ${d.k}`).join(", ")}">
+            ${dist.map((d) => { const okk = d.k >= SET.buyerMin && d.k <= SET.buyerMax; return `<div class="flex h-full flex-col items-center justify-end gap-1" data-tip="${plural(d.n, "buyer")} with ${d.k} appointments">
+              <span class="font-display text-lg font-bold leading-none ${okk ? "" : d.n ? "text-destructive" : "text-muted-foreground"}">${d.n}</span>
+              <div class="w-full rounded-t-[3px] ${okk ? (d.k === SET.buyerIdeal ? "bg-chart-1" : "bg-chart-1/55") : "bg-chart-3"}" style="height:${d.n ? Math.max(4, (d.n / maxN) * 100) : 1}%"></div></div>`; }).join("")}
+          </div>
+          <div class="mt-1.5 grid gap-2 border-t border-border pt-1.5 text-center text-xs text-muted-foreground" style="grid-template-columns:repeat(${dist.length},minmax(0,1fr))">${dist.map((d) => `<span>${d.k}</span>`).join("")}</div>
+        </article>
+        <article class="programme p-5 sm:px-7" data-slot="card">
+          <h2 class="font-display text-xl italic font-semibold" data-slot="card-title">Buyers below ${SET.buyerMin}</h2>
+          <p class="mb-3 text-sm text-muted-foreground" data-slot="card-description">Their open slots are where a meeting can go.</p>
+          ${table(below, `No buyer is below ${SET.buyerMin}`, q ? "Nothing matches your search." : "Every buyer has at least the minimum.")}
+          <h2 class="mt-6 font-display text-xl italic font-semibold">Buyers above ${SET.buyerMax}</h2>
+          <div class="mt-3">${table(above, `No buyer is above ${SET.buyerMax}`, q ? "Nothing matches your search." : "Nobody is overbooked.")}</div>
+          <h2 class="mt-6 font-display text-xl italic font-semibold">Suppliers not at ${SET.supplierTarget}</h2>
+          <div class="mt-3">${table(supOff, `All ${suppliers.length} suppliers have ${SET.supplierTarget}`, q ? "Nothing matches your search." : "Every desk has a full card.")}</div>
+        </article>
+      </div>
+    </section>`;
+  }
+
+  function render() {
+    renderHeader();
+    renderTabs();
+    renderToolbar();
+    if (state.view === "buyer" || state.view === "supplier") renderWall(state.view);
+    else if (state.view === "slot") renderSlots();
+    else renderQuality();
+  }
+
+  // ---------- overlays ----------
+  const stack = [];
+  const FOCUSABLE = 'button:not([disabled]),[href],input:not([disabled]),select,[tabindex]:not([tabindex="-1"])';
+  function openOverlay(root, focusSel) {
+    if (stack.some((o) => o.root === root)) { if (focusSel) root.querySelector(focusSel)?.focus(); return; }
+    stack.push({ root, ret: document.activeElement });
+    root.hidden = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => (root.dataset.state = "open")));
+    (root.querySelector(focusSel || "[autofocus]") || root.querySelector(FOCUSABLE))?.focus();
+  }
+  function closeOverlay(root) {
+    const idx = stack.findIndex((o) => o.root === (root || stack[stack.length - 1]?.root));
+    if (idx < 0) return;
+    const [o] = stack.splice(idx, 1);
+    o.root.dataset.state = "closed";
+    setTimeout(() => { if (o.root.dataset.state === "closed") o.root.hidden = true; }, reduceMotion.matches ? 0 : 220);
+    if (o.root.id === "phone-root" && state.preview && !wide.matches) { state.preview = false; renderToolbar(); }
+    if (o.ret && document.contains(o.ret)) o.ret.focus();
+  }
+  document.addEventListener("click", (e) => { if (e.target.matches("[data-close]")) closeOverlay(e.target.parentElement); });
+
+  // Sheet
+  function openSheet(kind, id, focusN) {
+    const p = getP(kind, id);
+    if (!p) return toast(`Couldn't find ${id}`, "They may have been removed from the event data.");
+    const attention = p.health !== "ok";
+    const rows = p.slots.map((a, i) => {
+      const s = SLOTS[i];
+      const hl = focusN === s.n ? "bg-accent" : "";
+      if (!a) {
+        const freeOther = (kind === "buyer" ? suppliers : buyers).filter((x) => !x.slots[i]).length;
+        const hint = kind === "buyer"
+          ? (freeOther ? `${plural(freeOther, "supplier desk")} also free at this time.` : "Every supplier desk is booked here, so filling this needs a swap.")
+          : (freeOther ? `${plural(freeOther, "buyer")} also free at this time.` : "No buyer is free at this time.");
+        return `<tr class="border-b border-rule bg-open-soft ${hl}" data-slot="table-row"><td class="py-2.5 pl-5 pr-2 align-top" data-slot="table-cell"><b class="font-display italic">${s.n}</b><div class="text-xs text-muted-foreground">${s.start}</div></td>
+          <td class="py-2.5 pr-2" colspan="3" data-slot="table-cell"><p class="font-display text-lg italic font-semibold text-open leading-tight">Open</p><p class="text-xs text-muted-foreground">${hint}</p></td></tr>`;
+      }
+      const other = partnerOf(p, a);
+      const nm = kind === "buyer" ? a.supplier : (other ? other.title : a.buyer);
+      const sub = kind === "buyer" ? "" : (other ? other.sub : "");
+      return `<tr class="border-b border-rule ${hl}" data-slot="table-row">
+        <td class="py-2.5 pl-5 pr-2 align-top" data-slot="table-cell"><b class="font-display italic">${s.n}</b><div class="text-xs text-muted-foreground">${s.start}</div></td>
+        <td class="py-2.5 pr-2 align-top" data-slot="table-cell">
+          <button type="button" class="text-left font-semibold leading-snug hover:underline" data-act="open" data-kind="${partnerKind(p)}" data-id="${esc(other ? other.id : nm)}" data-n="${s.n}">${esc(nm)}</button>
+          ${sub ? `<div class="text-xs text-muted-foreground">${esc(sub)}</div>` : ""}
+          <div class="mt-1 flex flex-wrap gap-1">${a.q === "mutual" ? `<span class="badge badge-mutual" data-slot="badge">${MARK.mutual}Mutual top-${TOPN}</span>` : a.q === "one" ? `<span class="badge badge-outline" data-slot="badge">${MARK.one}One side top-${TOPN}</span>` : `<span class="badge badge-outline text-muted-foreground" data-slot="badge">Neither top-${TOPN}</span>`}<span class="badge badge-${a.type}" data-slot="badge">${ICON[a.type]}${a.type === "hotel" ? "Hotel" : "Business"}</span></div>
+        </td>
+        <td class="py-2.5 pr-2 text-right align-top font-display text-lg italic font-bold" data-slot="table-cell">${a.desk}</td>
+        <td class="py-2.5 pr-5 text-right align-top text-sm whitespace-nowrap" data-slot="table-cell"><span class="${inTop(a.buyerRank) ? "font-bold text-mutual" : "text-muted-foreground"}">${rk(a.buyerRank)}</span><span class="text-muted-foreground"> / </span><span class="${inTop(a.supplierRank) ? "font-bold text-mutual" : "text-muted-foreground"}">${rk(a.supplierRank)}</span></td></tr>`;
+    }).join("");
+    $("#sheet").innerHTML = `
+      <header class="${cn("relative px-5 pt-5 pb-4", attention ? "bg-attention text-attention-foreground" : "bg-band text-band-foreground")}" data-slot="sheet-header">
+        <button type="button" class="btn btn-ghost btn-icon absolute top-3 right-3 !text-current hover:!bg-black/10" data-close-sheet aria-label="Close">${ICON.x}</button>
+        <p class="text-xs font-semibold opacity-85">${kind === "buyer" ? "Buyer" : `Supplier at desk ${p.desk}`}</p>
+        <h2 id="sheet-title" class="mt-1 pr-10 font-display text-[1.65rem] italic font-semibold leading-tight" data-slot="sheet-title">${esc(p.title)}</h2>
+        ${p.sub ? `<p class="mt-1 text-sm opacity-85" data-slot="sheet-description">${esc(p.sub)}</p>` : ""}
+        <div class="mt-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+          <span class="font-display text-3xl font-bold not-italic leading-none">${p.count}</span><span class="opacity-85">of ${NS} slots booked. ${healthText(p)}.</span>
+          ${kind === "supplier" ? `<span class="badge border-current" data-slot="badge">${ICON[p.type]}${p.type === "hotel" ? "Hotel" : "Business"}</span>` : ""}
+        </div>
+      </header>
+      <div class="flex-1 overflow-y-auto" data-slot="scroll-area">
+        <p class="px-5 pt-4 pb-2 text-sm text-muted-foreground">${p.mutual} mutual top-${TOPN}, ${p.one} top-${TOPN} on one side, ${p.neither} neither. Ranks read buyer / supplier.</p>
+        <table class="w-full text-sm" data-slot="table">
+          <thead data-slot="table-header"><tr class="border-b border-border text-left text-xs text-muted-foreground"><th class="py-1.5 pl-5 pr-2 font-semibold">Slot</th><th class="py-1.5 pr-2 font-semibold">${kind === "buyer" ? "Supplier" : "Buyer"}</th><th class="py-1.5 pr-2 text-right font-semibold">Desk</th><th class="py-1.5 pr-5 text-right font-semibold">B / S</th></tr></thead>
+          <tbody data-slot="table-body">${rows}</tbody>
+        </table>
+      </div>
+      <footer class="flex flex-wrap gap-2 border-t border-border px-5 py-3" data-slot="sheet-footer">
+        <button type="button" class="btn btn-outline btn-sm" data-act="preview-person" data-kind="${kind}" data-id="${esc(p.id)}">${ICON.phone}Preview participant view</button>
+        <button type="button" class="btn btn-default btn-sm" data-act="edit-person" ${state.locked ? "disabled" : ""}>Edit this card</button>
+      </footer>`;
+    openOverlay($("#sheet-root"), "[data-close-sheet]");
+    $("#sheet").querySelector(".overflow-y-auto").scrollTop = 0;
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-close-sheet]")) closeOverlay($("#sheet-root"));
+    if (e.target.closest("[data-close-phone]")) closeOverlay($("#phone-root"));
+  });
+
+  // Dialog
+  function confirmDialog({ title, body, confirm, variant = "default", onConfirm }) {
+    $("#dialog").innerHTML = `<div class="flex flex-col gap-4 p-6">
+      <div data-slot="dialog-header"><h2 id="dialog-title" class="font-display text-2xl italic font-semibold" data-slot="dialog-title">${title}</h2>
+      <div class="mt-2 flex flex-col gap-2 text-sm text-muted-foreground" data-slot="dialog-description">${body}</div></div>
+      <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end" data-slot="dialog-footer">
+        <button type="button" class="btn btn-outline" data-dlg="cancel">Cancel</button>
+        <button type="button" class="btn btn-${variant}" data-dlg="ok">${confirm}</button></div></div>`;
+    $("#dialog").querySelector('[data-dlg="cancel"]').onclick = () => closeOverlay($("#dialog-root"));
+    $("#dialog").querySelector('[data-dlg="ok"]').onclick = () => { closeOverlay($("#dialog-root")); onConfirm(); };
+    openOverlay($("#dialog-root"), '[data-dlg="ok"]');
+  }
+
+  // Toast
+  function toast(title, desc) {
+    const el = document.createElement("div");
+    el.className = "toast";
+    el.setAttribute("data-slot", "toast");
+    el.innerHTML = `${ICON.check}<div><p class="font-semibold">${esc(title)}</p>${desc ? `<p>${esc(desc)}</p>` : ""}</div>`;
+    $("#toaster").append(el);
+    setTimeout(() => el.remove(), 4200);
+  }
+
+  // Tooltip
+  const tipEl = $("#tooltip");
+  function showTip(t) {
+    const text = t.getAttribute("data-tip");
+    if (!text) return;
+    tipEl.textContent = text;
+    tipEl.hidden = false;
+    const r = t.getBoundingClientRect(), tr = tipEl.getBoundingClientRect();
+    let x = r.left + r.width / 2 - tr.width / 2;
+    x = Math.max(8, Math.min(x, innerWidth - tr.width - 8));
+    let y = r.top - tr.height - 6;
+    if (y < 8) y = r.bottom + 6;
+    tipEl.style.left = x + "px";
+    tipEl.style.top = y + "px";
+  }
+  document.addEventListener("pointerover", (e) => { const t = e.target.closest("[data-tip]"); if (t && e.pointerType !== "touch") showTip(t); else if (!t) tipEl.hidden = true; });
+  document.addEventListener("focusin", (e) => { const t = e.target.closest("[data-tip]"); if (t && t.matches(":focus-visible")) showTip(t); else tipEl.hidden = true; });
+  document.addEventListener("scroll", () => (tipEl.hidden = true), true);
+
+  // Export popover
+  function renderExportMenu() {
+    const everyone = buyers.length + suppliers.length;
+    $("#export-menu").innerHTML = `
+      <button type="button" class="menu-item" role="menuitem" data-export="xlsx">${ICON.sheet}<span><b class="block font-semibold">Excel workbook</b><span class="text-xs text-muted-foreground">All ${D.appointments.length} appointments, one row each</span></span></button>
+      <button type="button" class="menu-item" role="menuitem" data-export="pdf">${ICON.file}<span><b class="block font-semibold">Dance cards as PDF</b><span class="text-xs text-muted-foreground">${everyone} cards, one per page</span></span></button>
+      <div class="my-1 h-px bg-border" data-slot="separator" role="separator"></div>
+      <button type="button" class="menu-item" role="menuitem" data-export="email" ${state.locked ? "" : "disabled"}>${ICON.mail}<span><b class="block font-semibold">Email every participant</b><span class="text-xs text-muted-foreground">${state.locked ? `Sends ${everyone} schedules` : "Lock the schedule first"}</span></span></button>`;
+  }
+  function toggleExport(open) {
+    const m = $("#export-menu"), b = $("#act-export");
+    open = open ?? m.hidden;
+    if (open) renderExportMenu();
+    m.hidden = !open;
+    b.setAttribute("aria-expanded", String(open));
+    if (open) m.querySelector(".menu-item:not(:disabled)")?.focus();
+  }
+
+  // Command palette
+  let cmdItems = [], cmdActive = 0;
+  function renderCmd() {
+    const q = $("#cmd-q").value.trim().toLowerCase();
+    const pick = (list) => list.filter((p) => !q || matchSelf(p, q)).sort(q ? byName : SORTS.count).slice(0, 8);
+    const groups = [["Buyers", pick(buyers)], ["Suppliers", pick(suppliers)]];
+    cmdItems = groups.flatMap(([, l]) => l);
+    cmdActive = Math.min(cmdActive, Math.max(0, cmdItems.length - 1));
+    let k = 0;
+    $("#cmd-list").innerHTML = cmdItems.length ? groups.filter(([, l]) => l.length).map(([g, l]) => `<div role="group" aria-label="${g}" data-slot="command-group"><p class="px-2 pt-2 pb-1 text-xs font-semibold text-muted-foreground">${g}</p>${l.map((p) => { const i = k++; return `<button type="button" role="option" id="cmd-${i}" class="menu-item items-center" data-slot="command-item" aria-selected="${i === cmdActive}" data-cmd="${i}">
+      <span class="flex-1 min-w-0"><span class="block truncate font-display italic font-semibold">${esc(p.title)}</span><span class="block truncate text-xs text-muted-foreground">${esc(p.kind === "buyer" ? p.sub : `Desk ${p.desk}, ${p.type}`)}</span></span>
+      <span class="${cn("badge", p.health === "ok" ? "badge-outline" : "badge-destructive")}">${p.count} of ${NS}</span></button>`; }).join("")}</div>`).join("")
+      : `<div class="px-4 py-10 text-center text-sm text-muted-foreground" data-slot="command-empty">Nobody matches. Try part of an organization or supplier name.</div>`;
+    $("#cmd-q").setAttribute("aria-activedescendant", cmdItems.length ? `cmd-${cmdActive}` : "");
+  }
+  function openCmd() { $("#cmd-q").value = state.q; cmdActive = 0; renderCmd(); openOverlay($("#cmd-root"), "#cmd-q"); }
+  function chooseCmd(i) { const p = cmdItems[i]; if (!p) return; closeOverlay($("#cmd-root")); openSheet(p.kind, p.id); }
+  $("#cmd-q").addEventListener("input", () => { cmdActive = 0; renderCmd(); });
+  $("#cmd-q").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); cmdActive = (cmdActive + (e.key === "ArrowDown" ? 1 : -1) + cmdItems.length) % Math.max(1, cmdItems.length); renderCmd(); $(`#cmd-${cmdActive}`)?.scrollIntoView({ block: "nearest" }); }
+    if (e.key === "Enter") { e.preventDefault(); chooseCmd(cmdActive); }
+  });
+  $("#cmd-list").addEventListener("click", (e) => { const b = e.target.closest("[data-cmd]"); if (b) chooseCmd(+b.dataset.cmd); });
+
+  // Preview
+  function setPreview(on, kind, id) {
+    state.preview = on;
+    if (kind && id) { if (state.view !== kind) { state.view = kind; } state.sel[kind] = id; }
+    if (on && !wide.matches) {
+      render();
+      const k = state.view === "supplier" ? "supplier" : "buyer";
+      if (!state.sel[k]) state.sel[k] = visible(k)[0]?.id || null;
+      $("#phone-dialog").innerHTML = phoneHTML(getP(k, state.sel[k]), true);
+      openOverlay($("#phone-root"));
+      return;
+    }
+    render();
+  }
+
+  // ---------- events ----------
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-act]");
+    if (!el) {
+      if (!e.target.closest("#export-menu") && !e.target.closest("#act-export")) toggleExport(false);
+      return;
+    }
+    const { act, kind, id } = el.dataset;
+    if (act === "open") {
+      if (stack.some((o) => o.root.id === "phone-root")) closeOverlay($("#phone-root"));
+      openSheet(kind, id, el.dataset.n ? +el.dataset.n : undefined);
+    } else if (act === "person") {
+      state.sel[kind] = id;
+      if (state.preview) {
+        if (wide.matches) { document.querySelectorAll(".dcard.is-selected").forEach((c) => c.classList.remove("is-selected")); el.closest(".dcard").classList.add("is-selected"); renderPhone($("#phone-dock")); }
+        else setPreview(true);
+      } else openSheet(kind, id);
+    } else if (act === "person-sheet") {
+      if (stack.some((o) => o.root.id === "phone-root")) closeOverlay($("#phone-root"));
+      openSheet(kind, id);
+    } else if (act === "preview-person") {
+      closeOverlay($("#sheet-root"));
+      setPreview(true, kind, id);
+    } else if (act === "slot") {
+      state.slot = +el.dataset.n; state.free = 0; render();
+      $(`[data-act="slot"][data-n="${state.slot}"]`)?.focus();
+    } else if (act === "clear") {
+      state.q = ""; state.show = "all"; state.free = 0; $("#q").value = ""; render();
+    } else if (act === "email-one") {
+      toast(state.locked ? `Card emailed to ${id}` : "Lock the schedule before emailing", state.locked ? "" : "Participants only get a schedule once it's locked.");
+    } else if (act === "edit-person") {
+      toast("Editing this card", "In the app, choose a line to move or swap it.");
+    }
+  });
+
+  $("#tabs").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-view]");
+    if (!t || t.dataset.view === state.view) return;
+    state.view = t.dataset.view; render(); $(`#tab-${state.view}`).focus();
+  });
+  $("#tabs").addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const ids = VIEWS.map((v) => v.id);
+    let i = ids.indexOf(state.view);
+    i = e.key === "Home" ? 0 : e.key === "End" ? ids.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length;
+    state.view = ids[i]; render(); $(`#tab-${state.view}`).focus();
+  });
+
+  let qTimer;
+  $("#q").addEventListener("input", (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; render(); }, 120); });
+  $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; render(); });
+  $("#show").addEventListener("change", (e) => { state.show = e.target.value; render(); });
+  $("#free").addEventListener("change", (e) => { state.free = +e.target.value; if (state.free) state.slot = state.free; render(); });
+  $("#preview-toggle").addEventListener("click", () => setPreview(!state.preview));
+  $("#open-cmd").addEventListener("click", openCmd);
+
+  $("#act-run").addEventListener("click", () => confirmDialog({
+    title: "Run matching again?",
+    body: `<p>This rebuilds all ${D.appointments.length} appointments from the latest rankings.</p><p class="font-semibold text-destructive">The ${plural(D.event.manualChanges, "manual change")} made since the last run will be replaced.</p>`,
+    confirm: "Run matching", variant: "destructive",
+    onConfirm: () => toast("Matching started", "The wall updates when the new schedule is ready."),
+  }));
+  $("#act-edit").addEventListener("click", () => {
+    state.editing = !state.editing; renderHeader();
+    toast(state.editing ? "Editing on" : "Editing off", state.editing ? "Open any card to move, add or swap a meeting." : "");
+  });
+  $("#act-lock").addEventListener("click", () => {
+    if (state.locked) { state.locked = false; state.editing = false; render(); toast("Schedule unlocked", "Changes are allowed again."); return; }
+    const fb = flagged(buyers), fs = flagged(suppliers);
+    const issues = [
+      fb.length ? `<li>${plural(fb.length, "buyer")} outside ${SET.buyerMin} to ${SET.buyerMax}: ${fb.map((p) => esc(p.title)).join(", ")}.</li>` : "",
+      fs.length ? `<li>${plural(fs.length, "supplier")} not at ${SET.supplierTarget}.</li>` : "",
+    ].join("");
+    confirmDialog({
+      title: "Lock this schedule?",
+      body: `${issues ? `<div class="rounded-md bg-attention-soft p-3 text-foreground" data-slot="alert"><p class="font-semibold">Still flagged</p><ul class="mt-1 list-disc pl-5">${issues}</ul></div>` : `<p>Nothing is flagged.</p>`}<p>Locking freezes all ${D.appointments.length} appointments so they can be exported and emailed. You can unlock later.</p>`,
+      confirm: issues ? "Lock anyway" : "Lock schedule",
+      onConfirm: () => { state.locked = true; state.editing = false; render(); toast("Schedule locked", `${D.appointments.length} appointments frozen. Export and email are ready.`); },
+    });
+  });
+  $("#act-export").addEventListener("click", (e) => { e.stopPropagation(); toggleExport(); });
+  $("#export-menu").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-export]");
+    if (!b || b.disabled) return;
+    toggleExport(false); $("#act-export").focus();
+    const t = b.dataset.export;
+    if (t === "xlsx") toast("Exported Excel workbook", `${D.appointments.length} appointments, ${NS} slots.`);
+    if (t === "pdf") toast("Exported dance cards", `${buyers.length + suppliers.length} cards in one PDF.`);
+    if (t === "email") toast("Emails queued", `${buyers.length + suppliers.length} participants will get their schedule.`);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmd(); return; }
+    if (e.key === "Escape") {
+      if (!$("#export-menu").hidden) { toggleExport(false); $("#act-export").focus(); return; }
+      if (stack.length) { closeOverlay(); return; }
+    }
+    if (e.key === "/" && !stack.length && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); $("#q").focus(); }
+    if (e.key === "Tab" && stack.length) {
+      const root = stack[stack.length - 1].root;
+      const f = [...root.querySelectorAll(FOCUSABLE)].filter((x) => x.offsetParent !== null);
+      if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    }
+    if (!$("#export-menu").hidden && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      const items = [...$("#export-menu").querySelectorAll(".menu-item:not(:disabled)")];
+      const i = items.indexOf(document.activeElement);
+      e.preventDefault(); items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+    }
+  });
+  wide.addEventListener("change", () => { if (state.preview) { if (wide.matches) closeOverlay($("#phone-root")); render(); } });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1190 @@
+<!--
+  Design: 01 Floor plan
+
+  Concept: The show floor is the screen. Staff scrub through the nine slots and watch the hall re-seat itself,
+  desk by desk, with mutual top-10 meetings lit in wayfinding yellow and free buyers waiting in the lobby outside the entrance.
+
+  Palette (OKLCH, light only):
+    Stone ground      oklch(0.932 0.006 106)  ~ #E7E7E1   page background
+    Drafting paper    oklch(0.974 0.004 106)  ~ #F6F6F2   card, sheet, desks
+    Graphite ink      oklch(0.270 0.010 255)  ~ #2B2E33   text, linework, primary buttons
+    Wayfinding yellow oklch(0.870 0.170 92)   ~ #F4CB1F   mutual top-10 only (the one accent)
+    Green pencil      oklch(0.470 0.070 165)  ~ #2F6E58   business vendors
+    Red pencil        oklch(0.550 0.200 27)   ~ #C8352C   count problems (revision deltas)
+
+  Type: Barlow (UI and body, tabular figures) and Barlow Semi Condensed (desk numbers, headings).
+  Barlow was drawn from California highway and public signage, which suits a wayfinding plan for a California show.
+
+  Layout: Header with event, status and admin actions. A toolbar with view switch, search and "free in slot" filter.
+  Floor view: slot scrubber drawn as a scale ruler, then a drawing sheet: hotel hall (banks of back-to-back desks with
+  dashed aisles) on the left; business vendor room and the drawing title block (legend plus this slot's counts) on the right;
+  the entrance and lobby (buyers free this slot) below the hall. Buyers, Suppliers and Quality are secondary sheets.
+  Everything left-aligned. One side sheet holds any buyer's or supplier's nine-slot schedule.
+
+  shadcn components (mimicked, marked with data-slot): Button, Badge, Tabs, ToggleGroup, Input / InputGroup, Select, Kbd,
+  Card, Table, Sheet, Dialog, Command, Popover, HoverCard, Tooltip, Alert, Empty, Progress, Chart, Separator, ScrollArea,
+  Sonner (toast).
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Floor plan, AW appointment matching</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+  :root {
+    --radius: 0.25rem;
+    --background: oklch(0.932 0.006 106);
+    --foreground: oklch(0.27 0.01 255);
+    --card: oklch(0.974 0.004 106);
+    --card-foreground: oklch(0.27 0.01 255);
+    --popover: oklch(0.985 0.003 106);
+    --popover-foreground: oklch(0.27 0.01 255);
+    --primary: oklch(0.27 0.01 255);
+    --primary-foreground: oklch(0.974 0.004 106);
+    --secondary: oklch(0.905 0.007 106);
+    --secondary-foreground: oklch(0.27 0.01 255);
+    --muted: oklch(0.912 0.006 106);
+    --muted-foreground: oklch(0.46 0.01 255);
+    --accent: oklch(0.895 0.008 106);
+    --accent-foreground: oklch(0.27 0.01 255);
+    --destructive: oklch(0.55 0.2 27);
+    --destructive-foreground: oklch(0.985 0.003 106);
+    --border: oklch(0.82 0.008 106);
+    --input: oklch(0.7 0.008 106);
+    --ring: oklch(0.27 0.01 255);
+    --chart-1: oklch(0.27 0.01 255);
+    --chart-2: oklch(0.87 0.17 92);
+    --chart-3: oklch(0.47 0.07 165);
+    --chart-4: oklch(0.7 0.01 255);
+    --chart-5: oklch(0.55 0.2 27);
+
+    /* custom semantic tokens */
+    --line: oklch(0.27 0.01 255 / 0.62);
+    --grid: oklch(0.27 0.01 255 / 0.045);
+    --hatch: oklch(0.27 0.01 255 / 0.24);
+    --mutual: oklch(0.87 0.17 92);
+    --mutual-foreground: oklch(0.27 0.01 255);
+    --business: oklch(0.47 0.07 165);
+    --business-foreground: oklch(0.985 0.003 106);
+    --hotel: oklch(0.27 0.01 255);
+    --hotel-foreground: oklch(0.974 0.004 106);
+    --warning: oklch(0.55 0.13 60);
+    --warning-foreground: oklch(0.985 0.003 106);
+  }
+
+  @theme inline {
+    --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
+    --font-display: "Barlow Semi Condensed", "Barlow", ui-sans-serif, sans-serif;
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-line: var(--line);
+    --color-mutual: var(--mutual);
+    --color-mutual-foreground: var(--mutual-foreground);
+    --color-business: var(--business);
+    --color-business-foreground: var(--business-foreground);
+    --color-hotel: var(--hotel);
+    --color-hotel-foreground: var(--hotel-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --radius-sm: calc(var(--radius) - 1px);
+    --radius-md: var(--radius);
+    --radius-lg: calc(var(--radius) + 2px);
+  }
+
+  @layer base {
+    * { border-color: var(--border); }
+    html { -webkit-text-size-adjust: 100%; }
+    body { @apply bg-background text-foreground font-sans antialiased; font-feature-settings: "tnum" 1, "lnum" 1; }
+    :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; }
+  }
+
+  /* ---------- primitives ---------- */
+  .btn { @apply inline-flex items-center gap-1.5 h-9 px-3.5 rounded-md text-sm font-medium whitespace-nowrap border border-transparent select-none; transition: background-color .12s, border-color .12s; }
+  .btn svg { width: 1rem; height: 1rem; flex: none; }
+  .btn[data-variant="default"] { @apply bg-primary text-primary-foreground; }
+  .btn[data-variant="default"]:hover:not(:disabled) { background: oklch(0.36 0.01 255); }
+  .btn[data-variant="outline"] { @apply bg-card text-foreground border-input; }
+  .btn[data-variant="outline"]:hover:not(:disabled) { @apply bg-accent; }
+  .btn[data-variant="ghost"] { @apply text-foreground; }
+  .btn[data-variant="ghost"]:hover:not(:disabled) { @apply bg-accent; }
+  .btn[data-variant="link"] { @apply h-auto px-0 underline underline-offset-4 decoration-1 text-foreground; }
+  .btn[data-size="sm"] { @apply h-8 px-2.5 text-[13px]; }
+  .btn[data-size="icon"] { @apply h-8 w-8 px-0 justify-center; }
+  .btn:disabled { opacity: .45; }
+
+  .badge { @apply inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-xs font-medium whitespace-nowrap border; font-variant-numeric: tabular-nums; }
+  .badge[data-variant="outline"] { @apply border-input text-foreground bg-transparent; }
+  .badge[data-variant="secondary"] { @apply border-transparent bg-secondary text-secondary-foreground; }
+  .badge[data-variant="hotel"] { @apply border-line text-foreground bg-transparent; }
+  .badge[data-variant="business"] { @apply border-transparent bg-business text-business-foreground; }
+  .badge[data-variant="destructive"] { @apply border-transparent bg-destructive text-destructive-foreground; }
+  .badge[data-variant="warning"] { @apply border-transparent bg-warning text-warning-foreground; }
+  .badge[data-variant="draft"] { @apply border-dashed border-foreground text-foreground bg-transparent; }
+  .badge[data-variant="locked"] { @apply border-transparent bg-primary text-primary-foreground; }
+  .badge[data-variant="mutual"] { @apply border-transparent bg-mutual text-mutual-foreground; }
+
+  .kbd { @apply inline-flex items-center h-5 px-1.5 rounded-sm border border-border bg-muted text-[11px] font-medium text-muted-foreground; }
+
+  /* revision delta: the drafting mark for "needs attention" */
+  .delta { display: inline-block; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 8px solid var(--destructive); flex: none; }
+  .delta[data-dir="down"] { border-bottom: 0; border-top: 8px solid var(--destructive); }
+  .delta[data-tone="warning"] { border-bottom-color: var(--warning); }
+
+  /* ---------- toolbar ---------- */
+  .tabs-list { @apply inline-flex items-stretch gap-0 border border-input rounded-md bg-card p-0.5; }
+  .tabs-trigger { @apply inline-flex items-center gap-1.5 h-8 px-3 rounded-sm text-sm font-medium text-muted-foreground; }
+  .tabs-trigger:hover { @apply text-foreground; }
+  .tabs-trigger[aria-selected="true"] { @apply bg-primary text-primary-foreground; }
+
+  .input-group { @apply flex items-center h-9 rounded-md border border-input bg-card px-2.5 gap-2; }
+  .input-group:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .input-group input { @apply flex-1 min-w-0 h-full bg-transparent text-sm outline-none placeholder:text-muted-foreground; }
+  .input-group svg { width: 1rem; height: 1rem; color: var(--muted-foreground); flex: none; }
+  .select { @apply h-9 rounded-md border border-input bg-card pl-2.5 pr-8 text-sm appearance-none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232b2e33' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right .5rem center; }
+
+  /* ---------- slot scrubber (a scale ruler) ---------- */
+  .scrubber { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); border-bottom: 1px solid var(--line); position: relative; }
+  .scrub-seg { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: .9rem .6rem .55rem; text-align: left; border-left: 1px solid var(--line); min-width: 0;
+    background-image: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 10%); background-size: 100% 6px; background-repeat: no-repeat; background-position: top left; }
+  .scrub-seg:first-child { border-left: 0; }
+  .scrub-seg:hover { background-color: var(--accent); }
+  .scrub-seg[aria-checked="true"] { background-color: var(--primary); color: var(--primary-foreground); background-image: repeating-linear-gradient(90deg, oklch(0.974 0.004 106 / .5) 0 1px, transparent 1px 10%); }
+  .scrub-n { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; line-height: 1; }
+  .scrub-t { font-size: .75rem; line-height: 1; opacity: .8; }
+  .scrub-bar { display: flex; align-items: center; gap: 5px; width: 100%; font-size: .6875rem; line-height: 1; }
+  .scrub-bar > span:first-child { flex: 1; height: 4px; background: var(--border); position: relative; }
+  .scrub-seg[aria-checked="true"] .scrub-bar > span:first-child { background: oklch(0.974 0.004 106 / .25); }
+  .scrub-bar i { position: absolute; inset: 0 auto 0 0; background: var(--mutual); }
+  @media (max-width: 639px) { .scrub-seg { padding: .7rem .2rem .45rem; align-items: center; } .scrub-t, .scrub-bar b { display: none; } .scrub-n .lbl { display: none; } }
+
+  /* ---------- drawing sheet ---------- */
+  .drawing { background-color: var(--card); background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 24px 24px; }
+  .room { position: relative; border: 1.5px solid var(--foreground); box-shadow: inset 0 0 0 3px var(--card), inset 0 0 0 4px var(--line); padding: 1.1rem; background: transparent; }
+  .room[data-zone="business"] { border-color: var(--business); box-shadow: inset 0 0 0 3px var(--card), inset 0 0 0 4px var(--business); }
+  .room-label { position: absolute; top: -0.7rem; left: .9rem; padding: 0 .4rem; background: var(--card); font-family: var(--font-display); font-weight: 600; font-size: .875rem; }
+  .room[data-zone="business"] .room-label { color: var(--business); }
+  .entrance { position: absolute; bottom: -2px; left: 50%; width: 72px; transform: translateX(-50%); height: 4px; background: var(--card); }
+  .entrance svg { position: absolute; left: 0; top: 2px; width: 72px; height: 36px; overflow: visible; color: var(--line); }
+  .entrance-lbl { position: absolute; top: 42px; left: 50%; transform: translateX(-50%); font-size: .6875rem; color: var(--muted-foreground); white-space: nowrap; }
+
+  .dim { position: relative; display: flex; justify-content: center; height: 1rem; margin-bottom: .55rem; font-size: .75rem; color: var(--muted-foreground); }
+  .dim::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 9px; transform: translateY(-50%); border-left: 1px solid var(--line); border-right: 1px solid var(--line);
+    background: linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat; }
+  .dim span { position: relative; padding: 0 .5rem; background: var(--card); line-height: 1rem; }
+
+  .hall { container: hall / inline-size; display: flex; flex-direction: column; }
+  .biz { container: biz / inline-size; }
+  .bank { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); column-gap: 3px; }
+  .aisle { height: 1.6rem; position: relative; }
+  .aisle::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed var(--line); opacity: .55; }
+
+  .desk { position: relative; display: flex; flex-direction: column; gap: 3px; min-width: 0; min-height: 5rem; padding: .4rem .45rem .45rem; text-align: left;
+    background-color: var(--card); border: 1px solid var(--line); color: var(--foreground); border-radius: 1px; }
+  .desk[data-row="2"] { margin-top: -1px; }
+  .desk:hover { box-shadow: inset 0 0 0 1px var(--foreground); }
+  .desk[data-q="mutual"] { background-color: var(--mutual); }
+  .desk[data-q="one"] { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 6px); }
+  .desk[data-q="open"] { background-color: transparent; border-style: dashed; }
+  .desk[data-zone="business"] { border-color: var(--business); }
+  .desk[data-zone="business"] .desk-no { color: var(--business); }
+  .desk[data-zone="business"][data-q="mutual"] .desk-no { color: var(--foreground); }
+  .desk.is-dim { opacity: .22; }
+  .desk.is-target { outline: 2.5px solid var(--foreground); outline-offset: 2px; z-index: 2; }
+  .desk.is-match { box-shadow: inset 0 0 0 2px var(--foreground); }
+  .desk-top { display: flex; align-items: baseline; gap: .3rem; }
+  .desk-no { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; line-height: 1; }
+  .desk-ranks { margin-left: auto; display: flex; gap: .4rem; font-size: .6875rem; line-height: 1; font-weight: 600; }
+  .desk-ranks i { font-style: normal; font-weight: 500; color: var(--muted-foreground); margin-right: 1px; }
+  .desk-sup { font-size: .6875rem; line-height: 1.15; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desk-buyer { font-size: .75rem; line-height: 1.18; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .desk[data-q="open"] .desk-buyer { font-weight: 500; color: var(--muted-foreground); }
+  .desk .delta { position: absolute; right: 3px; bottom: 3px; }
+  @container hall (max-width: 860px) { .desk-sup { display: none; } .desk { min-height: 4.1rem; } }
+  @container hall (max-width: 600px) { .desk-ranks, .desk-buyer { display: none; } .desk { min-height: 2.6rem; align-items: center; justify-content: center; padding: .2rem; } .desk-top { justify-content: center; } }
+  @container biz (max-width: 330px) { .desk-sup { display: none; } .desk { min-height: 4.1rem; } }
+  @container biz (max-width: 200px) { .desk-ranks, .desk-buyer { display: none; } .desk { min-height: 2.6rem; align-items: center; justify-content: center; } }
+
+  .reseat .desk { animation: reseat .28s ease-out both; animation-delay: calc(var(--i) * 9ms); }
+  @keyframes reseat { from { opacity: .35; } to { opacity: 1; } }
+  .reseat .desk.is-dim { animation: none; }
+
+  .swatch { display: inline-block; width: 1.4rem; height: .9rem; border: 1px solid var(--line); flex: none; background: var(--card); }
+  .swatch[data-q="mutual"] { background: var(--mutual); }
+  .swatch[data-q="one"] { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 5px); }
+  .swatch[data-q="open"] { border-style: dashed; background: transparent; }
+
+  .title-block { border: 1.5px solid var(--foreground); background: var(--card); font-size: .8125rem; }
+  .title-block .tb-row { display: grid; grid-template-columns: 5.5rem 1fr; border-top: 1px solid var(--line); }
+  .title-block .tb-row:first-child { border-top: 0; }
+  .title-block .tb-row > * { padding: .35rem .55rem; min-width: 0; }
+  .title-block .tb-row > :first-child { color: var(--muted-foreground); border-right: 1px solid var(--line); }
+
+  .lobby-chip { display: inline-flex; align-items: center; gap: .45rem; max-width: 100%; min-height: 2rem; padding: .2rem .55rem; border: 1px solid var(--line); background: var(--card); border-radius: 999px; text-align: left; font-size: .8125rem; }
+  .lobby-chip:hover { background: var(--accent); }
+  .lobby-chip .org { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 15rem; }
+
+  /* ---------- schedule strip (buyers / suppliers lists) ---------- */
+  .strip { display: grid; grid-template-columns: repeat(var(--n), minmax(1.75rem, 1fr)); gap: 2px; }
+  .cell { height: 1.85rem; display: flex; align-items: center; justify-content: center; font-family: var(--font-display); font-weight: 600; font-size: .8125rem; border: 1px solid var(--line); background: var(--card); }
+  .cell[data-q="mutual"] { background: var(--mutual); }
+  .cell[data-q="one"] { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 5px); }
+  .cell[data-q="open"] { border-style: dashed; background: transparent; color: var(--muted-foreground); font-weight: 500; font-family: var(--font-sans); font-size: .6875rem; }
+  .cell[data-zone="business"] { border-color: var(--business); color: var(--business); }
+  .cell[data-zone="business"][data-q="mutual"] { color: var(--foreground); }
+  .cell.is-free-col { outline: 2px solid var(--foreground); outline-offset: 1px; }
+  .cell.is-match { box-shadow: inset 0 0 0 2px var(--foreground); }
+  button.cell:hover { box-shadow: inset 0 0 0 1px var(--foreground); }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  .tbl th { text-align: left; font-weight: 500; color: var(--muted-foreground); font-size: .75rem; padding: .5rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .tbl td { padding: .45rem .6rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .tbl tbody tr:hover td { background: oklch(0.27 0.01 255 / 0.03); }
+  .tbl .group-row td { background: var(--muted); font-family: var(--font-display); font-weight: 600; font-size: .875rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
+  .row-name { text-align: left; min-width: 0; max-width: 100%; display: block; }
+  .row-name .org { font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-name .sub { font-size: .8125rem; color: var(--muted-foreground); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-name:hover .org { text-decoration: underline; text-underline-offset: 3px; }
+  @media (max-width: 767px) {
+    .tbl:not(.tbl-keep) thead { display: none; }
+    .tbl:not(.tbl-keep), .tbl:not(.tbl-keep) tbody { display: block; }
+    .tbl:not(.tbl-keep) tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .35rem .6rem; padding: .6rem .25rem; border-bottom: 1px solid var(--border); }
+    .tbl:not(.tbl-keep) tbody tr.group-row { display: block; padding: 0; }
+    .tbl:not(.tbl-keep) td { border: 0; padding: 0; max-width: none; width: auto; min-width: 0; }
+    .tbl:not(.tbl-keep) tbody tr.group-row td { padding: .4rem .6rem; }
+    .tbl:not(.tbl-keep) td.c-strip { grid-column: 1 / -1; }
+    .tbl:not(.tbl-keep) td.c-hide-sm { display: none; }
+  }
+
+  /* ---------- overlays ---------- */
+  .scrim { position: fixed; inset: 0; background: oklch(0.27 0.01 255 / 0.28); opacity: 0; pointer-events: none; transition: opacity .18s; z-index: 40; }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+  .sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(31rem, 100vw); background: var(--card); border-left: 1.5px solid var(--foreground); z-index: 50;
+    transform: translateX(100%); transition: transform .22s cubic-bezier(.2,.7,.2,1); display: flex; flex-direction: column; visibility: hidden; }
+  .sheet.open { transform: none; visibility: visible; }
+  .dialog { position: fixed; left: 50%; top: 18vh; transform: translateX(-50%); width: min(30rem, calc(100vw - 1.5rem)); background: var(--popover); border: 1.5px solid var(--foreground); z-index: 60; display: none; }
+  .dialog.open { display: block; }
+  .popover { position: absolute; background: var(--popover); border: 1px solid var(--foreground); z-index: 30; display: none; min-width: 16rem; }
+  .popover.open { display: block; }
+  .hover-card { position: fixed; z-index: 70; width: 18rem; background: var(--popover); border: 1px solid var(--foreground); padding: .7rem .8rem; font-size: .8125rem; pointer-events: none; display: none; box-shadow: 3px 3px 0 var(--hatch); }
+  .hover-card.open { display: block; }
+  .toaster { position: fixed; right: 1rem; bottom: 1rem; z-index: 80; display: flex; flex-direction: column; gap: .5rem; width: min(22rem, calc(100vw - 2rem)); }
+  .toast { background: var(--primary); color: var(--primary-foreground); padding: .7rem .9rem; font-size: .875rem; border-left: 4px solid var(--mutual); animation: toast-in .2s ease-out; }
+  @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+  .cmd-item[aria-selected="true"] { background: var(--accent); }
+
+  .slot-row { display: grid; grid-template-columns: 6.2rem minmax(0, 1fr); gap: .75rem; padding: .7rem 0; border-top: 1px solid var(--border); }
+  .slot-row:first-child { border-top: 0; }
+  .slot-open { border: 1px dashed var(--line); padding: .5rem .65rem; color: var(--muted-foreground); font-size: .8125rem; }
+  .appt-btn { display: block; width: 100%; text-align: left; padding: .45rem .6rem; border: 1px solid var(--line); background: var(--card); }
+  .appt-btn[data-q="mutual"] { background: var(--mutual); }
+  .appt-btn[data-q="one"] { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 7px); }
+  .appt-btn[data-zone="business"] { border-left: 4px solid var(--business); }
+  .appt-btn:hover { box-shadow: inset 0 0 0 1px var(--foreground); }
+
+  .bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; }
+  .stack { display: flex; height: 2.25rem; border: 1px solid var(--foreground); }
+  .stack > span { display: block; height: 100%; }
+  .progress { height: 6px; background: var(--muted); border: 1px solid var(--line); position: relative; }
+  .progress > span { position: absolute; inset: 0 auto 0 0; background: var(--foreground); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<a href="#view" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[90] focus:bg-card focus:px-3 focus:py-2">Skip to schedule</a>
+
+<header class="border-b border-line bg-card">
+  <div class="mx-auto max-w-[1520px] px-4 sm:px-6 py-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+    <div class="flex items-center gap-3 min-w-0 mr-auto">
+      <svg aria-hidden="true" viewBox="0 0 32 32" class="size-9 flex-none"><rect x="1" y="1" width="30" height="30" fill="var(--mutual)" stroke="var(--foreground)" stroke-width="1.5"/><path d="M7 9h7v5H7zM18 9h7v5h-7zM7 18h7v5H7z" fill="none" stroke="var(--foreground)" stroke-width="1.5"/><path d="M18 18h7v5h-7z" fill="var(--foreground)"/></svg>
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 id="ev-name" class="font-display font-semibold text-xl sm:text-2xl leading-tight"></h1>
+          <span id="ev-status" data-slot="badge"></span>
+        </div>
+        <p id="ev-meta" class="text-sm text-muted-foreground"></p>
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 relative" role="group" aria-label="Schedule actions">
+      <button class="btn" data-slot="button" data-variant="outline" id="act-run"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>Run matching</button>
+      <button class="btn" data-slot="button" data-variant="outline" id="act-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>Edit schedule</button>
+      <button class="btn" data-slot="button" data-variant="default" id="act-lock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>Lock schedule</span></button>
+      <button class="btn" data-slot="button" data-variant="outline" id="act-export" aria-haspopup="menu" aria-expanded="false" aria-controls="export-pop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>Export</button>
+      <div id="export-pop" class="popover right-0 top-11" data-slot="popover" role="menu" aria-label="Export">
+        <div class="px-3 pt-2.5 pb-1.5 text-xs text-muted-foreground">Export the current draft</div>
+        <div class="flex flex-col pb-1.5" data-slot="command-group">
+          <button role="menuitem" class="text-left px-3 py-2 text-sm hover:bg-accent" data-export="Master schedule workbook">Master schedule (Excel)<span class="block text-xs text-muted-foreground">Every appointment, one sheet per slot</span></button>
+          <button role="menuitem" class="text-left px-3 py-2 text-sm hover:bg-accent" data-export="Supplier schedules">Supplier schedules (PDF)<span class="block text-xs text-muted-foreground">One page per desk</span></button>
+          <button role="menuitem" class="text-left px-3 py-2 text-sm hover:bg-accent" data-export="Buyer schedules">Buyer schedules (PDF)<span class="block text-xs text-muted-foreground">One page per buyer, ready to email</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="mx-auto max-w-[1520px] px-4 sm:px-6">
+  <div class="flex flex-wrap items-center gap-3 py-3">
+    <div class="tabs-list overflow-x-auto max-w-full" role="tablist" aria-label="Schedule views" data-slot="tabs-list" id="tabs"></div>
+    <div class="flex flex-1 flex-wrap items-center gap-2 min-w-[min(100%,18rem)] justify-end">
+      <label class="input-group flex-1 min-w-[12rem] max-w-md" data-slot="input-group">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <span class="sr-only">Search buyers, organizations and suppliers</span>
+        <input id="q" type="search" autocomplete="off" placeholder="Search buyer, organization or supplier" data-slot="input-group-input">
+        <button type="button" class="kbd hidden sm:inline-flex" id="open-cmd" data-slot="kbd" aria-label="Open quick find">⌘K</button>
+      </label>
+      <label class="flex items-center gap-2 text-sm">
+        <span class="text-muted-foreground whitespace-nowrap">Free in</span>
+        <select id="free" class="select" data-slot="select" aria-label="Show only buyers or suppliers free in this slot"></select>
+      </label>
+    </div>
+  </div>
+</div>
+
+<main id="view" tabindex="-1" class="mx-auto max-w-[1520px] px-4 sm:px-6 pb-16 outline-none"></main>
+
+<!-- overlays -->
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" data-slot="sheet"></aside>
+<div class="dialog" id="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" data-slot="dialog"></div>
+<div class="dialog" id="cmd" role="dialog" aria-modal="true" aria-label="Quick find" data-slot="command"></div>
+<div class="hover-card" id="hc" role="tooltip" data-slot="hover-card"></div>
+<div class="toaster" id="toaster" aria-live="polite" data-slot="sonner"></div>
+
+<script src="../shared/aw-data.js"></script>
+<script>
+(() => {
+  'use strict';
+  const D = window.AW_DATA;
+  if (!D) { document.getElementById('view').textContent = 'Schedule data did not load. Serve this page from the designs folder.'; return; }
+
+  /* ================= data model ================= */
+  const SET = D.event.settings;
+  const SLOTS = D.slots.slice().sort((a, b) => a.n - b.n);
+  const NS = SLOTS.length;
+  const TOP = SET.mutualTopN;
+  const slotBy = new Map(SLOTS.map(s => [s.n, s]));
+  const isTop = r => r != null && r <= TOP;
+  const qualityOf = a => (isTop(a.buyerRank) && isTop(a.supplierRank)) ? 'mutual' : (isTop(a.buyerRank) || isTop(a.supplierRank)) ? 'one' : 'none';
+  const QLABEL = { mutual: `Mutual top-${TOP}`, one: `One side top-${TOP}`, none: `Neither side top-${TOP}`, open: 'Open' };
+
+  const suppliers = D.suppliers.slice().sort((a, b) => a.desk - b.desk);
+  const buyers = D.buyers.slice().sort((a, b) => a.organization.localeCompare(b.organization) || a.title.localeCompare(b.title));
+  const supBy = new Map(suppliers.map(s => [s.name, s]));
+  const buyerBy = new Map(buyers.map(b => [b.name, b]));
+  const appts = D.appointments.map((a, id) => ({ ...a, id, q: qualityOf(a), blank: a.buyerRank == null || a.supplierRank == null }));
+  const blankRow = () => new Array(NS + 1).fill(null);
+  const supGrid = new Map(suppliers.map(s => [s.name, blankRow()]));
+  const buyGrid = new Map(buyers.map(b => [b.name, blankRow()]));
+  const supCount = new Map(suppliers.map(s => [s.name, 0]));
+  const buyCount = new Map(buyers.map(b => [b.name, 0]));
+  const slotIdx = new Map(SLOTS.map((s, i) => [s.n, i + 1]));
+  appts.forEach(a => {
+    const i = slotIdx.get(a.slot);
+    if (supGrid.has(a.supplier)) { supGrid.get(a.supplier)[i] = a; supCount.set(a.supplier, supCount.get(a.supplier) + 1); }
+    if (buyGrid.has(a.buyer)) { buyGrid.get(a.buyer)[i] = a; buyCount.set(a.buyer, buyCount.get(a.buyer) + 1); }
+  });
+  const at = (grid, name, n) => grid.get(name)?.[slotIdx.get(n)] || null;
+
+  const buyerState = n => n < SET.buyerMin ? 'below' : n > SET.buyerMax ? 'above' : 'ok';
+  const supState = n => n === SET.supplierTarget ? 'ok' : n < SET.supplierTarget ? 'below' : 'above';
+  const freeSuppliers = n => suppliers.filter(s => !at(supGrid, s.name, n));
+  const freeBuyers = n => buyers.filter(b => !at(buyGrid, b.name, n));
+
+  const STATS = (() => {
+    const q = { mutual: 0, one: 0, none: 0 };
+    appts.forEach(a => q[a.q]++);
+    const counts = buyers.map(b => buyCount.get(b.name));
+    const lo = Math.min(SET.buyerMin, ...counts), hi = Math.max(SET.buyerMax, ...counts);
+    const dist = [];
+    for (let k = lo; k <= hi; k++) dist.push({ k, n: counts.filter(c => c === k).length });
+    return {
+      total: appts.length, q,
+      blank: appts.filter(a => a.blank).length,
+      blankBuyer: appts.filter(a => a.buyerRank == null).length,
+      blankSupplier: appts.filter(a => a.supplierRank == null).length,
+      supAt: suppliers.filter(s => supState(supCount.get(s.name)) === 'ok').length,
+      supOff: suppliers.filter(s => supState(supCount.get(s.name)) !== 'ok'),
+      buyOk: buyers.filter(b => buyerState(buyCount.get(b.name)) === 'ok').length,
+      below: buyers.filter(b => buyerState(buyCount.get(b.name)) === 'below').sort((a, b) => buyCount.get(a.name) - buyCount.get(b.name)),
+      above: buyers.filter(b => buyerState(buyCount.get(b.name)) === 'above').sort((a, b) => buyCount.get(b.name) - buyCount.get(a.name)),
+      dist,
+      hotels: suppliers.filter(s => s.type !== 'business').length,
+      business: suppliers.filter(s => s.type === 'business').length,
+    };
+  })();
+  const floorFull = SLOTS.every(s => freeSuppliers(s.n).length === 0);
+  const issueCount = STATS.below.length + STATS.above.length + STATS.supOff.length;
+
+  /* ================= helpers ================= */
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const rk = r => r == null ? '–' : r;
+  const pct = (a, b) => b ? Math.round((a / b) * 1000) / 10 : 0;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+  const timeRange = s => {
+    const [a, ap] = s.start.split(' '), [b, bp] = s.end.split(' ');
+    return ap === bp ? `${a} to ${b} ${bp}` : `${s.start} to ${s.end}`;
+  };
+  const showDate = (() => {
+    const [y, m, d] = D.event.date.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  })();
+  const norm = s => s.toLowerCase();
+  const query = () => norm(state.q.trim());
+  const buyerHit = (b, q) => !!q && norm(b.name).includes(q);
+  const supHit = (s, q) => !!q && norm(s.name).includes(q);
+  const typeBadge = t => t === 'business' ? '<span class="badge" data-slot="badge" data-variant="business">Business</span>' : '<span class="badge" data-slot="badge" data-variant="hotel">Hotel</span>';
+  const countBadge = (n, kind) => {
+    const st = kind === 'buyer' ? buyerState(n) : supState(n);
+    if (st === 'ok') return `<span class="badge" data-slot="badge" data-variant="outline">${n}</span>`;
+    const v = st === 'below' ? 'destructive' : 'warning';
+    const txt = kind === 'buyer' ? (st === 'below' ? `below ${SET.buyerMin}` : `above ${SET.buyerMax}`) : `target ${SET.supplierTarget}`;
+    return `<span class="badge" data-slot="badge" data-variant="${v}">${n},<span class="font-normal">${txt}</span></span>`;
+  };
+  const toneFor = st => st === 'above' ? ' data-tone="warning"' : '';
+
+  /* ================= state ================= */
+  const state = { view: 'floor', slot: SLOTS[0].n, q: '', free: 0, sheet: null, locked: false, editing: false, buyerSort: 'name', reseat: false };
+  const VIEWS = [
+    { id: 'floor', label: 'Floor plan' },
+    { id: 'buyers', label: 'Buyers' },
+    { id: 'suppliers', label: 'Suppliers' },
+    { id: 'quality', label: 'Quality' },
+  ];
+
+  /* ================= header + toolbar ================= */
+  function renderChrome() {
+    document.getElementById('ev-name').textContent = D.event.name;
+    document.getElementById('ev-meta').textContent = `${D.event.client}, ${showDate}. ${plural(suppliers.length, 'supplier desk')}, ${plural(buyers.length, 'buyer')}, ${plural(NS, 'slot')}.`;
+    const st = document.getElementById('ev-status');
+    st.className = 'badge';
+    st.dataset.variant = state.locked ? 'locked' : 'draft';
+    st.textContent = state.locked ? 'Locked' : state.editing ? 'Draft, editing' : 'Draft, not locked';
+    document.getElementById('act-run').disabled = state.locked;
+    document.getElementById('act-edit').disabled = state.locked;
+    document.querySelector('#act-lock span').textContent = state.locked ? 'Unlock schedule' : 'Lock schedule';
+
+    document.getElementById('tabs').innerHTML = VIEWS.map(v => {
+      const sel = state.view === v.id;
+      const extra = v.id === 'quality' && issueCount ? `<span class="delta" aria-hidden="true"></span><span class="sr-only">, ${plural(issueCount, 'problem')}</span>` : '';
+      return `<button role="tab" class="tabs-trigger" data-slot="tabs-trigger" aria-selected="${sel}" tabindex="${sel ? 0 : -1}" aria-controls="view" data-view="${v.id}">${v.label}${extra}</button>`;
+    }).join('');
+
+    const free = document.getElementById('free');
+    if (!free.options.length) {
+      free.innerHTML = `<option value="0">Any slot</option>` + SLOTS.map(s => `<option value="${s.n}">Slot ${s.n}, ${s.start}</option>`).join('');
+    }
+    free.value = String(state.free);
+  }
+
+  /* ================= floor plan (by time slot) ================= */
+  function deskHTML(s, i, row) {
+    const a = at(supGrid, s.name, state.slot);
+    const q = query();
+    const b = a ? buyerBy.get(a.buyer) : null;
+    const qual = a ? a.q : 'open';
+    const matched = q && (supHit(s, q) || (b && buyerHit(b, q)));
+    const dimByQ = q && !matched;
+    const dimByFree = state.free && at(supGrid, s.name, state.free);
+    const target = state.sheet && ((state.sheet.kind === 'supplier' && state.sheet.name === s.name) || (state.sheet.kind === 'buyer' && a && a.buyer === state.sheet.name));
+    const cls = ['desk', dimByQ || dimByFree ? 'is-dim' : '', matched ? 'is-match' : '', target ? 'is-target' : ''].join(' ');
+    const off = supState(supCount.get(s.name)) !== 'ok';
+    const label = a
+      ? `Desk ${s.desk}, ${s.name}. Slot ${state.slot}: ${b ? b.organization + ', ' + b.title : a.buyer}. Buyer rank ${rk(a.buyerRank)}, supplier rank ${rk(a.supplierRank)}. ${QLABEL[a.q]}.`
+      : `Desk ${s.desk}, ${s.name}. Open in slot ${state.slot}.`;
+    return `<button class="${cls}" style="--i:${i}" data-row="${row}" data-q="${qual}" data-zone="${s.type === 'business' ? 'business' : 'hotel'}" data-sup="${esc(s.name)}" ${a ? `data-appt="${a.id}"` : ''} aria-label="${esc(label)}${off ? ' Appointment count needs attention.' : ''}">
+      <span class="desk-top"><span class="desk-no">${s.desk}</span>${a ? `<span class="desk-ranks"><span><i>B</i>${rk(a.buyerRank)}</span><span><i>S</i>${rk(a.supplierRank)}</span></span>` : ''}</span>
+      <span class="desk-sup">${esc(s.name)}</span>
+      <span class="desk-buyer">${a ? esc(b ? b.organization : a.buyer) : 'Open'}</span>
+      ${off ? '<span class="delta" aria-hidden="true"></span>' : ''}
+    </button>`;
+  }
+
+  function renderFloor() {
+    const sl = slotBy.get(state.slot);
+    const q = query();
+    const COLS = 8, PER_BANK = COLS * 2;
+    const hotels = suppliers.filter(s => s.type !== 'business');
+    const biz = suppliers.filter(s => s.type === 'business');
+    const banks = [];
+    for (let i = 0; i < hotels.length; i += PER_BANK) banks.push(hotels.slice(i, i + PER_BANK));
+    let idx = 0;
+    const hallHTML = banks.map((bank, bi) => {
+      const desks = bank.map((s, j) => deskHTML(s, idx++, j < COLS ? 1 : 2)).join('');
+      return (bi ? '<div class="aisle" aria-hidden="true"></div>' : '') + `<div class="bank" style="--cols:${COLS}" role="group" aria-label="Desks ${bank[0].desk} to ${bank[bank.length - 1].desk}">${desks}</div>`;
+    }).join('');
+    const bizHTML = `<div class="bank" style="--cols:3">${biz.map((s, j) => deskHTML(s, idx++, j < 3 ? 1 : 2)).join('')}</div>`;
+
+    const inSlot = appts.filter(a => a.slot === state.slot);
+    const sq = { mutual: 0, one: 0, none: 0 };
+    inSlot.forEach(a => sq[a.q]++);
+    const openDesks = freeSuppliers(state.slot).length;
+    const blankHere = inSlot.filter(a => a.blank).length;
+
+    const matchCount = q ? suppliers.filter(s => {
+      const a = at(supGrid, s.name, state.slot);
+      return supHit(s, q) || (a && buyerHit(buyerBy.get(a.buyer), q));
+    }).length : 0;
+
+    // lobby: buyers with no appointment in this slot
+    const lobby = freeBuyers(state.slot)
+      .filter(b => !q || buyerHit(b, q))
+      .sort((a, b) => buyCount.get(a.name) - buyCount.get(b.name) || a.name.localeCompare(b.name));
+    const lobbyAll = freeBuyers(state.slot).length;
+
+    const scrub = SLOTS.map(s => {
+      const list = appts.filter(a => a.slot === s.n);
+      const m = list.filter(a => a.q === 'mutual').length;
+      const sel = s.n === state.slot;
+      return `<button role="radio" aria-checked="${sel}" tabindex="${sel ? 0 : -1}" class="scrub-seg" data-slot="toggle-group-item" data-n="${s.n}" aria-label="Slot ${s.n}, ${timeRange(s)}. ${m} of ${list.length} meetings mutual top-${TOP}.">
+        <span class="scrub-n"><span class="lbl">Slot </span>${s.n}</span>
+        <span class="scrub-t">${s.start}</span>
+        <span class="scrub-bar" aria-hidden="true"><span><i style="width:${pct(m, list.length)}%"></i></span><b class="font-medium">${m}</b></span>
+      </button>`;
+    }).join('');
+
+    const freeAlert = state.free ? (() => {
+      const n = freeSuppliers(state.free).length;
+      return `<div data-slot="alert" role="status" class="flex items-start gap-3 border border-line bg-card px-4 py-3 text-sm mb-4">
+        <span class="delta mt-1"${n ? ' data-tone="warning"' : ''} aria-hidden="true"></span>
+        <div><p class="font-medium">${n ? `${plural(n, 'desk')} free in slot ${state.free}. Booked desks are faded.` : `No desk is free in slot ${state.free}. All ${suppliers.length} suppliers are booked then.`}</p>
+        <p class="text-muted-foreground">${n ? 'A free desk can take a buyer who is below target.' : 'To give a buyer a meeting in this slot, swap them in for a buyer who has more meetings.'}</p>
+        <button class="btn mt-1" data-slot="button" data-variant="link" data-go-buyers="${state.free}">Show buyers free in slot ${state.free}</button></div></div>`;
+    })() : '';
+
+    const lobbyHTML = lobby.length
+      ? `<div class="flex flex-wrap gap-2">${lobby.map(b => {
+          const n = buyCount.get(b.name), st = buyerState(n);
+          return `<button class="lobby-chip" data-buyer="${esc(b.name)}" aria-label="${esc(b.organization + ', ' + b.title)}. ${n} appointments.">
+            ${st !== 'ok' ? `<span class="delta"${toneFor(st)} aria-hidden="true"></span>` : ''}
+            <span class="org">${esc(b.organization)}</span><span class="text-muted-foreground whitespace-nowrap">${n} of ${SET.buyerMin} to ${SET.buyerMax}</span></button>`;
+        }).join('')}</div>`
+      : `<div data-slot="empty" class="text-sm text-muted-foreground py-1">${q ? `No buyer matching "${esc(state.q)}" is free in slot ${state.slot}.` : `Every buyer is seated in slot ${state.slot}.`}</div>`;
+
+    const legendRow = (k, n, label) => `<li class="flex items-center gap-2"><span class="swatch" data-q="${k}" aria-hidden="true"></span><span class="flex-1">${label}</span><span class="font-semibold">${n}</span></li>`;
+
+    document.getElementById('view').innerHTML = `
+      <section data-slot="card" class="border border-line bg-card" aria-label="Floor plan for slot ${state.slot}">
+        <div class="scrubber" role="radiogroup" aria-label="Time slot" data-slot="toggle-group" style="--n:${NS}">${scrub}</div>
+        <div class="drawing p-4 sm:p-6">
+          ${freeAlert}
+          <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 mb-5">
+            <h2 class="font-display font-semibold text-2xl sm:text-3xl leading-none">Slot ${state.slot}<span class="font-medium text-muted-foreground">, ${timeRange(sl)}</span></h2>
+            <p class="text-sm text-muted-foreground" aria-live="polite">${q ? `${plural(matchCount, 'desk matches', 'desks match')} "${esc(state.q)}" in this slot.` : 'Pick a desk to see its supplier’s full afternoon. Use the arrow keys on the ruler to move between slots.'}</p>
+          </div>
+          <div class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_19rem] xl:grid-cols-[minmax(0,1fr)_21rem]">
+            <div class="min-w-0">
+              <div class="dim"><span>Hotels and destinations, ${plural(STATS.hotels, 'desk')}</span></div>
+              <div class="room" data-zone="hotel">
+                <div class="hall ${state.reseat ? 'reseat' : ''}">${hallHTML}</div>
+                <div class="entrance" aria-hidden="true"><svg viewBox="0 0 72 36"><path d="M0 0 V36 M72 0 V36" stroke="currentColor"/><path d="M36 0 A36 36 0 0 1 0 36 M36 0 A36 36 0 0 0 72 36" fill="none" stroke="currentColor" stroke-dasharray="3 3"/></svg><span class="entrance-lbl">Entrance</span></div>
+              </div>
+              <section class="mt-16" aria-labelledby="lobby-h">
+                <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3">
+                  <h3 id="lobby-h" class="font-display font-semibold text-lg">Lobby</h3>
+                  <p class="text-sm text-muted-foreground">${plural(lobbyAll, 'buyer has', 'buyers have')} no meeting in slot ${state.slot}. Buyers furthest below target come first.</p>
+                </div>
+                <div data-slot="scroll-area" class="max-h-56 overflow-auto pr-1">${lobbyHTML}</div>
+              </section>
+            </div>
+            <div class="flex flex-col gap-8 min-w-0">
+              <div>
+                <div class="dim"><span>Business vendors, ${plural(STATS.business, 'desk')}</span></div>
+                <div class="room" data-zone="business"><div class="biz ${state.reseat ? 'reseat' : ''}">${bizHTML}</div></div>
+              </div>
+              <div class="title-block" data-slot="card" aria-label="Title block and legend">
+                <div class="tb-row"><span>Project</span><span class="font-semibold">${esc(D.event.name)}</span></div>
+                <div class="tb-row"><span>Client</span><span>${esc(D.event.client)}</span></div>
+                <div class="tb-row"><span>Show date</span><span>${esc(showDate)}</span></div>
+                <div class="tb-row"><span>Sheet</span><span>Slot ${state.slot} of ${NS}, ${timeRange(sl)}</span></div>
+                <div class="tb-row"><span>Status</span><span>${state.locked ? 'Locked' : 'Draft, not locked'}</span></div>
+                <div class="tb-row"><span>This slot</span>
+                  <ul class="flex flex-col gap-1.5 py-1">
+                    ${legendRow('mutual', sq.mutual, QLABEL.mutual)}
+                    ${legendRow('one', sq.one, QLABEL.one)}
+                    ${legendRow('none', sq.none, QLABEL.none)}
+                    ${legendRow('open', openDesks, 'Open desk')}
+                    <li class="flex items-center gap-2"><span class="w-[1.4rem] flex justify-center"><span class="delta" aria-hidden="true"></span></span><span class="flex-1">Counts off target, all day</span><span class="font-semibold">${STATS.supOff.length + STATS.below.length + STATS.above.length}</span></li>
+                  </ul>
+                </div>
+                <div class="tb-row"><span>Reading</span><span class="text-muted-foreground">B is the buyer's rank of the supplier, S the supplier's rank of the buyer. A dash means left blank (${plural(blankHere, 'meeting')} here).</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>`;
+    state.reseat = false;
+  }
+
+  /* ================= buyers ================= */
+  function stripHTML(row, kind, highlightSup) {
+    const q = query();
+    return `<div class="strip" style="--n:${NS}" data-slot="toggle-group">${SLOTS.map(s => {
+      const a = row[slotIdx.get(s.n)];
+      const freeCol = state.free === s.n ? ' is-free-col' : '';
+      if (!a) return `<span class="cell${freeCol}" data-q="open" aria-label="Slot ${s.n}, open">Open</span>`;
+      const sup = supBy.get(a.supplier);
+      const other = kind === 'buyer' ? sup : buyerBy.get(a.buyer);
+      const hit = q && (kind === 'buyer' ? supHit(sup, q) : buyerHit(other, q)) ? ' is-match' : '';
+      const text = kind === 'buyer' ? sup.desk : '';
+      const target = kind === 'buyer' ? `data-sup="${esc(a.supplier)}"` : `data-buyer="${esc(a.buyer)}"`;
+      return `<button class="cell${freeCol}${hit}" data-q="${a.q}" data-zone="${sup.type === 'business' ? 'business' : 'hotel'}" data-appt="${a.id}" ${target} aria-label="Slot ${s.n}, ${esc(kind === 'buyer' ? 'desk ' + sup.desk + ', ' + sup.name : other.organization)}. ${QLABEL[a.q]}.">${text}</button>`;
+    }).join('')}</div>`;
+  }
+
+  function slotHeader() {
+    return `<div class="strip" style="--n:${NS}" aria-hidden="true">${SLOTS.map(s => `<span class="text-center ${state.free === s.n ? 'text-foreground font-semibold' : ''}" title="${timeRange(s)}">${s.n}</span>`).join('')}</div>`;
+  }
+
+  function emptyHTML(title, body, action) {
+    return `<div data-slot="empty" class="border border-dashed border-line px-6 py-10 text-center">
+      <p class="font-display font-semibold text-lg">${title}</p><p class="text-sm text-muted-foreground mt-1 max-w-prose mx-auto">${body}</p>${action || ''}</div>`;
+  }
+
+  function renderBuyers() {
+    const q = query();
+    let list = buyers.filter(b => !q || buyerHit(b, q) || buyGrid.get(b.name).some(a => a && supHit(supBy.get(a.supplier), q)));
+    if (state.free) list = list.filter(b => !at(buyGrid, b.name, state.free));
+    if (state.buyerSort === 'count') list = list.slice().sort((a, b) => buyCount.get(a.name) - buyCount.get(b.name) || a.name.localeCompare(b.name));
+    const filterNote = [q && `matching "${esc(state.q)}"`, state.free && `free in slot ${state.free}`].filter(Boolean).join(' and ');
+    const rows = list.map(b => {
+      const n = buyCount.get(b.name), st = buyerState(n);
+      const m = buyGrid.get(b.name).filter(a => a && a.q === 'mutual').length;
+      return `<tr data-row-buyer="${esc(b.name)}">
+        <td class="max-w-0 w-[34%] min-w-0"><button class="row-name w-full" data-buyer="${esc(b.name)}"><span class="org">${st !== 'ok' ? `<span class="delta mr-1.5 align-middle"${toneFor(st)} aria-hidden="true"></span>` : ''}${esc(b.organization)}</span><span class="sub">${esc(b.title)}</span></button></td>
+        <td class="whitespace-nowrap">${countBadge(n, 'buyer')}</td>
+        <td class="c-strip min-w-[19rem]">${stripHTML(buyGrid.get(b.name), 'buyer')}</td>
+        <td class="c-hide-sm text-right whitespace-nowrap">${m}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('view').innerHTML = `
+      <section data-slot="card" class="border border-line bg-card">
+        <div class="flex flex-wrap items-end justify-between gap-3 px-4 sm:px-5 pt-5 pb-4">
+          <div>
+            <h2 class="font-display font-semibold text-2xl">Buyers</h2>
+            <p class="text-sm text-muted-foreground">${plural(list.length, 'buyer')}${filterNote ? ' ' + filterNote : ''}. Cells show the desk number for each slot. Target is ${SET.buyerMin} to ${SET.buyerMax} meetings.</p>
+          </div>
+          <div class="tabs-list" role="radiogroup" aria-label="Sort buyers" data-slot="toggle-group">
+            <button role="radio" class="tabs-trigger" data-slot="toggle-group-item" aria-checked="${state.buyerSort === 'name'}" aria-selected="${state.buyerSort === 'name'}" data-sort="name">A to Z</button>
+            <button role="radio" class="tabs-trigger" data-slot="toggle-group-item" aria-checked="${state.buyerSort === 'count'}" aria-selected="${state.buyerSort === 'count'}" data-sort="count">Fewest meetings first</button>
+          </div>
+        </div>
+        <div data-slot="scroll-area" class="overflow-x-auto px-2 sm:px-3 pb-3">
+          ${list.length ? `<table class="tbl" data-slot="table"><thead><tr><th>Buyer</th><th>Meetings</th><th>${slotHeader()}</th><th class="text-right">Mutual</th></tr></thead><tbody>${rows}</tbody></table>`
+            : emptyHTML('No buyers to show', state.free ? `No buyer${q ? ' matching your search' : ''} is free in slot ${state.free}.` : `Nothing matches "${esc(state.q)}". Try an organization or supplier name.`, `<button class="btn mt-4" data-slot="button" data-variant="outline" data-clear>Clear search and filter</button>`)}
+        </div>
+      </section>`;
+  }
+
+  /* ================= suppliers ================= */
+  function renderSuppliers() {
+    const q = query();
+    let list = suppliers.filter(s => !q || supHit(s, q) || supGrid.get(s.name).some(a => a && buyerHit(buyerBy.get(a.buyer), q)));
+    if (state.free) list = list.filter(s => !at(supGrid, s.name, state.free));
+    const filterNote = [q && `matching "${esc(state.q)}"`, state.free && `free in slot ${state.free}`].filter(Boolean).join(' and ');
+    const group = (title, items) => items.length ? `<tr class="group-row"><td colspan="5">${title}, ${items.length}</td></tr>` + items.map(s => {
+      const n = supCount.get(s.name), st = supState(n);
+      const m = supGrid.get(s.name).filter(a => a && a.q === 'mutual').length;
+      return `<tr>
+        <td class="c-hide-sm w-14 font-display font-bold text-lg ${s.type === 'business' ? 'text-business' : ''}">${s.desk}</td>
+        <td class="max-w-0 w-[32%]"><button class="row-name w-full" data-sup="${esc(s.name)}"><span class="org">${st !== 'ok' ? `<span class="delta mr-1.5 align-middle" aria-hidden="true"></span>` : ''}<span class="md:hidden">${s.desk}. </span>${esc(s.name)}</span><span class="sub">${s.type === 'business' ? 'Business vendor' : 'Hotel or destination'}</span></button></td>
+        <td class="whitespace-nowrap">${countBadge(n, 'supplier')}</td>
+        <td class="c-strip min-w-[19rem]">${stripHTML(supGrid.get(s.name), 'supplier')}</td>
+        <td class="c-hide-sm text-right whitespace-nowrap">${m}</td>
+      </tr>`;
+    }).join('') : '';
+    const body = group('Hotels and destinations', list.filter(s => s.type !== 'business')) + group('Business vendors', list.filter(s => s.type === 'business'));
+    document.getElementById('view').innerHTML = `
+      <section data-slot="card" class="border border-line bg-card">
+        <div class="px-4 sm:px-5 pt-5 pb-4">
+          <h2 class="font-display font-semibold text-2xl">Suppliers</h2>
+          <p class="text-sm text-muted-foreground">${plural(list.length, 'supplier')}${filterNote ? ' ' + filterNote : ''}, in desk order. Every desk should have ${SET.supplierTarget} meetings. Hover a cell for the buyer and ranks.</p>
+        </div>
+        <div data-slot="scroll-area" class="overflow-x-auto px-2 sm:px-3 pb-3">
+          ${list.length ? `<table class="tbl" data-slot="table"><thead><tr><th>Desk</th><th>Supplier</th><th>Meetings</th><th>${slotHeader()}</th><th class="text-right">Mutual</th></tr></thead><tbody>${body}</tbody></table>`
+            : emptyHTML('No suppliers to show', state.free ? `No supplier${q ? ' matching your search' : ''} has an open slot ${state.free}. ${!q ? `All ${suppliers.length} desks are booked then, so a buyer short of meetings needs a swap rather than an empty desk.` : ''}` : `Nothing matches "${esc(state.q)}". Try a hotel, vendor or buyer organization.`, `<button class="btn mt-4" data-slot="button" data-variant="outline" data-clear>Clear search and filter</button>`)}
+        </div>
+      </section>`;
+  }
+
+  /* ================= quality ================= */
+  function renderQuality() {
+    const q = query();
+    const T = STATS.total;
+    const stack = [['mutual', STATS.q.mutual, QLABEL.mutual], ['one', STATS.q.one, QLABEL.one], ['none', STATS.q.none, QLABEL.none]];
+    const maxN = Math.max(...STATS.dist.map(d => d.n), 1);
+    const distCols = STATS.dist.map(d => {
+      const st = buyerState(d.k);
+      const h = Math.max(d.n ? 6 : 0, Math.round((d.n / maxN) * 150));
+      return `<div class="bar-col" role="listitem" aria-label="${plural(d.n, 'buyer')} with ${d.k} meetings">
+        <span class="text-sm font-semibold">${d.n}</span>
+        <span class="block w-full max-w-14" style="height:${h}px;background:${st === 'ok' ? 'var(--chart-1)' : 'var(--chart-5)'};${d.k === SET.buyerIdeal ? 'outline:2px solid var(--mutual);outline-offset:2px;' : ''}"></span>
+        <span class="font-display font-semibold">${d.k}</span>
+      </div>`;
+    }).join('');
+    const inTarget = STATS.dist.map(d => buyerState(d.k) === 'ok');
+    const firstIn = inTarget.indexOf(true) + 1, lastIn = inTarget.lastIndexOf(true) + 1;
+
+    const outRows = (list, kind) => list.filter(b => !q || buyerHit(b, q)).map(b => {
+      const n = buyCount.get(b.name);
+      const open = SLOTS.filter(s => !at(buyGrid, b.name, s.n)).map(s => s.n);
+      return `<tr><td class="max-w-0 w-[55%]"><button class="row-name w-full" data-buyer="${esc(b.name)}"><span class="org"><span class="delta mr-1.5 align-middle"${kind === 'above' ? ' data-tone="warning" data-dir="down"' : ''} aria-hidden="true"></span>${esc(b.organization)}</span><span class="sub">${esc(b.title)}</span></button></td>
+        <td>${countBadge(n, 'buyer')}</td><td class="c-strip text-sm text-muted-foreground">${open.length ? `Open in slot${open.length > 1 ? 's' : ''} ${open.join(', ')}` : 'No open slots'}</td></tr>`;
+    }).join('');
+    const belowRows = outRows(STATS.below, 'below'), aboveRows = outRows(STATS.above, 'above');
+
+    const metric = (label, value, sub, prog) => `<div class="py-4 border-t border-line first:border-t-0 sm:border-t-0 sm:border-l sm:first:border-l-0 sm:px-5 sm:first:pl-0">
+      <p class="text-sm text-muted-foreground">${label}</p>
+      <p class="font-display font-semibold text-4xl leading-tight">${value}</p>
+      ${prog != null ? `<div class="progress my-1.5" data-slot="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${prog}" aria-label="${label}"><span style="width:${prog}%"></span></div>` : ''}
+      <p class="text-sm text-muted-foreground">${sub}</p></div>`;
+
+    document.getElementById('view').innerHTML = `
+      <section class="border border-line bg-card" data-slot="card" aria-labelledby="qh">
+        <div class="px-4 sm:px-6 pt-5 pb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="qh" class="font-display font-semibold text-2xl">Schedule quality</h2>
+          <p class="text-sm text-muted-foreground">Computed from the current draft. Ranks are 1 for best; top-${TOP} counts as a strong preference.</p>
+        </div>
+        <div class="px-4 sm:px-6 flex flex-col gap-3 pb-2">
+          <div data-slot="alert" role="note" class="flex items-start gap-3 border border-line px-4 py-3 text-sm">
+            <svg viewBox="0 0 24 24" class="size-4 mt-0.5 flex-none" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>
+            <p><span class="font-medium">${plural(D.event.manualChanges, 'manual change')} applied</span><span class="text-muted-foreground"> on top of the matching run. Running matching again would replace them.</span></p>
+          </div>
+          ${issueCount ? `<div data-slot="alert" role="alert" class="flex items-start gap-3 border border-destructive px-4 py-3 text-sm">
+            <span class="delta mt-1" aria-hidden="true"></span>
+            <p><span class="font-medium">${[STATS.below.length && plural(STATS.below.length, 'buyer') + ` below ${SET.buyerMin}`, STATS.above.length && plural(STATS.above.length, 'buyer') + ` above ${SET.buyerMax}`, STATS.supOff.length && plural(STATS.supOff.length, 'supplier') + ` not at ${SET.supplierTarget}`].filter(Boolean).join(', ')}.</span>
+            <span class="text-muted-foreground"> Fix these before locking.${floorFull ? ' Every desk is full in every slot, so adding a meeting means swapping one away from another buyer.' : ''}</span></p></div>` : ''}
+        </div>
+
+        <div class="grid sm:grid-cols-3 px-4 sm:px-6 py-2">
+          ${metric('Total appointments', T, `${NS} slots across ${suppliers.length} desks`, null)}
+          ${metric('Suppliers at ' + SET.supplierTarget, `${STATS.supAt}<span class="text-muted-foreground text-2xl">/${suppliers.length}</span>`, STATS.supOff.length ? `${plural(STATS.supOff.length, 'supplier')} off target` : 'Every desk is full', Math.round(pct(STATS.supAt, suppliers.length)))}
+          ${metric(`Buyers at ${SET.buyerMin} to ${SET.buyerMax}`, `${STATS.buyOk}<span class="text-muted-foreground text-2xl">/${buyers.length}</span>`, `${STATS.below.length} below, ${STATS.above.length} above`, Math.round(pct(STATS.buyOk, buyers.length)))}
+        </div>
+
+        <div data-slot="separator" class="border-t border-line"></div>
+
+        <div class="grid lg:grid-cols-2">
+          <div class="px-4 sm:px-6 py-6 lg:border-r border-line" data-slot="chart">
+            <h3 class="font-display font-semibold text-lg">Rank quality</h3>
+            <p class="text-sm text-muted-foreground mb-4">How well each of the ${T} meetings matches what both sides asked for.</p>
+            <div class="stack" role="img" aria-label="${stack.map(s => `${s[2]}: ${s[1]}`).join('; ')}">
+              ${stack.map(([k, n]) => `<span class="swatch" data-q="${k}" style="width:${pct(n, T)}%;border:0;height:100%"></span>`).join('')}
+            </div>
+            <table class="tbl tbl-keep mt-4" data-slot="table"><tbody>
+              ${stack.map(([k, n, l]) => `<tr><td class="w-8"><span class="swatch" data-q="${k}"></span></td><td>${l}</td><td class="text-right font-semibold">${n}</td><td class="text-right text-muted-foreground w-16">${pct(n, T)}%</td></tr>`).join('')}
+              <tr><td><span class="inline-block w-[1.4rem] text-center font-semibold" aria-hidden="true">–</span></td><td>Blank rankings<span class="block text-xs text-muted-foreground">${STATS.blankBuyer} blank on the buyer side, ${STATS.blankSupplier} on the supplier side</span></td><td class="text-right font-semibold">${STATS.blank}</td><td class="text-right text-muted-foreground">${pct(STATS.blank, T)}%</td></tr>
+            </tbody></table>
+          </div>
+          <div class="px-4 sm:px-6 py-6 border-t lg:border-t-0 border-line" data-slot="chart">
+            <h3 class="font-display font-semibold text-lg">Buyer distribution</h3>
+            <p class="text-sm text-muted-foreground mb-4">Buyers by number of meetings. Target ${SET.buyerMin} to ${SET.buyerMax}, ideal ${SET.buyerIdeal} (outlined in yellow).</p>
+            <div role="list" class="grid items-end gap-3 h-[210px]" style="grid-template-columns:repeat(${STATS.dist.length},minmax(0,1fr))">${distCols}</div>
+            <div class="grid gap-3 mt-2" style="grid-template-columns:repeat(${STATS.dist.length},minmax(0,1fr))" aria-hidden="true">
+              <div class="dim" style="grid-column:${firstIn} / ${lastIn + 1}"><span>Target range</span></div>
+            </div>
+            <p class="text-sm text-muted-foreground">Meetings per buyer</p>
+          </div>
+        </div>
+
+        <div data-slot="separator" class="border-t border-line"></div>
+
+        <div class="grid lg:grid-cols-2">
+          <div class="px-4 sm:px-6 py-6 lg:border-r border-line">
+            <h3 class="font-display font-semibold text-lg">Buyers below ${SET.buyerMin}</h3>
+            <p class="text-sm text-muted-foreground mb-3">${STATS.below.length ? 'Open one to see their free slots and which desks could take a swap.' : 'None.'}</p>
+            ${belowRows ? `<table class="tbl" data-slot="table"><tbody>${belowRows}</tbody></table>` : (STATS.below.length ? `<p class="text-sm text-muted-foreground">None match "${esc(state.q)}".</p>` : '')}
+            <h3 class="font-display font-semibold text-lg mt-6">Buyers above ${SET.buyerMax}</h3>
+            ${aboveRows ? `<table class="tbl" data-slot="table"><tbody>${aboveRows}</tbody></table>` : `<p class="text-sm text-muted-foreground">${STATS.above.length ? `None match "${esc(state.q)}".` : `No buyer has more than ${SET.buyerMax} meetings.`}</p>`}
+          </div>
+          <div class="px-4 sm:px-6 py-6 border-t lg:border-t-0 border-line">
+            <h3 class="font-display font-semibold text-lg">Suppliers not at ${SET.supplierTarget}</h3>
+            ${STATS.supOff.length ? `<table class="tbl mt-2" data-slot="table"><tbody>${STATS.supOff.filter(s => !q || supHit(s, q)).map(s => `<tr><td><button class="row-name" data-sup="${esc(s.name)}"><span class="org">Desk ${s.desk}, ${esc(s.name)}</span></button></td><td>${countBadge(supCount.get(s.name), 'supplier')}</td></tr>`).join('')}</tbody></table>`
+              : `<div data-slot="empty" class="mt-3 border border-dashed border-line px-4 py-6 text-sm"><p class="font-medium">All ${suppliers.length} suppliers have ${SET.supplierTarget} meetings.</p>${floorFull ? '<p class="text-muted-foreground">No desk has an open slot, so the floor is fully booked all afternoon.</p>' : ''}</div>`}
+            <h3 class="font-display font-semibold text-lg mt-6">Matching settings</h3>
+            <dl class="mt-2 grid grid-cols-[1fr_auto] gap-x-6 gap-y-1.5 text-sm">
+              <dt class="text-muted-foreground">Meetings per supplier</dt><dd class="font-semibold">${SET.supplierTarget}</dd>
+              <dt class="text-muted-foreground">Meetings per buyer</dt><dd class="font-semibold">${SET.buyerMin} to ${SET.buyerMax}, ideal ${SET.buyerIdeal}</dd>
+              <dt class="text-muted-foreground">Mutual preference cutoff</dt><dd class="font-semibold">Top ${TOP}</dd>
+              <dt class="text-muted-foreground">Hotel rank cutoff</dt><dd class="font-semibold">${SET.hotelRankCutoff}</dd>
+            </dl>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  /* ================= side sheet ================= */
+  let sheetReturn = null;
+  const keyOf = el => {
+    if (!el || el === document.body) return null;
+    if (el.id) return '#' + CSS.escape(el.id);
+    for (const k of ['sup', 'buyer', 'view', 'n']) if (el.dataset?.[k] != null) {
+      const sel = `[data-${k}="${CSS.escape(el.dataset[k])}"]`;
+      return el.classList.contains('cell') ? `.cell[data-appt="${el.dataset.appt}"]` : (el.classList[0] ? '.' + el.classList[0] : '') + sel;
+    }
+    return null;
+  };
+  const refocus = key => {
+    const el = key && document.querySelector(key);
+    const visible = el && el.offsetParent !== null && !el.closest('#cmd, #sheet');
+    (visible ? el : document.getElementById('view')).focus({ preventScroll: !!visible });
+  };
+  function openSheet(kind, name) {
+    if (!state.sheet) sheetReturn = keyOf(document.activeElement);
+    state.sheet = { kind, name };
+    hideHover();
+    renderSheet();
+    document.getElementById('scrim').classList.add('open');
+    const el = document.getElementById('sheet');
+    el.classList.add('open');
+    render();
+    el.querySelector('[data-close]').focus();
+  }
+  function closeSheet() {
+    state.sheet = null;
+    document.getElementById('sheet').classList.remove('open');
+    if (!document.getElementById('dialog').classList.contains('open')) document.getElementById('scrim').classList.remove('open');
+    render();
+    refocus(sheetReturn);
+  }
+
+  function rankPair(a) {
+    return `<span class="flex flex-wrap gap-x-3 gap-y-1 text-xs mt-1 whitespace-nowrap"><span><span class="text-muted-foreground">Buyer rank </span><b>${rk(a.buyerRank)}</b></span><span><span class="text-muted-foreground">Supplier rank </span><b>${rk(a.supplierRank)}</b></span><span class="ml-auto">${a.q === 'mutual' ? `<span class="badge" data-variant="mutual" data-slot="badge">Mutual top-${TOP}</span>` : `<span class="text-muted-foreground">${QLABEL[a.q]}</span>`}</span></span>`;
+  }
+
+  function renderSheet() {
+    const el = document.getElementById('sheet');
+    const { kind, name } = state.sheet;
+    let head, rows;
+    if (kind === 'supplier') {
+      const s = supBy.get(name), n = supCount.get(name);
+      const m = supGrid.get(name).filter(a => a && a.q === 'mutual').length;
+      head = `<p class="font-display font-bold text-5xl leading-none ${s.type === 'business' ? 'text-business' : ''}" aria-hidden="true">${s.desk}</p>
+        <div class="min-w-0"><h2 id="sheet-title" class="font-display font-semibold text-xl leading-tight"><span class="sr-only">Desk ${s.desk}, </span>${esc(s.name)}</h2>
+        <div class="flex flex-wrap items-center gap-1.5 mt-1.5">${typeBadge(s.type)}${countBadge(n, 'supplier')}<span class="text-sm text-muted-foreground">meetings, ${m} mutual</span></div></div>`;
+      rows = SLOTS.map(sl => {
+        const a = at(supGrid, name, sl.n);
+        const t = `<div class="text-sm"><p class="font-display font-semibold">Slot ${sl.n}</p><p class="text-muted-foreground text-xs">${timeRange(sl)}</p></div>`;
+        if (!a) {
+          const fb = freeBuyers(sl.n).length;
+          return `<li class="slot-row">${t}<div class="slot-open"><p class="font-medium text-foreground">Open</p><p>${plural(fb, 'buyer is', 'buyers are')} free in this slot.</p>${fb ? `<button class="btn mt-1" data-variant="link" data-slot="button" data-go-buyers="${sl.n}">See free buyers</button>` : ''}</div></li>`;
+        }
+        const b = buyerBy.get(a.buyer);
+        return `<li class="slot-row">${t}<button class="appt-btn" data-q="${a.q}" data-buyer="${esc(a.buyer)}" data-zone="${s.type === 'business' ? 'business' : 'hotel'}">
+          <span class="block font-semibold text-sm leading-snug">${esc(b.organization)}</span><span class="block text-xs text-muted-foreground leading-snug">${esc(b.title)}</span>${rankPair(a)}</button></li>`;
+      }).join('');
+    } else {
+      const b = buyerBy.get(name), n = buyCount.get(name), st = buyerState(n);
+      const m = buyGrid.get(name).filter(a => a && a.q === 'mutual').length;
+      head = `<div class="min-w-0"><h2 id="sheet-title" class="font-display font-semibold text-xl leading-tight">${esc(b.organization)}</h2><p class="text-sm text-muted-foreground mt-0.5">${esc(b.title)}</p>
+        <div class="flex flex-wrap items-center gap-1.5 mt-2">${st !== 'ok' ? `<span class="delta"${toneFor(st)} aria-hidden="true"></span>` : ''}${countBadge(n, 'buyer')}<span class="text-sm text-muted-foreground">meetings, ${m} mutual. Target ${SET.buyerMin} to ${SET.buyerMax}.</span></div></div>`;
+      rows = SLOTS.map(sl => {
+        const a = at(buyGrid, name, sl.n);
+        const t = `<div class="text-sm"><p class="font-display font-semibold">Slot ${sl.n}</p><p class="text-muted-foreground text-xs">${timeRange(sl)}</p></div>`;
+        if (!a) {
+          const fd = freeSuppliers(sl.n).length;
+          return `<li class="slot-row">${t}<div class="slot-open"><p class="font-medium text-foreground">Open</p><p>${fd ? `${plural(fd, 'desk')} free in this slot.` : `No desk is free in this slot. Adding a meeting here needs a swap.`}</p></div></li>`;
+        }
+        const s = supBy.get(a.supplier);
+        return `<li class="slot-row">${t}<button class="appt-btn" data-q="${a.q}" data-sup="${esc(a.supplier)}" data-zone="${s.type === 'business' ? 'business' : 'hotel'}">
+          <span class="flex items-baseline gap-2"><span class="font-display font-bold text-lg leading-none ${s.type === 'business' ? 'text-business' : ''}">${s.desk}</span><span class="font-semibold text-sm leading-snug min-w-0">${esc(s.name)}</span><span class="ml-auto">${typeBadge(s.type)}</span></span>${rankPair(a)}</button></li>`;
+      }).join('');
+    }
+    el.innerHTML = `
+      <div class="flex items-start gap-4 px-5 pt-5 pb-4 border-b border-line" data-slot="sheet-header">
+        ${head}
+        <button class="btn ml-auto flex-none" data-slot="button" data-variant="ghost" data-size="icon" data-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
+      <div data-slot="scroll-area" class="flex-1 overflow-y-auto px-5 py-2">
+        <h3 class="sr-only">Schedule, ${NS} slots</h3>
+        <ol>${rows}</ol>
+      </div>
+      <div class="flex flex-wrap gap-2 px-5 py-3 border-t border-line" data-slot="sheet-footer">
+        <button class="btn" data-slot="button" data-variant="outline" data-size="sm" data-show-floor>Show on floor plan</button>
+        <button class="btn" data-slot="button" data-variant="outline" data-size="sm" data-edit-this ${state.locked ? 'disabled' : ''}>Edit this schedule</button>
+      </div>`;
+  }
+
+  /* ================= dialog, command, popover, toast, hover card ================= */
+  let dialogReturn = null, dialogConfirm = null;
+  function openDialog({ title, body, confirm, onConfirm }) {
+    dialogReturn = document.activeElement; dialogConfirm = onConfirm;
+    const el = document.getElementById('dialog');
+    el.innerHTML = `<div class="px-5 pt-5 pb-4"><h2 id="dialog-title" class="font-display font-semibold text-xl">${title}</h2><div class="text-sm text-muted-foreground mt-2 flex flex-col gap-2">${body}</div></div>
+      <div class="flex justify-end gap-2 px-5 py-3 border-t border-line"><button class="btn" data-slot="button" data-variant="outline" data-dialog-cancel>Cancel</button><button class="btn" data-slot="button" data-variant="default" data-dialog-ok>${confirm}</button></div>`;
+    el.classList.add('open'); document.getElementById('scrim').classList.add('open');
+    el.querySelector('[data-dialog-cancel]').focus();
+  }
+  function closeDialog() {
+    document.getElementById('dialog').classList.remove('open');
+    if (!state.sheet) document.getElementById('scrim').classList.remove('open');
+    if (dialogReturn && document.contains(dialogReturn)) dialogReturn.focus();
+  }
+
+  function toast(title, desc) {
+    const t = document.createElement('div');
+    t.className = 'toast'; t.setAttribute('data-slot', 'toast'); t.setAttribute('role', 'status');
+    t.innerHTML = `<p class="font-medium">${esc(title)}</p>${desc ? `<p class="text-sm opacity-80 mt-0.5">${esc(desc)}</p>` : ''}`;
+    document.getElementById('toaster').appendChild(t);
+    setTimeout(() => t.remove(), 4200);
+  }
+
+  const cmdItems = [
+    ...suppliers.map(s => ({ kind: 'supplier', name: s.name, label: `Desk ${s.desk}, ${s.name}`, sub: s.type === 'business' ? 'Business vendor' : 'Hotel or destination', hay: norm(s.name + ' desk ' + s.desk) })),
+    ...buyers.map(b => ({ kind: 'buyer', name: b.name, label: b.organization, sub: b.title, hay: norm(b.name) })),
+  ];
+  let cmdSel = 0, cmdReturn = null;
+  function openCmd() {
+    cmdReturn = document.activeElement;
+    const el = document.getElementById('cmd');
+    el.innerHTML = `<div class="input-group m-3" data-slot="command-input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="cmd-q" placeholder="Jump to a buyer or supplier" aria-label="Jump to a buyer or supplier" role="combobox" aria-controls="cmd-list" aria-expanded="true" autocomplete="off"><span class="kbd" data-slot="kbd">Esc</span></div>
+      <div id="cmd-list" role="listbox" class="max-h-[50vh] overflow-y-auto border-t border-line pb-2" data-slot="command-list"></div>`;
+    el.classList.add('open'); document.getElementById('scrim').classList.add('open');
+    const inp = el.querySelector('#cmd-q');
+    inp.value = state.q; cmdSel = 0; renderCmd(); inp.focus(); inp.select();
+  }
+  function cmdResults() {
+    const q = norm(document.getElementById('cmd-q').value.trim());
+    const hits = cmdItems.filter(i => !q || i.hay.includes(q));
+    return { sup: hits.filter(i => i.kind === 'supplier').slice(0, 8), buy: hits.filter(i => i.kind === 'buyer').slice(0, 8) };
+  }
+  function renderCmd() {
+    const { sup, buy } = cmdResults();
+    const all = [...sup, ...buy];
+    cmdSel = Math.min(cmdSel, Math.max(all.length - 1, 0));
+    let i = 0;
+    const grp = (t, list) => list.length ? `<div role="group" data-slot="command-group" aria-label="${t}"><p class="px-4 pt-3 pb-1 text-xs text-muted-foreground">${t}</p>${list.map(it => {
+      const k = i++;
+      return `<div role="option" id="cmd-o${k}" class="cmd-item px-4 py-2 cursor-pointer" data-slot="command-item" aria-selected="${k === cmdSel}" data-k="${k}"><p class="text-sm font-medium truncate">${esc(it.label)}</p><p class="text-xs text-muted-foreground truncate">${esc(it.sub)}</p></div>`;
+    }).join('')}</div>` : '';
+    document.getElementById('cmd-list').innerHTML = all.length ? grp('Suppliers', sup) + grp('Buyers', buy) : `<p data-slot="command-empty" class="px-4 py-6 text-sm text-muted-foreground">No buyer or supplier matches that.</p>`;
+    document.getElementById('cmd-q').setAttribute('aria-activedescendant', all.length ? `cmd-o${cmdSel}` : '');
+    document.getElementById('cmd-o' + cmdSel)?.scrollIntoView({ block: 'nearest' });
+    return all;
+  }
+  function closeCmd(restore = true) {
+    document.getElementById('cmd').classList.remove('open');
+    if (!state.sheet && !document.getElementById('dialog').classList.contains('open')) document.getElementById('scrim').classList.remove('open');
+    if (restore && cmdReturn && document.contains(cmdReturn)) cmdReturn.focus();
+  }
+  function pickCmd(k) {
+    const { sup, buy } = cmdResults();
+    const it = [...sup, ...buy][k];
+    if (!it) return;
+    closeCmd(false);
+    openSheet(it.kind, it.name);
+  }
+
+  const hc = document.getElementById('hc');
+  let hcTimer = null;
+  function showHover(target) {
+    const a = appts[+target.dataset.appt];
+    if (!a) return;
+    const s = supBy.get(a.supplier), b = buyerBy.get(a.buyer), sl = slotBy.get(a.slot);
+    hc.innerHTML = `<p class="flex items-center gap-2"><span class="font-display font-bold text-lg leading-none ${s.type === 'business' ? 'text-business' : ''}">${s.desk}</span><span class="font-semibold leading-tight">${esc(s.name)}</span></p>
+      <p class="mt-1.5 flex items-center gap-1.5">${typeBadge(s.type)}<span class="text-muted-foreground">Slot ${a.slot}, ${timeRange(sl)}</span></p>
+      <p class="mt-2 font-semibold leading-snug">${esc(b.organization)}</p><p class="text-muted-foreground leading-snug">${esc(b.title)}</p>
+      ${rankPair(a)}`;
+    hc.classList.add('open');
+    const r = target.getBoundingClientRect(), w = hc.offsetWidth, h = hc.offsetHeight;
+    let x = r.left + r.width / 2 - w / 2, y = r.bottom + 8;
+    if (y + h > innerHeight - 8) y = r.top - h - 8;
+    x = Math.max(8, Math.min(x, innerWidth - w - 8));
+    hc.style.left = x + 'px'; hc.style.top = Math.max(8, y) + 'px';
+  }
+  function hideHover() { clearTimeout(hcTimer); hc.classList.remove('open'); }
+
+  /* ================= render + events ================= */
+  function render() {
+    renderChrome();
+    ({ floor: renderFloor, buyers: renderBuyers, suppliers: renderSuppliers, quality: renderQuality })[state.view]();
+  }
+
+  function setView(v, focus) {
+    state.view = v; hideHover();
+    if (v === 'floor' && state.free) state.slot = state.free;
+    render();
+    if (focus) document.querySelector(`[data-view="${v}"]`)?.focus();
+  }
+  function setSlot(n, focus) {
+    if (n === state.slot) return;
+    state.slot = n; state.reseat = true; hideHover();
+    if (state.free) state.free = n; // on the floor, the free-slot filter follows the ruler
+    render();
+    if (focus) document.querySelector(`.scrub-seg[data-n="${n}"]`)?.focus();
+  }
+
+  document.addEventListener('click', e => {
+    const t = e.target.closest('button, [data-k], #scrim');
+    if (!t) return;
+    if (t.id === 'scrim') {
+      if (document.getElementById('cmd').classList.contains('open')) return closeCmd();
+      if (document.getElementById('dialog').classList.contains('open')) return closeDialog();
+      return closeSheet();
+    }
+    if (t.dataset.k != null && t.classList.contains('cmd-item')) return pickCmd(+t.dataset.k);
+    if (t.dataset.view) return setView(t.dataset.view);
+    if (t.classList.contains('scrub-seg')) return setSlot(+t.dataset.n);
+    if (t.dataset.sort) { state.buyerSort = t.dataset.sort; return render(); }
+    if (t.hasAttribute('data-close')) return closeSheet();
+    if (t.hasAttribute('data-clear')) { state.q = ''; state.free = 0; document.getElementById('q').value = ''; return render(); }
+    if (t.dataset.goBuyers) {
+      state.free = +t.dataset.goBuyers; state.view = 'buyers'; state.q = ''; document.getElementById('q').value = '';
+      if (state.sheet) closeSheet(); else render();
+      return toast(`Showing buyers free in slot ${state.free}`);
+    }
+    if (t.hasAttribute('data-show-floor')) {
+      if (state.sheet.kind === 'buyer') {
+        const first = SLOTS.find(s => at(buyGrid, state.sheet.name, s.n));
+        if (first && !at(buyGrid, state.sheet.name, state.slot)) state.slot = first.n;
+      }
+      state.view = 'floor'; const back = state.sheet; closeSheet(); state.sheet = null;
+      const desk = back.kind === 'supplier' ? document.querySelector(`.desk[data-sup="${CSS.escape(back.name)}"]`)
+        : [...document.querySelectorAll('.desk[data-appt]')].find(d => appts[+d.dataset.appt].buyer === back.name);
+      if (desk) { desk.classList.add('is-target'); desk.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); desk.focus({ preventScroll: true }); }
+      return;
+    }
+    if (t.hasAttribute('data-edit-this')) {
+      state.editing = true; renderChrome();
+      return toast('Edit mode on', 'Pick a slot to move or swap. Each change is added to the manual change count.');
+    }
+    if (t.dataset.dialogCancel != null) return closeDialog();
+    if (t.dataset.dialogOk != null) { const fn = dialogConfirm; closeDialog(); return fn && fn(); }
+    if (t.dataset.export) {
+      document.getElementById('export-pop').classList.remove('open');
+      document.getElementById('act-export').setAttribute('aria-expanded', 'false');
+      return toast(`Preparing ${t.dataset.export.toLowerCase()}`, state.locked ? 'Built from the locked schedule.' : 'Built from the current draft. Lock the schedule before emailing anyone.');
+    }
+    if (t.dataset.sup) return openSheet('supplier', t.dataset.sup);
+    if (t.dataset.buyer) return openSheet('buyer', t.dataset.buyer);
+    switch (t.id) {
+      case 'act-run':
+        return openDialog({ title: 'Run matching again?', confirm: 'Run matching',
+          body: `<p>This builds a new draft from the latest rankings and replaces the current one.</p><p>The ${plural(D.event.manualChanges, 'manual change')} made since the last run will be lost.</p>`,
+          onConfirm: () => toast('Matching started', 'The new draft replaces this one when it finishes.') });
+      case 'act-edit':
+        state.editing = !state.editing; renderChrome();
+        return toast(state.editing ? 'Edit mode on' : 'Edit mode off', state.editing ? 'Open any desk or buyer to move or swap an appointment.' : 'The draft is unchanged.');
+      case 'act-lock':
+        if (state.locked) { state.locked = false; render(); return toast('Schedule unlocked', 'Edits and matching are available again.'); }
+        return openDialog({ title: 'Lock this schedule?', confirm: 'Lock schedule',
+          body: `<p>Locking stops edits and re-runs, and lets you export and email final schedules.</p>${issueCount ? `<p class="text-foreground"><span class="delta mr-1.5 align-middle" aria-hidden="true"></span>${[STATS.below.length && plural(STATS.below.length, 'buyer') + ` below ${SET.buyerMin}`, STATS.above.length && plural(STATS.above.length, 'buyer') + ` above ${SET.buyerMax}`, STATS.supOff.length && plural(STATS.supOff.length, 'supplier') + ` not at ${SET.supplierTarget}`].filter(Boolean).join(', ')}. You can still lock.</p>` : '<p>Every count is on target.</p>'}`,
+          onConfirm: () => { state.locked = true; state.editing = false; render(); if (state.sheet) renderSheet(); toast('Schedule locked', `${STATS.total} appointments are final.`); } });
+      case 'act-export': {
+        const pop = document.getElementById('export-pop'), open = !pop.classList.contains('open');
+        pop.classList.toggle('open', open); t.setAttribute('aria-expanded', String(open));
+        if (open) pop.querySelector('[role="menuitem"]').focus();
+        return;
+      }
+      case 'open-cmd': return openCmd();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    const pop = document.getElementById('export-pop');
+    if (pop.classList.contains('open') && !e.target.closest('#export-pop, #act-export')) { pop.classList.remove('open'); document.getElementById('act-export').setAttribute('aria-expanded', 'false'); }
+  });
+
+  document.getElementById('q').addEventListener('input', e => { state.q = e.target.value; hideHover(); render(); });
+  document.getElementById('free').addEventListener('change', e => {
+    state.free = +e.target.value;
+    if (state.free && state.view === 'floor') state.slot = state.free;
+    render();
+  });
+
+  document.addEventListener('input', e => { if (e.target.id === 'cmd-q') { cmdSel = 0; renderCmd(); } });
+
+  const trap = (el, e) => {
+    const f = [...el.querySelectorAll('button:not(:disabled), input, [tabindex]:not([tabindex="-1"])')].filter(x => x.offsetParent !== null);
+    if (!f.length) return;
+    if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+  };
+
+  document.addEventListener('keydown', e => {
+    const cmdOpen = document.getElementById('cmd').classList.contains('open');
+    const dlgOpen = document.getElementById('dialog').classList.contains('open');
+    const pop = document.getElementById('export-pop');
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); return cmdOpen ? closeCmd() : openCmd(); }
+    if (e.key === 'Escape') {
+      if (cmdOpen) return closeCmd();
+      if (dlgOpen) return closeDialog();
+      if (pop.classList.contains('open')) { pop.classList.remove('open'); document.getElementById('act-export').setAttribute('aria-expanded', 'false'); return document.getElementById('act-export').focus(); }
+      if (state.sheet) return closeSheet();
+      return hideHover();
+    }
+    if (cmdOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const n = renderCmd().length; cmdSel = (cmdSel + (e.key === 'ArrowDown' ? 1 : -1) + n) % Math.max(n, 1); renderCmd(); }
+      else if (e.key === 'Enter') { e.preventDefault(); pickCmd(cmdSel); }
+      else if (e.key === 'Tab') e.preventDefault();
+      return;
+    }
+    if (e.key === 'Tab') {
+      if (dlgOpen) return trap(document.getElementById('dialog'), e);
+      if (state.sheet) return trap(document.getElementById('sheet'), e);
+    }
+    if (e.key === '/' && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); document.getElementById('q').focus(); return; }
+    const seg = e.target.closest?.('.scrub-seg');
+    if (seg) {
+      const i = SLOTS.findIndex(s => s.n === state.slot);
+      const map = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: NS - 1 };
+      if (e.key in map) { e.preventDefault(); const j = (map[e.key] + NS) % NS; setSlot(SLOTS[j].n, true); }
+      return;
+    }
+    const tab = e.target.closest?.('[role="tab"]');
+    if (tab && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+      e.preventDefault();
+      const i = VIEWS.findIndex(v => v.id === state.view);
+      setView(VIEWS[(i + (e.key === 'ArrowRight' ? 1 : -1) + VIEWS.length) % VIEWS.length].id, true);
+    }
+  });
+
+  // hover card for appointments (desks and strip cells)
+  document.addEventListener('pointerover', e => {
+    if (e.pointerType === 'touch') return;
+    const t = e.target.closest('[data-appt]');
+    if (!t || t.closest('#sheet')) return;
+    clearTimeout(hcTimer); hcTimer = setTimeout(() => showHover(t), 220);
+  });
+  document.addEventListener('pointerout', e => {
+    const from = e.target.closest('[data-appt]');
+    if (from && from !== e.relatedTarget?.closest?.('[data-appt]')) hideHover();
+  });
+  document.addEventListener('focusin', e => { const t = e.target.closest?.('[data-appt]'); if (t && !t.closest('#sheet') && t.matches(':focus-visible')) showHover(t); else hideHover(); });
+  window.addEventListener('scroll', hideHover, { passive: true });
+
+  render();
+})();
+</script>
+</body>
+</html>

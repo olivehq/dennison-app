@@ -1,0 +1,1021 @@
+<!--
+Design: 07 Olive grove
+Concept: Each buyer's and supplier's afternoon is drawn as a vine with nine nodes, one per ten-minute slot: leaves are hotel meetings, berries are business meetings, the ripest (darkest) ones are mutual top-10 matches, and dashed empty buds are open slots. Everything around the vines stays quiet, so staff can scan the grove for bare branches and fix them by hand.
+Palette (OKLCH):
+  sage paper   oklch(0.975 0.008 150)  ~#F4F8F4  background
+  forest ink   oklch(0.27 0.045 152)   ~#173320  foreground, vine stems
+  olive green  oklch(0.47 0.115 152)   ~#1E6B3D  primary
+  ripe olive   oklch(0.36 0.085 150)   ~#1F4D2E  mutual top-10 nodes
+  leaf green   oklch(0.62 0.12 145)    ~#5E9E5A  one side top-10 nodes
+  pale sage    oklch(0.86 0.055 152)   ~#BFDDC6  neither top-10 nodes, line-work
+  eucalyptus   oklch(0.47 0.07 235)    ~#3D6580  business supplier
+  berry        oklch(0.5 0.15 355)     ~#9A2F5E  below target (destructive)
+  honey        oklch(0.8 0.13 82)      ~#E3B54A  above target (warning)
+Type: Young Serif for the event name and section headings; Figtree (400 to 700, tabular numerals) for everything else.
+Layout: Light header with event, status, health sentence and actions; a sticky toolbar with view switcher, search, open-slot filter and sort; then the active view. Buyer and supplier views are a "grove": one row per person, name at left, a nine-node vine aligned to a sticky time ruler, count and health at right. Slot view is a slot strip plus a desk-ordered table; health view is a two-column report. Details open in a right-side sheet with a vertical vine.
+shadcn components: Button, Badge, ToggleGroup, InputGroup, Input, Kbd, Select, Command (cmd-K in Dialog), Sheet, Dialog, Popover, Tooltip, Tabs, Table, Card, Progress, Chart, Alert, Empty, Separator, ScrollArea, sonner toast.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AW matching results, Olive grove</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Young+Serif&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style type="text/tailwindcss">
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0.975 0.008 150);
+  --foreground: oklch(0.27 0.045 152);
+  --card: oklch(0.995 0.003 150);
+  --card-foreground: oklch(0.27 0.045 152);
+  --popover: oklch(0.995 0.003 150);
+  --popover-foreground: oklch(0.27 0.045 152);
+  --primary: oklch(0.47 0.115 152);
+  --primary-foreground: oklch(0.985 0.01 150);
+  --secondary: oklch(0.935 0.022 150);
+  --secondary-foreground: oklch(0.3 0.05 152);
+  --muted: oklch(0.95 0.014 150);
+  --muted-foreground: oklch(0.47 0.03 152);
+  --accent: oklch(0.925 0.035 150);
+  --accent-foreground: oklch(0.27 0.045 152);
+  --destructive: oklch(0.5 0.15 355);
+  --destructive-foreground: oklch(0.985 0.01 355);
+  --border: oklch(0.89 0.022 150);
+  --input: oklch(0.84 0.03 150);
+  --ring: oklch(0.55 0.13 152);
+  /* custom semantic tokens */
+  --vine: oklch(0.33 0.06 150);
+  --sage: oklch(0.86 0.055 152);
+  --sage-strong: oklch(0.6 0.07 155);
+  --mutual: oklch(0.36 0.085 150);
+  --mutual-foreground: oklch(0.97 0.02 150);
+  --one-side: oklch(0.62 0.12 145);
+  --neither: oklch(0.86 0.055 152);
+  --hotel: oklch(0.47 0.115 152);
+  --hotel-soft: oklch(0.93 0.035 150);
+  --business: oklch(0.47 0.07 235);
+  --business-soft: oklch(0.94 0.02 235);
+  --warning: oklch(0.8 0.13 82);
+  --warning-soft: oklch(0.96 0.04 85);
+  --warning-foreground: oklch(0.36 0.07 65);
+  --destructive-soft: oklch(0.96 0.02 355);
+  --chart-1: oklch(0.36 0.085 150);
+  --chart-2: oklch(0.62 0.12 145);
+  --chart-3: oklch(0.86 0.055 152);
+  --chart-4: oklch(0.5 0.15 355);
+  --chart-5: oklch(0.8 0.13 82);
+}
+
+@theme inline {
+  --font-sans: "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Young Serif", ui-serif, Georgia, serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-vine: var(--vine);
+  --color-sage: var(--sage);
+  --color-mutual: var(--mutual);
+  --color-mutual-foreground: var(--mutual-foreground);
+  --color-one-side: var(--one-side);
+  --color-neither: var(--neither);
+  --color-hotel: var(--hotel);
+  --color-business: var(--business);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * { border-color: var(--border); }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: var(--font-sans); font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  [hidden] { display: none !important; }
+}
+
+@layer components {
+  /* Button (cva-style variants) */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; height: 2.25rem; padding: 0 .9rem;
+         border-radius: calc(var(--radius) - 2px); font-size: .875rem; font-weight: 600; white-space: nowrap;
+         border: 1px solid transparent; transition: background-color .15s, border-color .15s, color .15s; }
+  .btn svg { width: 1rem; height: 1rem; flex: none; }
+  .btn:disabled { opacity: .5; }
+  .btn-default { background: var(--primary); color: var(--primary-foreground); }
+  .btn-default:hover:not(:disabled) { background: color-mix(in oklch, var(--primary) 88%, black); }
+  .btn-outline { background: var(--card); border-color: var(--input); color: var(--foreground); }
+  .btn-outline:hover:not(:disabled) { background: var(--accent); }
+  .btn-ghost { color: var(--foreground); }
+  .btn-ghost:hover:not(:disabled) { background: var(--accent); }
+  .btn-destructive { background: var(--destructive); color: var(--destructive-foreground); }
+  .btn-sm { height: 2rem; padding: 0 .7rem; font-size: .8125rem; }
+  .btn-icon { width: 2.25rem; padding: 0; }
+  .btn-link { height: auto; padding: 0; color: var(--primary); text-decoration: underline; text-underline-offset: 3px; font-weight: 600; }
+
+  /* Badge */
+  .badge { display: inline-flex; align-items: center; gap: .3rem; border-radius: 999px; padding: .1rem .55rem; font-size: .75rem;
+           font-weight: 600; line-height: 1.25rem; white-space: nowrap; border: 1px solid transparent; }
+  .badge svg { width: .8rem; height: .8rem; }
+  .badge-secondary { background: var(--secondary); color: var(--secondary-foreground); }
+  .badge-outline { border-color: var(--input); color: var(--foreground); }
+  .badge-mutual { background: var(--mutual); color: var(--mutual-foreground); }
+  .badge-hotel { background: var(--hotel-soft); color: var(--hotel); }
+  .badge-business { background: var(--business-soft); color: var(--business); }
+  .badge-destructive { background: var(--destructive-soft); color: var(--destructive); border-color: color-mix(in oklch, var(--destructive) 30%, transparent); }
+  .badge-warning { background: var(--warning-soft); color: var(--warning-foreground); border-color: color-mix(in oklch, var(--warning) 60%, transparent); }
+  .badge-primary { background: var(--primary); color: var(--primary-foreground); }
+
+  /* ToggleGroup */
+  .toggle-group { display: inline-flex; gap: 2px; padding: 3px; background: var(--secondary); border-radius: var(--radius); }
+  .toggle-item { display: inline-flex; align-items: center; gap: .4rem; height: 2rem; padding: 0 .8rem; border-radius: calc(var(--radius) - 3px);
+                 font-size: .875rem; font-weight: 600; color: var(--muted-foreground); white-space: nowrap; }
+  .toggle-item:hover { color: var(--foreground); }
+  .toggle-item[aria-pressed="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px color-mix(in oklch, var(--vine) 18%, transparent); }
+  .toggle-item svg { width: 1rem; height: 1rem; }
+
+  /* Input / InputGroup / Select */
+  .input-group { display: flex; align-items: center; gap: .4rem; height: 2.25rem; padding: 0 .6rem; border: 1px solid var(--input);
+                 border-radius: calc(var(--radius) - 2px); background: var(--card); }
+  .input-group:focus-within { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .input-group input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; font-size: .875rem; color: var(--foreground); }
+  .input-group input::placeholder { color: var(--muted-foreground); }
+  .input-group svg { width: 1rem; height: 1rem; color: var(--muted-foreground); flex: none; }
+  .kbd { display: inline-flex; align-items: center; height: 1.25rem; padding: 0 .35rem; border-radius: 4px; font-size: .7rem; font-weight: 600;
+         background: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border); font-family: var(--font-sans); }
+  .select { height: 2.25rem; padding: 0 2rem 0 .7rem; border: 1px solid var(--input); border-radius: calc(var(--radius) - 2px);
+            background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23446650' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right .55rem center;
+            appearance: none; font-size: .875rem; font-weight: 500; color: var(--foreground); }
+  .select[data-active="true"] { border-color: var(--primary); background-color: var(--accent); }
+
+  /* Grove (the vines) */
+  .grove-grid { display: grid; grid-template-columns: minmax(200px, 310px) minmax(0, 1fr) 8.75rem; column-gap: 1rem; align-items: center; }
+  .grove-head { position: sticky; z-index: 5; background: color-mix(in oklch, var(--background) 92%, transparent); backdrop-filter: blur(6px);
+                border-bottom: 1px solid var(--border); padding: .55rem 0; }
+  .ruler { display: grid; grid-template-columns: repeat(var(--n), 1fr); text-align: center; font-size: .75rem; color: var(--muted-foreground); font-weight: 600; }
+  .ruler span[data-hl] { color: var(--primary-foreground); background: var(--primary); border-radius: 999px; }
+  .vine-row { padding: .45rem 0; border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent); }
+  .vine-row:hover { background: color-mix(in oklch, var(--accent) 45%, transparent); }
+  .vine-name { text-align: left; min-width: 0; padding: .2rem .35rem; margin-left: -.35rem; border-radius: 6px; }
+  .vine-name:hover .vine-title-1 { text-decoration: underline; text-underline-offset: 3px; }
+  .vine-title-1 { display: block; font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vine-title-2 { display: block; font-size: .78rem; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vine { position: relative; height: 2.75rem; }
+  .vine .stem { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .vine .stem path { fill: none; stroke: var(--vine); stroke-width: 1.75; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+  .nodes { position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); height: 100%; place-items: center; }
+  .node, .bud { display: grid; place-items: center; width: 2.2rem; height: 2.5rem; border-radius: 999px; position: relative; }
+  .node svg, .bud svg { overflow: visible; }
+  .node:hover svg, .bud:hover svg { transform: scale(1.18); }
+  .node svg, .bud svg { transition: transform .15s; }
+  .node[data-dim] { opacity: .28; }
+  .node[data-hit]::after { content: ""; position: absolute; inset: 2px 1px; border-radius: 999px; box-shadow: 0 0 0 2px var(--ring); }
+  .bud[data-hl]::before { content: ""; position: absolute; inset: .45rem .4rem; border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 1.5px var(--primary); }
+  .bud svg { position: relative; }
+  .vine-count { display: flex; align-items: center; gap: .45rem; min-width: 0; white-space: nowrap; }
+  .vine-count .tendril { flex: none; margin-left: -1.1rem; }
+  .vine-count .tendril path { fill: none; stroke: var(--vine); stroke-width: 1.75; stroke-linecap: round; }
+  .count-num { font-weight: 700; font-size: .95rem; }
+  .count-of { font-size: .75rem; color: var(--muted-foreground); }
+
+  /* the one orchestrated moment: vines grow on first load */
+  .grove[data-grow] .stem { animation: grow 1s cubic-bezier(.3,.7,.3,1) both; animation-delay: calc(var(--i) * 35ms); }
+  .grove[data-grow] .node, .grove[data-grow] .bud { animation: bud .35s ease-out both; animation-delay: calc(var(--i) * 35ms + 250ms + var(--k) * 60ms); }
+  .grove[data-grow] .tendril { animation: bud .4s ease-out both; animation-delay: calc(var(--i) * 35ms + 850ms); }
+  @keyframes grow { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+  @keyframes bud { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: none; } }
+
+  /* Table */
+  .table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  .table th { text-align: left; font-weight: 600; font-size: .78rem; color: var(--muted-foreground); padding: .55rem .75rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .table td { padding: .55rem .75rem; border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent); vertical-align: middle; }
+  .table tbody tr { cursor: pointer; }
+  .table tbody tr:hover { background: color-mix(in oklch, var(--accent) 50%, transparent); }
+  .table tr[data-mutual] td:first-child { box-shadow: inset 3px 0 0 var(--mutual); }
+  .rank { display: inline-block; min-width: 1.6rem; text-align: center; font-weight: 600; }
+  .rank[data-top] { color: var(--primary); }
+  .rank[data-blank] { color: var(--muted-foreground); font-weight: 400; }
+
+  /* Slot strip */
+  .slot-strip { display: grid; grid-template-columns: repeat(var(--n), minmax(5.5rem, 1fr)); gap: 3px; padding: 3px; background: var(--secondary); border-radius: var(--radius); }
+  .slot-item { display: flex; flex-direction: column; align-items: flex-start; gap: .1rem; padding: .5rem .65rem; border-radius: calc(var(--radius) - 3px); text-align: left; }
+  .slot-item:hover { background: color-mix(in oklch, var(--card) 60%, transparent); }
+  .slot-item[aria-pressed="true"] { background: var(--card); box-shadow: 0 1px 2px color-mix(in oklch, var(--vine) 18%, transparent); }
+  .slot-item b { font-size: .9rem; }
+  .slot-item span { font-size: .72rem; color: var(--muted-foreground); }
+
+  /* Sheet / Dialog / Popover / Tooltip / Toast */
+  .overlay { position: fixed; inset: 0; background: color-mix(in oklch, var(--vine) 35%, transparent); z-index: 40; animation: fade .2s ease-out; }
+  .sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(540px, 100vw); background: var(--background); z-index: 41; display: flex; flex-direction: column;
+           border-left: 1px solid var(--border); box-shadow: -12px 0 40px color-mix(in oklch, var(--vine) 18%, transparent); animation: slidein .28s cubic-bezier(.2,.8,.2,1); }
+  .dialog { position: fixed; left: 50%; top: 14vh; transform: translateX(-50%); width: min(480px, calc(100vw - 2rem)); background: var(--popover); z-index: 41;
+            border-radius: var(--radius-xl); border: 1px solid var(--border); box-shadow: 0 24px 60px color-mix(in oklch, var(--vine) 25%, transparent); animation: fade .18s ease-out; }
+  .popover { position: absolute; right: 0; top: calc(100% + 6px); width: 300px; background: var(--popover); border: 1px solid var(--border); border-radius: var(--radius);
+             box-shadow: 0 12px 32px color-mix(in oklch, var(--vine) 18%, transparent); z-index: 30; padding: .35rem; }
+  .menu-item { display: flex; gap: .65rem; width: 100%; text-align: left; padding: .55rem .6rem; border-radius: calc(var(--radius) - 4px); }
+  .menu-item:hover, .menu-item:focus-visible { background: var(--accent); }
+  .menu-item svg { width: 1rem; height: 1rem; margin-top: .15rem; color: var(--primary); flex: none; }
+  .tooltip { position: fixed; z-index: 60; pointer-events: none; max-width: 280px; background: var(--foreground); color: var(--background); font-size: .78rem;
+             line-height: 1.35; padding: .5rem .65rem; border-radius: calc(var(--radius) - 4px); }
+  .tooltip b { color: var(--primary-foreground); }
+  .toaster { position: fixed; right: 1rem; bottom: 1rem; z-index: 70; display: flex; flex-direction: column; gap: .5rem; width: min(360px, calc(100vw - 2rem)); }
+  .toast { background: var(--popover); border: 1px solid var(--border); border-radius: var(--radius); padding: .75rem .9rem; display: flex; gap: .6rem;
+           box-shadow: 0 10px 30px color-mix(in oklch, var(--vine) 18%, transparent); animation: rise .25s ease-out; font-size: .875rem; }
+  .toast svg { width: 1.05rem; height: 1.05rem; color: var(--primary); flex: none; margin-top: .1rem; }
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes slidein { from { transform: translateX(40px); opacity: 0; } }
+  @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+
+  /* Sheet schedule: vertical vine */
+  .afternoon { position: relative; }
+  .afternoon::before { content: ""; position: absolute; left: 5.35rem; top: 1.2rem; bottom: 1.2rem; width: 1.75px; background: var(--vine); border-radius: 2px; }
+  .afternoon li { position: relative; display: grid; grid-template-columns: 4.4rem 2rem minmax(0,1fr); gap: .5rem; align-items: start; padding: .6rem .5rem; border-radius: var(--radius); }
+  .afternoon li[data-focus] { background: var(--accent); }
+  .afternoon .time { font-weight: 600; font-size: .82rem; padding-top: .3rem; }
+  .afternoon .time small { display: block; font-weight: 400; color: var(--muted-foreground); font-size: .72rem; }
+  .afternoon .glyph { display: grid; place-items: center; height: 1.9rem; background: var(--background); border-radius: 999px; position: relative; z-index: 1; }
+  .afternoon li[data-focus] .glyph { background: var(--accent); }
+
+  /* Command */
+  .cmd-item { display: flex; align-items: center; gap: .6rem; padding: .5rem .6rem; border-radius: calc(var(--radius) - 4px); cursor: pointer; font-size: .875rem; }
+  .cmd-item[aria-selected="true"] { background: var(--accent); }
+
+  /* Progress / chart */
+  .progress { height: .5rem; background: var(--secondary); border-radius: 999px; overflow: hidden; }
+  .progress > i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+  .bar-track { height: 1.35rem; background: var(--muted); border-radius: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; }
+  .stack { display: flex; height: 1.75rem; border-radius: 8px; overflow: hidden; gap: 2px; }
+
+  /* Responsive: phone */
+  @media (max-width: 760px) {
+    .grove-grid { grid-template-columns: minmax(0,1fr) auto; grid-template-areas: "name count" "vine vine"; row-gap: .15rem; }
+    .grove-grid > .vine-name { grid-area: name; }
+    .grove-grid > .vine { grid-area: vine; }
+    .grove-grid > .vine-count { grid-area: count; }
+    .grove-head.grove-grid { grid-template-columns: 1fr; grid-template-areas: "vine"; }
+    .grove-head .head-name, .grove-head .head-count { display: none; }
+    .grove-head .ruler { grid-area: vine; }
+    .vine-count .tendril { display: none; }
+    .node, .bud { width: 1.75rem; }
+    .afternoon::before { left: 4.85rem; }
+    .afternoon li { grid-template-columns: 3.9rem 2rem minmax(0,1fr); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+}
+</style>
+</head>
+<body class="bg-background text-foreground min-h-screen antialiased">
+<a href="#view" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 btn btn-outline">Skip to schedule</a>
+
+<!-- Top bar -->
+<div class="border-b border-border">
+  <div class="mx-auto max-w-[1440px] px-4 sm:px-6 h-12 flex items-center gap-3 text-sm">
+    <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M8 27 C 10 18, 14 12, 22 6" fill="none" stroke="var(--vine)" stroke-width="2.2" stroke-linecap="round"/>
+      <path d="M22 6 c3 -1 4 2 2 3 c-1.5 .8 -2.6 -.6 -1.6 -1.5" fill="none" stroke="var(--vine)" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M13 15 C 8 13, 5 15, 3 19 C 8 20, 11 18, 13 15Z" fill="var(--primary)"/>
+      <path d="M17 11 C 18 6, 22 4, 27 4 C 26 9, 22 11, 17 11Z" fill="var(--one-side)"/>
+      <path d="M4.5 18.6 L 12 15.4 M18.5 10 L 25.5 5" stroke="var(--sage)" stroke-width="1"/>
+      <circle cx="12" cy="24" r="2.6" fill="var(--mutual)"/>
+    </svg>
+    <span class="font-semibold">AW matching</span>
+    <span class="text-muted-foreground hidden sm:inline">for <span id="client"></span></span>
+    <span class="ml-auto text-muted-foreground hidden md:inline">Built by Olive Technologies</span>
+  </div>
+</div>
+
+<!-- Event header -->
+<header class="mx-auto max-w-[1440px] px-4 sm:px-6 pt-6 pb-5 flex flex-col lg:flex-row lg:items-end gap-5">
+  <div class="flex flex-col gap-2 min-w-0 flex-1">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <h1 id="event-name" class="font-serif text-[1.75rem] sm:text-[2.1rem] leading-tight"></h1>
+      <span id="status-badge" data-slot="badge"></span>
+    </div>
+    <p id="event-date" class="text-sm text-muted-foreground"></p>
+    <p id="health-line" class="text-[0.95rem] max-w-[72ch]"></p>
+  </div>
+  <div class="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Schedule actions">
+    <button data-slot="button" class="btn btn-outline" id="act-run"><i data-lucide="refresh-cw"></i>Run matching</button>
+    <button data-slot="button" class="btn btn-outline" id="act-edit" aria-pressed="false"><i data-lucide="pencil"></i><span>Edit schedule</span></button>
+    <button data-slot="button" class="btn btn-outline" id="act-lock"><i data-lucide="lock"></i><span>Lock schedule</span></button>
+    <div class="relative" data-slot="popover">
+      <button data-slot="popover-trigger" class="btn btn-default" id="act-export" aria-expanded="false" aria-controls="export-pop"><i data-lucide="download"></i>Export</button>
+      <div id="export-pop" class="popover" data-slot="popover-content" role="menu" hidden>
+        <button role="menuitem" class="menu-item" data-export="Excel workbook"><i data-lucide="sheet"></i><span><span class="block font-semibold text-sm">Excel workbook</span><span class="block text-xs text-muted-foreground">Every appointment, one row each, with ranks</span></span></button>
+        <button role="menuitem" class="menu-item" data-export="Buyer schedules"><i data-lucide="file-text"></i><span><span class="block font-semibold text-sm">Buyer schedules</span><span class="block text-xs text-muted-foreground" data-export-count="b"></span></span></button>
+        <button role="menuitem" class="menu-item" data-export="Supplier schedules"><i data-lucide="file-text"></i><span><span class="block font-semibold text-sm">Supplier schedules</span><span class="block text-xs text-muted-foreground" data-export-count="s"></span></span></button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Toolbar -->
+<div id="toolbar" class="md:sticky md:top-0 z-10 bg-background/95 backdrop-blur border-y border-border">
+  <div class="mx-auto max-w-[1440px] px-4 sm:px-6 py-2.5 flex flex-wrap items-center gap-2.5">
+    <div data-slot="toggle-group" class="toggle-group overflow-x-auto max-w-full" role="group" aria-label="View" id="views"></div>
+    <div class="flex flex-wrap items-center gap-2 flex-1 justify-end min-w-0">
+      <label data-slot="input-group" class="input-group w-full sm:w-72">
+        <i data-lucide="search" data-slot="input-group-addon"></i>
+        <input data-slot="input-group-input" id="search" type="search" placeholder="Search buyer, org or supplier" autocomplete="off" aria-label="Search buyers, organizations and suppliers">
+        <button type="button" data-slot="kbd" class="kbd" id="cmdk-hint" title="Jump to a person">⌘K</button>
+      </label>
+      <label class="flex items-center gap-2 text-sm">
+        <span class="text-muted-foreground whitespace-nowrap">Open slot</span>
+        <select data-slot="select" class="select" id="open-filter" aria-label="Show only people free in a slot"></select>
+      </label>
+      <label class="flex items-center gap-2 text-sm" id="sort-wrap">
+        <span class="text-muted-foreground">Sort</span>
+        <select data-slot="select" class="select" id="sort"></select>
+      </label>
+    </div>
+  </div>
+</div>
+
+<main id="view" class="mx-auto max-w-[1440px] px-4 sm:px-6 pb-16" tabindex="-1"></main>
+
+<!-- Sheet -->
+<div id="sheet-root" data-slot="sheet" hidden>
+  <div class="overlay" data-slot="sheet-overlay" data-close></div>
+  <aside class="sheet" data-slot="sheet-content" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-describedby="sheet-desc">
+    <div data-slot="sheet-header" class="flex items-start gap-3 px-5 pt-5 pb-4 border-b border-border">
+      <div class="min-w-0 flex-1">
+        <h2 id="sheet-title" data-slot="sheet-title" class="font-serif text-xl leading-snug"></h2>
+        <p id="sheet-desc" data-slot="sheet-description" class="text-sm text-muted-foreground mt-1"></p>
+      </div>
+      <button class="btn btn-ghost btn-icon" data-close aria-label="Close"><i data-lucide="x"></i></button>
+    </div>
+    <div id="sheet-body" data-slot="scroll-area" class="flex-1 overflow-y-auto px-5 py-4"></div>
+  </aside>
+</div>
+
+<!-- Dialog (confirmations) -->
+<div id="dialog-root" data-slot="dialog" hidden>
+  <div class="overlay" data-slot="dialog-overlay" data-close></div>
+  <div class="dialog p-5" data-slot="dialog-content" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-desc">
+    <h2 id="dialog-title" data-slot="dialog-title" class="font-serif text-lg"></h2>
+    <p id="dialog-desc" data-slot="dialog-description" class="text-sm text-muted-foreground mt-2 leading-relaxed"></p>
+    <div data-slot="dialog-footer" class="flex justify-end gap-2 mt-5">
+      <button class="btn btn-outline" data-close>Cancel</button>
+      <button class="btn btn-default" id="dialog-ok"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Command palette -->
+<div id="cmd-root" data-slot="dialog" hidden>
+  <div class="overlay" data-close></div>
+  <div class="dialog overflow-hidden" data-slot="command" role="dialog" aria-modal="true" aria-label="Jump to a buyer or supplier">
+    <h2 class="sr-only" data-slot="dialog-title">Jump to a buyer or supplier</h2>
+    <div class="flex items-center gap-2 px-3 border-b border-border" data-slot="command-input-wrapper">
+      <i data-lucide="search" class="size-4 text-muted-foreground"></i>
+      <input id="cmd-input" data-slot="command-input" class="h-12 flex-1 bg-transparent outline-none text-sm" placeholder="Type a buyer, organization or supplier"
+             role="combobox" aria-expanded="true" aria-controls="cmd-list" autocomplete="off">
+      <span class="kbd">Esc</span>
+    </div>
+    <div id="cmd-list" data-slot="command-list" role="listbox" class="max-h-[50vh] overflow-y-auto p-1.5"></div>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip" data-slot="tooltip-content" role="tooltip" hidden></div>
+<ol id="toaster" class="toaster" data-slot="sonner" aria-live="polite"></ol>
+
+<script src="../shared/aw-data.js"></script>
+<script>
+(() => {
+'use strict';
+const D = window.AW_DATA;
+const view = document.getElementById('view');
+if (!D) { view.innerHTML = '<p class="py-10">The schedule data did not load. Check that shared/aw-data.js is served next to this folder.</p>'; return; }
+
+/* ---------- data model (all numbers computed from AW_DATA) ---------- */
+const S = D.event.settings, SLOTS = D.slots, NS = SLOTS.length, TOPN = S.mutualTopN;
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+const pct = (n, d) => d ? Math.round((n / d) * 100) : 0;
+const short = t => t.replace(/\s?[AP]M$/i, '');
+const inTop = r => r != null && r <= TOPN;
+function tierOf(a) { const b = inTop(a.buyerRank), s = inTop(a.supplierRank); return b && s ? 'mutual' : (b || s ? 'one' : 'neither'); }
+const TIER_LABEL = { mutual: `Mutual top ${TOPN}`, one: `One side top ${TOPN}`, neither: `Neither top ${TOPN}` };
+
+const BUYERS = D.buyers.map((b, i) => ({ ...b, i, kind: 'b', count: 0, slots: Array(NS).fill(null) }));
+const SUPS = D.suppliers.map((s, i) => ({ ...s, i, kind: 's', count: 0, slots: Array(NS).fill(null) }));
+const bBy = new Map(BUYERS.map(b => [b.name, b])), sBy = new Map(SUPS.map(s => [s.name, s]));
+const conflicts = [];
+const APPTS = D.appointments.map((a, id) => {
+  const x = { ...a, id, b: bBy.get(a.buyer), s: sBy.get(a.supplier), tier: tierOf(a) };
+  [x.b, x.s].forEach(p => {
+    if (!p) return;
+    p.count++;
+    const k = a.slot - 1;
+    if (p.slots[k]) conflicts.push({ p, slot: a.slot }); else p.slots[k] = x;
+  });
+  return x;
+});
+const buyerFlag = b => b.count < S.buyerMin ? 'below' : b.count > S.buyerMax ? 'above' : null;
+const supFlag = s => s.count !== S.supplierTarget ? (s.count < S.supplierTarget ? 'below' : 'above') : null;
+const flagOf = p => p.kind === 'b' ? buyerFlag(p) : supFlag(p);
+const buyerLabel = b => b.organization || b.name;
+const personName = p => p.kind === 'b' ? buyerLabel(p) : p.name;
+
+const ST = (() => {
+  const t = { total: APPTS.length, mutual: 0, one: 0, neither: 0, blankB: 0, blankS: 0 };
+  APPTS.forEach(a => { t[a.tier]++; if (a.buyerRank == null) t.blankB++; if (a.supplierRank == null) t.blankS++; });
+  t.capacity = SUPS.length * S.supplierTarget;
+  t.supAt = SUPS.filter(s => !supFlag(s)).length;
+  t.supOff = SUPS.filter(s => supFlag(s));
+  t.buyersOk = BUYERS.filter(b => !buyerFlag(b)).length;
+  t.below = BUYERS.filter(b => buyerFlag(b) === 'below').sort((a, b) => a.count - b.count);
+  t.above = BUYERS.filter(b => buyerFlag(b) === 'above').sort((a, b) => b.count - a.count);
+  const counts = BUYERS.map(b => b.count);
+  const lo = Math.min(...counts, S.buyerMin), hi = Math.max(...counts, S.buyerMax);
+  t.dist = [];
+  for (let c = lo; c <= hi; c++) t.dist.push({ c, n: counts.filter(x => x === c).length });
+  t.issues = t.below.length + t.above.length + t.supOff.length + conflicts.length;
+  t.perSlot = SLOTS.map((sl, k) => {
+    const list = APPTS.filter(a => a.slot === sl.n);
+    return { n: list.length,
+             freeB: BUYERS.filter(b => !b.slots[k]).length, freeS: SUPS.filter(s => !s.slots[k]).length };
+  });
+  return t;
+})();
+
+/* ---------- state ---------- */
+const state = { view: 'buyers', q: '', open: 0, slot: 1, sort: { buyers: 'attention', suppliers: 'desk' }, status: 'draft', editing: false, grown: false };
+
+/* ---------- glyphs ---------- */
+function glyph(a, k, size = 24) {
+  const fill = a.tier === 'mutual' ? 'var(--mutual)' : a.tier === 'one' ? 'var(--one-side)' : 'var(--neither)';
+  const vein = a.tier === 'neither' ? 'var(--vine)' : 'var(--sage)';
+  const edge = a.tier === 'neither' ? 'stroke="var(--vine)" stroke-width="1.2"' : '';
+  if (a.type === 'business') {
+    return `<svg width="${size}" height="${size}" viewBox="-12 -12 24 24" aria-hidden="true"><circle r="6.6" fill="${fill}" ${edge}/>` +
+      `<circle cx="-2.2" cy="-2.2" r="1.6" fill="${vein}"/></svg>`;
+  }
+  const rot = k % 2 ? 32 : -32;
+  return `<svg width="${size}" height="${size}" viewBox="-12 -12 24 24" aria-hidden="true"><g transform="rotate(${rot})">` +
+    `<path d="M-10 0 C-6 -6.6 6 -6.6 10 0 C6 6.6 -6 6.6 -10 0Z" fill="${fill}" ${edge}/>` +
+    `<path d="M-8 0 L8 0 M-1.5 -3.6 L1 3.4" stroke="${vein}" stroke-width="1" stroke-linecap="round"/></g></svg>`;
+}
+function budGlyph(flag, size = 24) {
+  const c = flag === 'below' ? 'var(--destructive)' : 'var(--sage-strong)';
+  return `<svg width="${size}" height="${size}" viewBox="-12 -12 24 24" aria-hidden="true"><circle r="5" fill="var(--background)" stroke="${c}" stroke-width="1.6" stroke-dasharray="2.4 2"/></svg>`;
+}
+function stemPath(n) {
+  const w = 100, y = 20, amp = 7.5;
+  let d = `M0 ${y} L${w / 2} ${y}`;
+  for (let i = 0; i < n - 1; i++) {
+    const x0 = w * (i + .5), x1 = w * (i + 1.5), dir = i % 2 ? 1 : -1;
+    d += ` C${x0 + w * .38} ${y + dir * amp} ${x1 - w * .38} ${y + dir * amp} ${x1} ${y}`;
+  }
+  return d + ` L${w * n} ${y}`;
+}
+const STEM = stemPath(NS);
+const TENDRIL = `<svg class="tendril" width="30" height="44" viewBox="0 0 30 44" aria-hidden="true"><path d="M0 22 C9 22 15 18 15 12 C15 6 9 5 7.5 8.5 C6 12 10.5 13.5 12 11"/></svg>`;
+
+function rankHTML(r) {
+  if (r == null) return `<span class="rank" data-blank title="Left blank"><span aria-hidden="true">–</span><span class="sr-only">blank</span></span>`;
+  return `<span class="rank" ${r <= TOPN ? 'data-top' : ''}>${r}</span>`;
+}
+const typeBadge = t => `<span data-slot="badge" class="badge badge-${t === 'business' ? 'business' : 'hotel'}">${t === 'business' ? 'Business' : 'Hotel'}</span>`;
+const mutualBadge = () => `<span data-slot="badge" class="badge badge-mutual">${glyph({ tier: 'mutual', type: 'business' }, 0, 12)}Mutual top ${TOPN}</span>`;
+function flagBadge(p) {
+  const f = flagOf(p); if (!f) return '';
+  if (p.kind === 'b') return f === 'below'
+    ? `<span data-slot="badge" class="badge badge-destructive">Below ${S.buyerMin}</span>`
+    : `<span data-slot="badge" class="badge badge-warning">Above ${S.buyerMax}</span>`;
+  return `<span data-slot="badge" class="badge ${f === 'below' ? 'badge-destructive' : 'badge-warning'}">Not at ${S.supplierTarget}</span>`;
+}
+function apptLabel(a, from) {
+  const sl = SLOTS[a.slot - 1];
+  const other = from === 'b' ? `${a.supplier}, ${a.type}` : buyerLabel(a.b || { name: a.buyer });
+  const r = v => v == null ? 'blank' : v;
+  return `${sl.start}, ${other}, desk ${a.desk}. Buyer rank ${r(a.buyerRank)}, supplier rank ${r(a.supplierRank)}. ${TIER_LABEL[a.tier]}.`;
+}
+
+/* ---------- filtering ---------- */
+const qm = s => String(s || '').toLowerCase().includes(state.q);
+function personMatch(p) {
+  if (!state.q) return { ok: true, hits: null };
+  const self = p.kind === 'b' ? (qm(p.name) || qm(p.organization) || qm(p.title)) : qm(p.name);
+  if (self) return { ok: true, hits: null };
+  const hits = new Set();
+  p.slots.forEach(a => { if (!a) return; const o = p.kind === 'b' ? a.s : a.b; if (o && (qm(o.name) || qm(o.organization))) hits.add(a.id); });
+  return { ok: hits.size > 0, hits: hits.size ? hits : null };
+}
+const freeIn = (p, n) => !n || !p.slots[n - 1];
+
+/* ---------- views ---------- */
+const VIEWS = [
+  { id: 'buyers', label: 'Buyers', icon: 'users' },
+  { id: 'suppliers', label: 'Suppliers', icon: 'store' },
+  { id: 'slots', label: 'Time slots', icon: 'clock' },
+  { id: 'health', label: 'Health', icon: 'heart-pulse' },
+];
+const SORTS = {
+  buyers: [['attention', 'Needs attention first'], ['fewest', 'Fewest meetings'], ['az', 'A to Z']],
+  suppliers: [['desk', 'Desk number'], ['az', 'A to Z'], ['attention', 'Needs attention first']],
+};
+
+function render() {
+  document.getElementById('views').innerHTML = VIEWS.map(v =>
+    `<button data-slot="toggle-group-item" class="toggle-item" aria-pressed="${state.view === v.id}" data-view="${v.id}"><i data-lucide="${v.icon}" class="max-sm:hidden"></i>${v.label}` +
+    (v.id === 'health' && ST.issues ? `<span data-slot="badge" class="badge badge-destructive" aria-label="${ST.issues} issues">${ST.issues}</span>` : '') + `</button>`).join('');
+  const sortWrap = document.getElementById('sort-wrap');
+  sortWrap.hidden = !SORTS[state.view];
+  if (SORTS[state.view]) document.getElementById('sort').innerHTML = SORTS[state.view].map(([v, l]) => `<option value="${v}" ${state.sort[state.view] === v ? 'selected' : ''}>${l}</option>`).join('');
+  const of = document.getElementById('open-filter');
+  of.value = String(state.open); of.dataset.active = state.open ? 'true' : 'false';
+  ({ buyers: renderBuyerView, suppliers: renderSupplierView, slots: renderSlotView, health: renderHealthView })[state.view]();
+  icons();
+  positionHead();
+}
+
+function filterLine(shown, total, noun) {
+  const parts = [];
+  if (state.q) parts.push(`matching “${esc(state.q)}”`);
+  if (state.open) parts.push(`free at ${SLOTS[state.open - 1].start}`);
+  if (!parts.length) return '';
+  return `<div class="flex flex-wrap items-center gap-3 pt-4 text-sm"><span>Showing ${shown} of ${plural(total, noun)}, ${parts.join(' and ')}.</span>` +
+    `<button class="btn btn-link text-sm" data-action="clear">Clear filters</button></div>`;
+}
+function emptyHTML(title, body) {
+  return `<div data-slot="empty" class="flex flex-col items-center text-center gap-3 py-16 px-4">
+    <svg width="44" height="44" viewBox="-22 -22 44 44" aria-hidden="true"><path d="M-18 6 C-8 6 -4 0 0 0 C6 0 10 8 18 4" fill="none" stroke="var(--vine)" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-6" cy="3" r="4.5" fill="none" stroke="var(--sage-strong)" stroke-width="1.6" stroke-dasharray="2.4 2"/><circle cx="8" cy="3" r="4.5" fill="none" stroke="var(--sage-strong)" stroke-width="1.6" stroke-dasharray="2.4 2"/></svg>
+    <h3 data-slot="empty-title" class="font-serif text-lg">${title}</h3><p data-slot="empty-description" class="text-sm text-muted-foreground max-w-[44ch]">${body}</p>
+    ${state.q || state.open ? '<button class="btn btn-outline btn-sm" data-action="clear">Clear filters</button>' : ''}</div>`;
+}
+function legendHTML() {
+  const item = (svg, label) => `<span class="inline-flex items-center gap-1">${svg}<span>${label}</span></span>`;
+  return `<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground pt-4" aria-label="Legend">
+    ${item(glyph({ tier: 'one', type: 'hotel' }, 0, 20), 'Hotel')}
+    ${item(glyph({ tier: 'one', type: 'business' }, 0, 20), 'Business')}
+    ${item(glyph({ tier: 'mutual', type: 'hotel' }, 1, 20), `Mutual top ${TOPN}`)}
+    ${item(glyph({ tier: 'one', type: 'hotel' }, 1, 20), `One side top ${TOPN}`)}
+    ${item(glyph({ tier: 'neither', type: 'hotel' }, 1, 20), `Neither top ${TOPN}`)}
+    ${item(budGlyph(null, 20), 'Open slot')}
+    ${item(budGlyph('below', 20), 'Open slot, buyer below target')}</div>`;
+}
+function groveHTML(people, kind, total) {
+  const noun = kind === 'b' ? 'buyer' : 'supplier';
+  const head = `<div class="grove-head grove-grid" style="--n:${NS}" id="grove-head">
+    <span class="head-name text-xs font-semibold text-muted-foreground">${kind === 'b' ? 'Buyer' : 'Supplier and desk'}</span>
+    <div class="ruler" style="--n:${NS}">${SLOTS.map(s => `<span ${state.open === s.n ? 'data-hl' : ''} title="${esc(s.start)} to ${esc(s.end)}">${esc(short(s.start))}</span>`).join('')}</div>
+    <span class="head-count text-xs font-semibold text-muted-foreground">Meetings</span></div>`;
+  if (!people.length) return legendHTML() + filterLine(0, total, noun) + head + emptyHTML(`No ${noun}s match`, state.open
+    ? `Nobody here is free at ${esc(SLOTS[state.open - 1].start)}${state.q ? ' with that search' : ''}. Try another slot.`
+    : `Nothing matches “${esc(state.q)}”. Search by ${kind === 'b' ? 'buyer, organization or a supplier they meet' : 'supplier or a buyer they meet'}.`);
+  const rows = people.map(({ p, hits }, idx) => {
+    const flag = flagOf(p);
+    const i = Math.min(idx, 18);
+    let first = true;
+    const cells = p.slots.map((a, k) => {
+      const tab = first ? 0 : -1; first = false;
+      if (!a) return `<button class="bud" style="--k:${k}" tabindex="${tab}" data-person="${kind}:${p.i}" data-slotn="${k + 1}" ${state.open === k + 1 ? 'data-hl' : ''}
+        aria-label="${esc(SLOTS[k].start)}, open slot">${budGlyph(kind === 'b' ? flag : null, 28)}</button>`;
+      const hit = hits ? (hits.has(a.id) ? 'data-hit' : 'data-dim') : '';
+      return `<button class="node" style="--k:${k}" tabindex="${tab}" data-appt="${a.id}" data-from="${kind}" ${hit} aria-label="${esc(apptLabel(a, kind))}">${glyph(a, k, 30)}</button>`;
+    }).join('');
+    const nameA = kind === 'b' ? esc(buyerLabel(p)) : esc(p.name);
+    const nameB = kind === 'b' ? esc(p.title) : `Desk ${p.desk}, ${p.type === 'business' ? 'business' : 'hotel'}`;
+    return `<li class="vine-row grove-grid" style="--i:${i}">
+      <button class="vine-name" data-person="${kind}:${p.i}" title="${esc(p.name)}"><span class="vine-title-1">${nameA}</span><span class="vine-title-2">${nameB}</span></button>
+      <div class="vine" role="group" aria-label="${esc(personName(p))}, afternoon schedule">
+        <svg class="stem" viewBox="0 0 ${NS * 100} 40" preserveAspectRatio="none" aria-hidden="true"><path d="${STEM}"/></svg>
+        <div class="nodes" style="--n:${NS}">${cells}</div></div>
+      <div class="vine-count">${TENDRIL}<span><span class="count-num">${p.count}</span> <span class="count-of">of ${NS}</span></span>${flagBadge(p)}</div></li>`;
+  }).join('');
+  return legendHTML() + filterLine(people.length, total, noun) + head +
+    `<ol class="grove" ${state.grown ? '' : 'data-grow'} data-slot="table" aria-label="${noun}s">${rows}</ol>`;
+}
+function sortPeople(list, mode) {
+  const byName = (a, b) => personName(a.p).localeCompare(personName(b.p));
+  const rank = p => { const f = flagOf(p); return f === 'below' ? 0 : f === 'above' ? 1 : 2; };
+  return list.sort((a, b) => mode === 'attention' ? (rank(a.p) - rank(b.p) || a.p.count - b.p.count || byName(a, b))
+    : mode === 'fewest' ? (a.p.count - b.p.count || byName(a, b))
+    : mode === 'desk' ? (a.p.desk - b.p.desk) : byName(a, b));
+}
+
+function renderBuyerView() {
+  const list = BUYERS.map(p => ({ p, ...personMatch(p) })).filter(x => x.ok && freeIn(x.p, state.open));
+  view.innerHTML = groveHTML(sortPeople(list, state.sort.buyers), 'b', BUYERS.length);
+  state.grown = true;
+}
+function renderSupplierView() {
+  const list = SUPS.map(p => ({ p, ...personMatch(p) })).filter(x => x.ok && freeIn(x.p, state.open));
+  view.innerHTML = groveHTML(sortPeople(list, state.sort.suppliers), 's', SUPS.length);
+  state.grown = true;
+}
+
+function renderSlotView() {
+  const n = state.slot, k = n - 1, sl = SLOTS[k];
+  const strip = `<div data-slot="toggle-group" class="slot-strip overflow-x-auto mt-5" role="group" aria-label="Time slot" style="--n:${NS}">` +
+    SLOTS.map((s, j) => `<button data-slot="toggle-group-item" class="slot-item" aria-pressed="${s.n === n}" data-slotpick="${s.n}">
+      <b>${esc(s.start)}</b><span>${plural(ST.perSlot[j].n, 'meeting')}</span><span>${ST.perSlot[j].freeB} buyers free</span></button>`).join('') + `</div>`;
+  const bMatch = b => !state.q || qm(b.name) || qm(b.organization) || qm(b.title);
+  const sMatch = s => !state.q || qm(s.name);
+  const freeB = BUYERS.filter(b => !b.slots[k] && bMatch(b)).sort((a, b) => a.count - b.count);
+  const freeS = SUPS.filter(s => !s.slots[k] && sMatch(s));
+  const chip = p => `<button data-slot="badge" class="badge badge-outline !py-1 !px-2.5 hover:bg-accent" data-person="${p.kind}:${p.i}" data-focus-slot="${n}">
+      ${esc(personName(p))}<span class="text-muted-foreground font-normal">${p.count} of ${NS}</span>${flagBadge(p)}</button>`;
+  const freeSection = `<section class="mt-8" aria-labelledby="free-h">
+    <h2 id="free-h" class="font-serif text-lg">Free at ${esc(sl.start)}</h2>
+    <p class="text-sm text-muted-foreground mt-1">Buyers below ${S.buyerMin} are listed first. A meeting can only go here if a supplier is free too.</p>
+    <h3 class="text-sm font-semibold mt-4 mb-2">${plural(freeB.length, 'buyer')}</h3>
+    <div class="flex flex-wrap gap-2">${freeB.map(chip).join('') || '<p class="text-sm text-muted-foreground">No buyers are free in this slot' + (state.q ? ' with that search' : '') + '.</p>'}</div>
+    <h3 class="text-sm font-semibold mt-5 mb-2">${plural(freeS.length, 'supplier')}</h3>
+    <div class="flex flex-wrap gap-2">${freeS.map(chip).join('') || `<p class="text-sm text-muted-foreground">Every supplier${state.q ? ' matching that search' : ''} is booked at ${esc(sl.start)}. To add a meeting, move one first.</p>`}</div></section>`;
+  if (state.open) {
+    view.innerHTML = strip + `<div data-slot="alert" role="status" class="mt-5 flex items-start gap-3 rounded-lg border border-border bg-card p-3.5 text-sm">
+      <i data-lucide="filter" class="size-4 mt-0.5 text-primary"></i><span>Showing only who is free at ${esc(sl.start)}. <button class="btn btn-link text-sm" data-action="clear">Show all meetings in this slot</button></span></div>` + freeSection;
+    return;
+  }
+  const rows = APPTS.filter(a => a.slot === n && (!state.q || qm(a.supplier) || qm(a.buyer) || (a.b && qm(a.b.organization)))).sort((a, b) => a.desk - b.desk);
+  const table = rows.length ? `<div data-slot="scroll-area" class="overflow-x-auto mt-5 rounded-xl border border-border bg-card">
+    <table data-slot="table" class="table"><caption class="sr-only">Meetings at ${esc(sl.start)}</caption>
+    <thead data-slot="table-header"><tr><th>Desk</th><th>Supplier</th><th>Buyer</th><th class="text-center">Buyer rank</th><th class="text-center">Supplier rank</th><th>Match</th></tr></thead>
+    <tbody data-slot="table-body">${rows.map(a => `<tr data-slot="table-row" data-appt="${a.id}" data-from="b" tabindex="0" ${a.tier === 'mutual' ? 'data-mutual' : ''} aria-label="${esc(apptLabel(a, 'b'))}">
+      <td class="font-semibold">${a.desk}</td>
+      <td><div class="flex items-center gap-2 min-w-[14rem]">${glyph(a, 0, 20)}<span class="font-medium">${esc(a.supplier)}</span>${typeBadge(a.type)}</div></td>
+      <td class="min-w-[16rem]"><span class="block font-medium">${esc(a.b ? buyerLabel(a.b) : a.buyer)}</span><span class="block text-xs text-muted-foreground">${esc(a.b ? a.b.title : '')}</span></td>
+      <td class="text-center">${rankHTML(a.buyerRank)}</td><td class="text-center">${rankHTML(a.supplierRank)}</td>
+      <td>${a.tier === 'mutual' ? mutualBadge() : `<span class="text-xs text-muted-foreground">${TIER_LABEL[a.tier]}</span>`}</td></tr>`).join('')}</tbody></table></div>`
+    : emptyHTML('No meetings match', `Nothing at ${esc(sl.start)} matches “${esc(state.q)}”.`);
+  view.innerHTML = strip + `<p class="text-sm text-muted-foreground mt-4">${plural(rows.length, 'meeting')} at ${esc(sl.start)} to ${esc(sl.end)}${state.q ? ` matching “${esc(state.q)}”` : ''}, ${rows.filter(a => a.tier === 'mutual').length} of them mutual top ${TOPN}. Ordered by desk.</p>` + table + freeSection;
+}
+
+function renderHealthView() {
+  const t = ST;
+  const measure = (label, val, of, note) => `<div class="flex flex-col gap-2">
+      <div class="flex items-baseline justify-between gap-3"><span class="text-sm font-semibold">${label}</span><span class="text-sm"><b class="text-base">${val}</b> <span class="text-muted-foreground">of ${of}</span></span></div>
+      <div data-slot="progress" class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${of}" aria-valuenow="${val}" aria-label="${label}"><i style="width:${pct(val, of)}%"></i></div>
+      <span class="text-xs text-muted-foreground">${note}</span></div>`;
+  const maxN = Math.max(...t.dist.map(d => d.n), 1);
+  const distRows = t.dist.map(d => {
+    const col = d.c < S.buyerMin ? 'var(--destructive)' : d.c > S.buyerMax ? 'var(--warning)' : d.c === S.buyerIdeal ? 'var(--mutual)' : 'var(--one-side)';
+    return `<div class="grid grid-cols-[6.5rem_1fr_3rem] items-center gap-3 text-sm">
+      <span class="text-muted-foreground">${plural(d.c, 'meeting')}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${(d.n / maxN) * 100}%;background:${col}"></div></div>
+      <span class="font-semibold text-right">${d.n}</span></div>`;
+  }).join('');
+  const seg = (n, color, label) => n ? `<div style="flex:${n};background:${color}" title="${label}: ${n}"></div>` : '';
+  const key = (n, color, label, ring) => `<div class="flex items-start gap-2"><span class="mt-1 size-3 rounded-full flex-none" style="background:${color};${ring ? 'box-shadow:inset 0 0 0 1.2px var(--vine)' : ''}"></span>
+      <div><div class="text-sm font-semibold">${label}</div><div class="text-sm"><b>${n}</b> <span class="text-muted-foreground">(${pct(n, t.total)}%)</span></div></div></div>`;
+  const qf = p => !state.q || qm(p.name) || qm(p.organization) || qm(p.title);
+  const openTimes = b => b.slots.map((a, k) => a ? null : short(SLOTS[k].start)).filter(Boolean).join(', ');
+  const peopleTable = (list, emptyText) => list.length ? `<table data-slot="table" class="table"><thead><tr><th>Buyer</th><th class="text-right">Meetings</th><th>Open at</th></tr></thead><tbody>
+      ${list.map(b => `<tr data-person="b:${b.i}" tabindex="0" aria-label="${esc(buyerLabel(b))}, ${b.count} meetings"><td><span class="block font-medium">${esc(buyerLabel(b))}</span><span class="block text-xs text-muted-foreground">${esc(b.title)}</span></td>
+      <td class="text-right font-semibold">${b.count}</td><td class="text-xs text-muted-foreground">${openTimes(b) || '–'}</td></tr>`).join('')}</tbody></table>`
+    : `<p data-slot="empty" class="text-sm text-muted-foreground px-2.5 pt-1 pb-3">${emptyText}</p>`;
+  const below = t.below.filter(qf), above = t.above.filter(qf);
+  let search = '';
+  if (state.q) {
+    const hits = [...BUYERS.filter(qf), ...SUPS.filter(s => qm(s.name))].slice(0, 12);
+    search = `<section data-slot="card" class="rounded-xl border border-border bg-card p-4 mt-6"><h2 class="font-semibold text-sm mb-3">Matching “${esc(state.q)}”</h2>
+      <div class="flex flex-wrap gap-2">${hits.map(p => `<button data-slot="badge" class="badge badge-outline !py-1 !px-2.5 hover:bg-accent" data-person="${p.kind}:${p.i}">${esc(personName(p))}<span class="text-muted-foreground font-normal">${p.count} of ${NS}</span>${flagBadge(p)}</button>`).join('') || '<span class="text-sm text-muted-foreground">Nobody matches that search.</span>'}</div></section>`;
+  }
+  view.innerHTML = search + `<div class="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-x-10 gap-y-8 pt-7">
+    <div class="flex flex-col gap-8">
+      <section aria-labelledby="h-counts">
+        <h2 id="h-counts" class="font-serif text-xl">Counts</h2>
+        <p class="text-sm text-muted-foreground mt-1">${t.total} appointments filled out of ${t.capacity} supplier seats.</p>
+        <div class="grid sm:grid-cols-3 gap-6 mt-4">
+          ${measure('Appointments', t.total, t.capacity, `${NS} slots, ${SUPS.length} desks`)}
+          ${measure(`Suppliers at ${S.supplierTarget}`, t.supAt, SUPS.length, t.supOff.length ? `${plural(t.supOff.length, 'supplier')} off target` : 'Every desk is full')}
+          ${measure(`Buyers at ${S.buyerMin} to ${S.buyerMax}`, t.buyersOk, BUYERS.length, `${t.below.length} below, ${t.above.length} above`)}
+        </div>
+      </section>
+      <div data-slot="separator" role="separator" class="h-px bg-border"></div>
+      <section aria-labelledby="h-dist" data-slot="chart">
+        <h2 id="h-dist" class="font-serif text-xl">Meetings per buyer</h2>
+        <p class="text-sm text-muted-foreground mt-1">Target is ${S.buyerMin} to ${S.buyerMax}, ideally ${S.buyerIdeal}. Berry bars are below target.</p>
+        <div class="flex flex-col gap-2 mt-4" role="list">${distRows}</div>
+      </section>
+      <div data-slot="separator" role="separator" class="h-px bg-border"></div>
+      <section aria-labelledby="h-q" data-slot="chart">
+        <h2 id="h-q" class="font-serif text-xl">Match quality</h2>
+        <p class="text-sm text-muted-foreground mt-1">How both sides ranked each other. Top ${TOPN} means a rank of ${TOPN} or better.</p>
+        <div class="stack mt-4" role="img" aria-label="${t.mutual} mutual, ${t.one} one side, ${t.neither} neither">${seg(t.mutual, 'var(--mutual)', 'Mutual')}${seg(t.one, 'var(--one-side)', 'One side')}${seg(t.neither, 'var(--neither)', 'Neither')}</div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
+          ${key(t.mutual, 'var(--mutual)', `Mutual top ${TOPN}`)}${key(t.one, 'var(--one-side)', `One side top ${TOPN}`)}${key(t.neither, 'var(--neither)', `Neither top ${TOPN}`, true)}
+        </div>
+        <p class="text-sm mt-5">Blank rankings: buyers left <b>${t.blankB}</b> blank, suppliers left <b>${t.blankS}</b> blank. Blanks are shown as a dash.</p>
+      </section>
+    </div>
+    <div class="flex flex-col gap-6">
+      <div data-slot="alert" role="note" class="flex items-start gap-3 rounded-xl border border-border bg-secondary p-4">
+        <i data-lucide="hand" class="size-4 mt-0.5 text-primary"></i>
+        <div><div data-slot="alert-title" class="font-semibold text-sm">${plural(D.event.manualChanges, 'manual change')} applied</div>
+        <div data-slot="alert-description" class="text-sm text-muted-foreground mt-0.5">Made by hand since the last matching run. Running matching again would replace them.</div></div>
+      </div>
+      ${conflicts.length ? `<div data-slot="alert" role="alert" class="rounded-xl border border-destructive/40 bg-destructive-soft p-4 text-sm"><b class="text-destructive">${plural(conflicts.length, 'double booking')}</b> found. Someone has two meetings in the same slot.</div>` : ''}
+      <section data-slot="card" class="rounded-xl border border-border bg-card">
+        <div data-slot="card-header" class="px-4 pt-4 pb-2 flex items-center gap-2"><h2 data-slot="card-title" class="font-semibold">Buyers below ${S.buyerMin}</h2><span class="badge badge-destructive">${t.below.length}</span></div>
+        <p data-slot="card-description" class="px-4 text-sm text-muted-foreground">Open slots are where they have room. Open one to see who is free at the same time.</p>
+        <div data-slot="card-content" class="px-1.5 pb-2 pt-1 overflow-x-auto">${peopleTable(below, state.q ? 'No buyers below target match that search.' : `No buyers are below ${S.buyerMin}.`)}</div>
+      </section>
+      <section data-slot="card" class="rounded-xl border border-border bg-card">
+        <div data-slot="card-header" class="px-4 pt-4 pb-2 flex items-center gap-2"><h2 data-slot="card-title" class="font-semibold">Buyers above ${S.buyerMax}</h2><span class="badge ${t.above.length ? 'badge-warning' : 'badge-secondary'}">${t.above.length}</span></div>
+        <div data-slot="card-content" class="px-1.5 pb-2 overflow-x-auto">${peopleTable(above, state.q && t.above.length ? 'No buyers above target match that search.' : `No buyer has more than ${S.buyerMax} meetings.`)}</div>
+      </section>
+      <section data-slot="card" class="rounded-xl border border-border bg-card">
+        <div data-slot="card-header" class="px-4 pt-4 pb-2 flex items-center gap-2"><h2 data-slot="card-title" class="font-semibold">Suppliers not at ${S.supplierTarget}</h2><span class="badge ${t.supOff.length ? 'badge-destructive' : 'badge-secondary'}">${t.supOff.length}</span></div>
+        <div data-slot="card-content" class="px-4 pb-4 text-sm">${t.supOff.length ? t.supOff.map(s => `<button class="btn btn-link text-sm mr-3" data-person="s:${s.i}">${esc(s.name)} (${s.count})</button>`).join('') : `<p class="text-muted-foreground">All ${SUPS.length} suppliers have exactly ${S.supplierTarget} meetings.</p>`}</div>
+      </section>
+    </div></div>`;
+}
+
+/* ---------- header ---------- */
+function renderHeader() {
+  document.getElementById('client').textContent = D.event.client;
+  document.getElementById('event-name').textContent = D.event.name;
+  const dt = new Date(D.event.date + 'T12:00:00');
+  document.getElementById('event-date').textContent = `${isNaN(dt) ? D.event.date : dt.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}, ${SLOTS[0].start} to ${SLOTS[NS - 1].end}, ${NS} slots of ten minutes`;
+  const st = document.getElementById('status-badge');
+  const label = state.status === 'locked' ? 'Locked' : state.editing ? 'Draft, editing' : 'Draft, not locked';
+  st.className = 'badge ' + (state.status === 'locked' ? 'badge-primary' : 'badge-outline');
+  st.innerHTML = (state.status === 'locked' ? '<i data-lucide="lock"></i>' : budGlyph(null, 14)) + label;
+  const need = ST.below.length + ST.above.length;
+  const sup = ST.supOff.length ? `${ST.supAt} of ${SUPS.length} suppliers have ${S.supplierTarget}` : `Every supplier has ${S.supplierTarget}`;
+  document.getElementById('health-line').innerHTML = `${ST.total} appointments. ${sup}. ${ST.buyersOk} of ${BUYERS.length} buyers are within ${S.buyerMin} to ${S.buyerMax}` +
+    (need ? `, so ${plural(need, 'buyer needs', 'buyers need')} a fix. <button class="btn btn-link text-[0.95rem]" data-action="health">See who</button>` : '.');
+  const locked = state.status === 'locked';
+  document.getElementById('act-run').disabled = locked;
+  const ed = document.getElementById('act-edit'); ed.disabled = locked; ed.setAttribute('aria-pressed', String(state.editing));
+  ed.querySelector('span').textContent = state.editing ? 'Done editing' : 'Edit schedule';
+  ed.className = 'btn ' + (state.editing ? 'btn-default' : 'btn-outline');
+  document.getElementById('act-lock').querySelector('span').textContent = locked ? 'Unlock schedule' : 'Lock schedule';
+  document.querySelector('[data-export-count="b"]').textContent = `${BUYERS.length} PDFs, one afternoon each`;
+  document.querySelector('[data-export-count="s"]').textContent = `${SUPS.length} PDFs with desk numbers`;
+  icons();
+}
+
+/* ---------- sheet ---------- */
+let sheetReturn = null;
+function scheduleHTML(p, focusSlot) {
+  const flag = flagOf(p);
+  const rows = p.slots.map((a, k) => {
+    const sl = SLOTS[k], foc = focusSlot === k + 1 ? 'data-focus' : '';
+    const time = `<div class="time">${esc(sl.start)}<small>to ${esc(sl.end)}</small></div>`;
+    if (!a) {
+      const freeOther = (p.kind === 'b' ? SUPS : BUYERS).filter(o => !o.slots[k]).length;
+      return `<li ${foc}>${time}<div class="glyph">${budGlyph(p.kind === 'b' ? flag : null, 26)}</div>
+        <div class="pt-1"><div class="font-semibold">Open</div><div class="text-sm text-muted-foreground">No meeting. ${freeOther ? `${plural(freeOther, p.kind === 'b' ? 'supplier is' : 'buyer is', p.kind === 'b' ? 'suppliers are' : 'buyers are')} also free now.` : `No ${p.kind === 'b' ? 'supplier' : 'buyer'} is free now, so a meeting here needs a swap.`}</div>
+        ${state.editing ? `<button class="btn btn-outline btn-sm mt-2" data-action="add" data-slotn="${k + 1}" data-person="${p.kind}:${p.i}"><i data-lucide="plus"></i>Add a meeting</button>` : ''}</div></li>`;
+    }
+    const other = p.kind === 'b' ? a.s : a.b;
+    const otherName = p.kind === 'b' ? a.supplier : (a.b ? buyerLabel(a.b) : a.buyer);
+    return `<li ${foc}>${time}<div class="glyph">${glyph(a, k, 26)}</div>
+      <div class="min-w-0 pt-0.5">
+        ${other ? `<button class="text-left font-semibold hover:underline underline-offset-2" data-person="${other.kind}:${other.i}">${esc(otherName)}</button>` : `<span class="font-semibold">${esc(otherName)}</span>`}
+        ${p.kind === 's' && a.b ? `<div class="text-xs text-muted-foreground">${esc(a.b.title)}</div>` : ''}
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-1.5 text-sm">
+          <span>Desk <b>${a.desk}</b></span>${typeBadge(a.type)}
+          <span>Buyer rank ${rankHTML(a.buyerRank)}</span><span>Supplier rank ${rankHTML(a.supplierRank)}</span>
+          ${a.tier === 'mutual' ? mutualBadge() : ''}</div></div></li>`;
+  }).join('');
+  return `<ol class="afternoon" aria-label="Afternoon schedule">${rows}</ol>`;
+}
+function openSheet(kind, i, opts = {}) {
+  const p = (kind === 'b' ? BUYERS : SUPS)[i]; if (!p) return;
+  const a = opts.appt != null ? APPTS[opts.appt] : null;
+  sheetReturn = sheetReturn || document.activeElement;
+  document.getElementById('sheet-title').textContent = personName(p);
+  const free = p.slots.filter(x => !x).length;
+  document.getElementById('sheet-desc').innerHTML = (p.kind === 'b' ? esc(p.title) : `Desk ${p.desk}, ${p.type === 'business' ? 'business' : 'hotel'}`) +
+    `<span class="flex flex-wrap items-center gap-2 mt-2"><span class="badge badge-secondary">${p.count} of ${NS} slots booked</span>${free ? `<span class="badge badge-outline">${plural(free, 'open slot')}</span>` : ''}${flagBadge(p)}</span>`;
+  let body = '';
+  if (a && a.b && a.s) {
+    const tabs = [['b', a.b], ['s', a.s]];
+    body += `<div data-slot="tabs" class="mb-4"><div data-slot="tabs-list" role="tablist" class="toggle-group w-full">` +
+      tabs.map(([k, q]) => `<button role="tab" data-slot="tabs-trigger" class="toggle-item flex-1 min-w-0" aria-selected="${k === kind}" aria-pressed="${k === kind}" data-person="${k}:${q.i}" data-focus-slot="${a.slot}" data-appt-ctx="${a.id}"><span class="truncate">${k === 'b' ? 'Buyer' : 'Supplier'}: ${esc(personName(q))}</span></button>`).join('') + `</div></div>`;
+  }
+  body += scheduleHTML(p, opts.slot || (a && a.slot));
+  const b = document.getElementById('sheet-body'); b.innerHTML = body; b.scrollTop = 0;
+  const root = document.getElementById('sheet-root'); root.hidden = false;
+  icons();
+  const f = b.querySelector('li[data-focus]'); if (f) f.scrollIntoView({ block: 'center' });
+  root.querySelector('[data-close].btn').focus();
+}
+function closeLayer(root) {
+  root.hidden = true;
+  if (root.id === 'sheet-root') { const r = sheetReturn; sheetReturn = null; if (r && document.contains(r)) r.focus(); }
+  else if (root._ret && document.contains(root._ret)) root._ret.focus();
+}
+
+/* ---------- dialog / toast / popover / tooltip ---------- */
+let dialogAction = null;
+function confirmDialog(title, desc, ok, fn) {
+  const root = document.getElementById('dialog-root'); root._ret = document.activeElement;
+  document.getElementById('dialog-title').textContent = title;
+  document.getElementById('dialog-desc').textContent = desc;
+  document.getElementById('dialog-ok').textContent = ok;
+  dialogAction = fn; root.hidden = false; document.getElementById('dialog-ok').focus();
+}
+function toast(title, desc = '', icon = 'check-circle-2') {
+  const li = document.createElement('li');
+  li.className = 'toast'; li.setAttribute('data-slot', 'toast');
+  li.innerHTML = `<i data-lucide="${icon}"></i><div><div class="font-semibold">${esc(title)}</div>${desc ? `<div class="text-muted-foreground mt-0.5">${esc(desc)}</div>` : ''}</div>`;
+  const t = document.getElementById('toaster'); t.appendChild(li); icons();
+  while (t.children.length > 3) t.firstChild.remove();
+  setTimeout(() => li.remove(), 4500);
+}
+const tip = document.getElementById('tooltip');
+function showTip(el) {
+  const a = APPTS[+el.dataset.appt]; if (!a) return;
+  const from = el.dataset.from, sl = SLOTS[a.slot - 1];
+  const r = v => v == null ? '–' : v;
+  tip.innerHTML = `<b>${esc(from === 'b' ? a.supplier : (a.b ? buyerLabel(a.b) : a.buyer))}</b><br>${esc(sl.start)}, desk ${a.desk}, ${a.type === 'business' ? 'business' : 'hotel'}<br>Buyer rank ${r(a.buyerRank)}, supplier rank ${r(a.supplierRank)}<br>${TIER_LABEL[a.tier]}`;
+  tip.hidden = false;
+  const rc = el.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = rc.left + rc.width / 2 - tw / 2, y = rc.top - th - 8;
+  if (y < 8) y = rc.bottom + 8;
+  tip.style.left = Math.max(8, Math.min(x, innerWidth - tw - 8)) + 'px'; tip.style.top = y + 'px';
+}
+const hideTip = () => { tip.hidden = true; };
+
+/* ---------- command palette ---------- */
+let cmdSel = 0, cmdItems = [];
+function renderCmd() {
+  const q = document.getElementById('cmd-input').value.trim().toLowerCase();
+  const m = s => String(s || '').toLowerCase().includes(q);
+  const bs = BUYERS.filter(b => !q || m(b.name) || m(b.organization)).slice(0, 7);
+  const ss = SUPS.filter(s => !q || m(s.name)).slice(0, 7);
+  cmdItems = [...bs, ...ss]; cmdSel = Math.min(cmdSel, Math.max(cmdItems.length - 1, 0));
+  const item = (p, idx) => `<div class="cmd-item" role="option" id="cmd-${idx}" data-slot="command-item" aria-selected="${idx === cmdSel}" data-idx="${idx}">
+      ${p.kind === 'b' ? '<i data-lucide="user" class="size-4 text-muted-foreground"></i>' : '<i data-lucide="store" class="size-4 text-muted-foreground"></i>'}
+      <span class="truncate flex-1">${esc(personName(p))}</span><span class="text-xs text-muted-foreground">${p.kind === 's' ? 'Desk ' + p.desk : p.count + ' of ' + NS}</span></div>`;
+  const list = document.getElementById('cmd-list');
+  list.innerHTML = !cmdItems.length ? `<p data-slot="command-empty" class="text-sm text-muted-foreground text-center py-8">No buyer or supplier matches “${esc(q)}”.</p>` :
+    (bs.length ? `<div data-slot="command-group" role="group" aria-label="Buyers"><div class="text-xs font-semibold text-muted-foreground px-2 pt-2 pb-1">Buyers</div>${bs.map((p, i) => item(p, i)).join('')}</div>` : '') +
+    (ss.length ? `<div data-slot="command-group" role="group" aria-label="Suppliers"><div class="text-xs font-semibold text-muted-foreground px-2 pt-3 pb-1">Suppliers</div>${ss.map((p, i) => item(p, i + bs.length)).join('')}</div>` : '');
+  document.getElementById('cmd-input').setAttribute('aria-activedescendant', cmdItems.length ? 'cmd-' + cmdSel : '');
+  icons();
+}
+function openCmd() {
+  const root = document.getElementById('cmd-root'); root._ret = document.activeElement;
+  root.hidden = false; const inp = document.getElementById('cmd-input'); inp.value = ''; cmdSel = 0; renderCmd(); inp.focus();
+}
+function pickCmd(idx) {
+  const p = cmdItems[idx]; if (!p) return;
+  const root = document.getElementById('cmd-root'); root.hidden = true;
+  sheetReturn = root._ret; openSheet(p.kind, p.i);
+}
+
+/* ---------- utilities ---------- */
+function icons() { if (window.lucide) window.lucide.createIcons({ attrs: { 'aria-hidden': 'true' } }); }
+function positionHead() {
+  const h = document.getElementById('grove-head'), tb = document.getElementById('toolbar');
+  if (h) h.style.top = (getComputedStyle(tb).position === 'sticky' ? tb.offsetHeight : 0) + 'px';
+}
+function setView(v) { state.view = v; render(); }
+function trap(e, root) {
+  const f = [...root.querySelectorAll('button:not([disabled]), input, [tabindex]:not([tabindex="-1"])')].filter(x => x.offsetParent !== null);
+  if (!f.length) return; const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+/* ---------- events ---------- */
+document.getElementById('open-filter').innerHTML = `<option value="0">Any time</option>` + SLOTS.map(s => `<option value="${s.n}">Free at ${esc(s.start)}</option>`).join('');
+
+document.addEventListener('click', e => {
+  const pop = document.getElementById('export-pop');
+  if (!pop.hidden && !e.target.closest('[data-slot="popover"]')) togglePop(false);
+  const t = e.target.closest('button, tr, [data-close], .cmd-item'); if (!t) return;
+  if (t.matches('[data-close]')) { closeLayer(t.closest('[data-slot="sheet"], [data-slot="dialog"]')); return; }
+  if (t.classList.contains('cmd-item')) { pickCmd(+t.dataset.idx); return; }
+  if (t.dataset.view) { setView(t.dataset.view); return; }
+  if (t.dataset.slotpick) { state.slot = +t.dataset.slotpick; if (state.open) state.open = state.slot; render(); return; }
+  if (t.dataset.action === 'clear') { state.q = ''; state.open = 0; document.getElementById('search').value = ''; render(); return; }
+  if (t.dataset.action === 'health') { setView('health'); document.getElementById('view').focus(); return; }
+  if (t.dataset.action === 'add') {
+    const n = +t.dataset.slotn, k = n - 1;
+    const free = SUPS.filter(s => !s.slots[k]);
+    toast(free.length ? `${plural(free.length, 'supplier')} free at ${SLOTS[k].start}` : `No supplier is free at ${SLOTS[k].start}`,
+      free.length ? free.map(s => s.name).slice(0, 3).join(', ') : 'Move one of their meetings to another slot first, then add this one.', free.length ? 'check-circle-2' : 'info');
+    return;
+  }
+  if (t.dataset.appt != null && t.dataset.from) {
+    hideTip();
+    const a = APPTS[+t.dataset.appt]; const p = t.dataset.from === 's' ? a.s : a.b;
+    if (p) openSheet(p.kind, p.i, { appt: a.id }); return;
+  }
+  if (t.dataset.person) {
+    const [k, i] = t.dataset.person.split(':');
+    openSheet(k, +i, { slot: +(t.dataset.slotn || t.dataset.focusSlot) || 0, appt: t.dataset.apptCtx != null ? +t.dataset.apptCtx : null });
+    return;
+  }
+  if (t.dataset.export) { togglePop(false); toast(`${t.dataset.export} exported`, `From the ${state.status === 'locked' ? 'locked' : 'draft'} schedule, ${ST.total} appointments.`, 'download'); return; }
+  if (t.id === 'act-export') { togglePop(document.getElementById('export-pop').hidden); return; }
+  if (t.id === 'act-run') {
+    confirmDialog('Run matching again?', `This rebuilds the schedule from everyone's rankings and replaces the current one, including ${plural(D.event.manualChanges, 'manual change')}.`, 'Run matching',
+      () => toast('Matching started', 'The new schedule replaces this one when it finishes.', 'refresh-cw'));
+    return;
+  }
+  if (t.id === 'act-edit') {
+    state.editing = !state.editing; renderHeader();
+    toast(state.editing ? 'Editing on' : 'Editing off', state.editing ? 'Open any buyer or supplier and use their open slots to add or move meetings.' : 'Your changes are kept in the draft.', 'pencil');
+    return;
+  }
+  if (t.id === 'act-lock') {
+    if (state.status === 'locked') { state.status = 'draft'; renderHeader(); toast('Schedule unlocked', 'Staff can edit appointments again.', 'lock-open'); return; }
+    confirmDialog('Lock this schedule?', `Nobody can change appointments once it's locked. Export and emails use the locked version. ${ST.issues ? `${plural(ST.issues, 'issue')} still open in Health.` : ''}`, 'Lock schedule',
+      () => { state.status = 'locked'; state.editing = false; renderHeader(); toast('Schedule locked', 'Ready to export and email.', 'lock'); });
+    return;
+  }
+  if (t.id === 'dialog-ok') { const fn = dialogAction; closeLayer(document.getElementById('dialog-root')); if (fn) fn(); return; }
+  if (t.id === 'cmdk-hint') { openCmd(); return; }
+});
+function togglePop(open) {
+  const pop = document.getElementById('export-pop'), btn = document.getElementById('act-export');
+  pop.hidden = !open; btn.setAttribute('aria-expanded', String(open));
+  if (open) pop.querySelector('.menu-item').focus();
+}
+
+document.addEventListener('keydown', e => {
+  const layers = ['cmd-root', 'dialog-root', 'sheet-root'].map(id => document.getElementById(id)).filter(r => !r.hidden);
+  if (e.key === 'Escape') {
+    if (!document.getElementById('export-pop').hidden) { togglePop(false); document.getElementById('act-export').focus(); return; }
+    if (layers.length) { closeLayer(layers[0]); return; }
+  }
+  if (e.key === 'Tab' && layers.length) { trap(e, layers[0]); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCmd(); return; }
+  if (e.key === '/' && !layers.length && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); document.getElementById('search').focus(); return; }
+  if (!document.getElementById('cmd-root').hidden && document.activeElement.id === 'cmd-input') {
+    if (e.key === 'ArrowDown') { e.preventDefault(); cmdSel = Math.min(cmdSel + 1, cmdItems.length - 1); renderCmd(); document.getElementById('cmd-' + cmdSel)?.scrollIntoView({ block: 'nearest' }); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); cmdSel = Math.max(cmdSel - 1, 0); renderCmd(); document.getElementById('cmd-' + cmdSel)?.scrollIntoView({ block: 'nearest' }); }
+    if (e.key === 'Enter') { e.preventDefault(); pickCmd(cmdSel); }
+    return;
+  }
+  // roving focus inside a vine
+  const n = document.activeElement.closest?.('.nodes');
+  if (n && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    const items = [...n.children], i = items.indexOf(document.activeElement);
+    const j = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, i + (e.key === 'ArrowRight' ? 1 : -1)));
+    e.preventDefault(); items.forEach(x => x.tabIndex = -1); items[j].tabIndex = 0; items[j].focus();
+  }
+  if (e.key === 'Enter' && document.activeElement.matches('tr[data-appt], tr[data-person]')) document.activeElement.click();
+});
+document.getElementById('cmd-input').addEventListener('input', () => { cmdSel = 0; renderCmd(); });
+document.getElementById('cmd-list').addEventListener('mousemove', e => {
+  const it = e.target.closest('.cmd-item'); if (it && +it.dataset.idx !== cmdSel) { cmdSel = +it.dataset.idx; renderCmd(); }
+});
+
+let qTimer;
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); render(); }, 120);
+});
+document.getElementById('open-filter').addEventListener('change', e => { state.open = +e.target.value; if (state.open) state.slot = state.open; render(); });
+document.getElementById('sort').addEventListener('change', e => { state.sort[state.view] = e.target.value; render(); });
+
+view.addEventListener('pointerover', e => { const n = e.target.closest('.node'); if (n) showTip(n); });
+view.addEventListener('pointerout', e => { if (e.target.closest('.node')) hideTip(); });
+view.addEventListener('focusin', e => { if (e.target.matches('.node')) showTip(e.target); });
+view.addEventListener('focusout', hideTip);
+addEventListener('scroll', hideTip, { passive: true });
+addEventListener('resize', positionHead);
+
+renderHeader();
+render();
+addEventListener('load', () => { icons(); positionHead(); });
+})();
+</script>
+</body>
+</html>
