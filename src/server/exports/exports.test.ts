@@ -101,9 +101,9 @@ describe("exports against a real run", () => {
     expect(supplierView?.schedule.person.desk).not.toBeNull();
 
     // Supplier contacts carry the supplier's name as company, no title, and Admin or Attendee.
-    const attendeeLine = lines.find((l) => l.startsWith("Hyatt Regency Monterey attendee,"))!;
+    const attendeeLine = lines.find((l) => l.startsWith("Hyatt Regency Monterey (Hyatt Regency Monterey attendee),"))!;
     expect(attendeeLine.split(",").slice(0, 6)).toEqual([
-      "Hyatt Regency Monterey attendee",
+      "Hyatt Regency Monterey (Hyatt Regency Monterey attendee)",
       "attendee0@supplier.example.com",
       "Supplier",
       "Hyatt Regency Monterey",

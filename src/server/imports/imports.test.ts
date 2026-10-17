@@ -12,7 +12,7 @@ import { writeSheet } from "@/lib/xlsx";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { issueTokenForContact, verifyToken } from "@/server/tokens/tokens";
-import { applyImport, createImport, deleteImportRecord, ignoreImport, revalidateImport, saveAlias, saveAliases, stopIgnoringImport } from "./imports";
+import { applyImport, createImport, deleteImportRecord, ignoreImport, revalidateImport, saveAliases, stopIgnoringImport } from "./imports";
 import { matchingReadiness } from "@/server/matching/readiness";
 import { getImport, getImportStatusByKind, listImports } from "./queries";
 
@@ -266,7 +266,7 @@ describe("buyer hotel rankings from the eShow sample", () => {
 
   it("becomes ready after the alias is saved and applies ranks 1..25", async () => {
     const [slo] = await db.select().from(suppliers).where(eq(suppliers.name, "Visit San Luis Obispo County (SLO CAL)"));
-    const saved = await expectOk(await saveAlias(db, { eventId, raw: "Visit SLO CAL", entityType: "supplier", entityId: slo.id, adminId }));
+    const saved = await expectOk(await saveAliases(db, { eventId, adminId, aliases: [{ raw: "Visit SLO CAL", entityType: "supplier", entityId: slo.id }] }));
     expect(saved.imports).toEqual(expect.arrayContaining([{ importId, kind: "buyer_hotel_rankings", state: "ready" }]));
     expect((await getImport(importId, db))?.state).toBe("ready");
 
@@ -346,7 +346,7 @@ describe("biztech rankings set opt-in (D1)", () => {
     });
 
     const [expo] = await db.select().from(suppliers).where(eq(suppliers.name, "Expo Convention Contractors"));
-    await expectOk(await saveAlias(db, { eventId, raw: "eshow", entityType: "supplier", entityId: expo.id, adminId }));
+    await expectOk(await saveAliases(db, { eventId, adminId, aliases: [{ raw: "eshow", entityType: "supplier", entityId: expo.id }] }));
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
     expect(applied.summary).toMatchObject({ rankers: 3, rankingsWritten: 3, optedIn: 2, optedOut: 1 });
 
@@ -559,7 +559,7 @@ describe("locked events", () => {
     const [supplier] = await db.select().from(suppliers).where(eq(suppliers.name, "See Monterey"));
     const results = await Promise.all([
       upload("participants", writeSheet(participantHeaders, [["x@example.com", "X", "Y", "", "", ""]])),
-      saveAlias(db, { eventId, raw: "Monterey", entityType: "supplier", entityId: supplier.id, adminId }),
+      saveAliases(db, { eventId, adminId, aliases: [{ raw: "Monterey", entityType: "supplier", entityId: supplier.id }] }),
       applyImport(db, { importId: pending.importId, adminId }),
       deleteImportRecord(db, { importId: pending.importId, adminId }),
     ]);
@@ -640,7 +640,7 @@ describe("applies and revalidation under the event row lock (D85)", () => {
       gamma = supplier.id;
     });
 
-    const mapName = (raw: string) => () => saveAlias(db, { eventId: raceEvent, raw, entityType: "supplier", entityId: gamma, adminId });
+    const mapName = (raw: string) => () => saveAliases(db, { eventId: raceEvent, adminId, aliases: [{ raw, entityType: "supplier", entityId: gamma }] });
 
     it("never overwrites the newer report on a revalidation", async () => {
       const pending = await expectOk(await hotelFile(["Grand Place"]));

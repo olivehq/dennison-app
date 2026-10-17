@@ -15,6 +15,7 @@ import {
 } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { recordAudit } from "@/server/audit/audit";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { raceBeforeTransaction, recordQueries } from "@/server/events/test-race";
 import { clearLoggedEmails, getLoggedEmails, isEmailConfigured, sendBatch, sendEmail } from "@/lib/email/adapter";
@@ -25,7 +26,8 @@ import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { replaceAppointment, swapCandidates } from "@/server/schedule/edits";
 import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
 import { decryptToken } from "@/lib/tokens";
-import { revokeToken, verifyToken } from "@/server/tokens/tokens";
+import { issueAccessList } from "@/server/tokens/queries";
+import { listContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
 import {
   createCampaign,
   duplicateCampaign,
@@ -43,13 +45,12 @@ import {
   updateCampaign,
 } from "./campaigns";
 import { campaignStats, getAudienceOptions, getCampaign, getEmailSummary, listCampaigns } from "./queries";
-import { resolveAudience } from "./recipients";
+import { listAudienceContacts, resolveAudience } from "./recipients";
 import {
   changedSinceLastSend,
-  countChangedSinceLastSend,
+  hashSlots,
   scheduleChangeState,
   scheduleHashesForEvent,
-  scheduleHashFor,
 } from "./schedule-hash";
 import { handleResendWebhook, recordDeliveryEvent } from "./webhook";
 
@@ -377,6 +378,24 @@ describe("audiences and links", () => {
     expect(selected.ok && selected.data.map((r) => r.entityId)).toEqual([seeded.buyers[0].id]);
   });
 
+  it("lists the same contacts, keys, and names as the access list", async () => {
+    const [contacts, audience, access] = await Promise.all([
+      listContacts(db, seeded.eventId),
+      listAudienceContacts(db, seeded.eventId),
+      issueAccessList(db, seeded.eventId),
+    ]);
+    if (!audience || !access.ok) throw new Error("expected an audience and an access list");
+    expect(audience.map((c) => c.key).sort()).toEqual(contacts.map((c) => recipientKey(c.contactType, c.entityId)).sort());
+    const byKey = (a: { key: string }, b: { key: string }) => a.key.localeCompare(b.key);
+    expect(
+      [...audience].sort(byKey).map(({ key, name, email, contactType }) => ({ key, name, email, contactType })),
+    ).toEqual([...contacts].sort(byKey).map(({ key, name, email, contactType }) => ({ key, name, email, contactType })));
+    // The CSV rows and the audience agree on name and email for every contact.
+    const pairs = (rows: { name: string; email: string }[]) => rows.map((r) => `${r.name}|${r.email}`).sort();
+    expect(pairs(access.data.rows)).toEqual(pairs(audience));
+    expect(audience.some((c) => c.contactType === "supplier_admin" && /\(.+\)$/.test(c.name))).toBe(true);
+  });
+
   it("uses each contact's existing link, so a second resolve hands out the same one", async () => {
     const first = await resolveAudience(db, seeded.eventId, "all");
     const second = await resolveAudience(db, seeded.eventId, "all");
@@ -390,14 +409,15 @@ describe("audiences and links", () => {
     expect(supplier.mergeValues.desk).toMatch(/^\d+$/);
   });
 
-  it("hashes every schedule the same way one at a time and in bulk", async () => {
+  it("hashes slots in slot order in a fixed format, and each person's schedule differently", async () => {
+    // Changing the format makes every stored hash differ, so everyone would show as changed.
+    const slots = [
+      { slot: 2, start: "10:00", end: "10:20", counterpartId: null, desk: null },
+      { slot: 1, start: "09:00", end: "09:20", counterpartId: "s-1", desk: 4 },
+    ];
+    expect(hashSlots(slots)).toBe("de39d2945a5afea9b4a5260e5347b6d6e5af57f2c8fc5c29d0ce2e7bdef691ad");
     const bulk = await scheduleHashesForEvent(db, seeded.eventId);
-    for (const b of seeded.buyers) {
-      expect(await scheduleHashFor(db, seeded.eventId, "buyer", b.id)).toBe(bulk.get(`buyer:${b.id}`));
-    }
-    for (const s of seeded.suppliers) {
-      expect(await scheduleHashFor(db, seeded.eventId, "supplier_attendee", s.id)).toBe(bulk.get(`supplier:${s.id}`));
-    }
+    expect(bulk.size).toBe(seeded.buyers.length + seeded.suppliers.length);
     expect(new Set(bulk.values()).size).toBeGreaterThan(1);
   });
 
@@ -413,12 +433,6 @@ describe("audiences and links", () => {
     await db.update(suppliers).set({ status: "withdrawn" }).where(eq(suppliers.id, otherSupplier.id));
 
     const bulk = await scheduleHashesForEvent(db, other.eventId);
-    for (const b of other.buyers) {
-      expect(await scheduleHashFor(db, other.eventId, "buyer", b.id)).toBe(bulk.get(`buyer:${b.id}`));
-    }
-    for (const x of other.suppliers) {
-      expect(await scheduleHashFor(db, other.eventId, "supplier_admin", x.id)).toBe(bulk.get(`supplier:${x.id}`));
-    }
     // The supplier who met the withdrawn buyer now has an open slot there.
     expect(bulk.get(`supplier:${meeting.supplierId}`)).not.toBe(before.get(`supplier:${meeting.supplierId}`));
   });
@@ -522,7 +536,7 @@ describe("sending", () => {
     const list = await listCampaigns(seeded.eventId, db);
     const item = list.find((c) => c.id === campaign.id);
     expect(item?.counts).toMatchObject({ total: 20, sent: 20 });
-    expect(await countChangedSinceLastSend(db, seeded.eventId)).toBe(0);
+    expect((await changedSinceLastSend(db, seeded.eventId)).size).toBe(0);
     const summary = await getEmailSummary(seeded.eventId, db);
     expect(summary).toEqual({ changed: 0, hasSent: true, lastSentAt: expect.any(Date) });
     const state = await scheduleChangeState(db, seeded.eventId);
@@ -628,7 +642,6 @@ describe("changed since last send (D13)", () => {
       ...(supplier.attendeeContactEmail ? [recipientKey("supplier_attendee", supplier.id)] : []),
     ].sort();
     expect([...(await changedSinceLastSend(db, seeded.eventId))].sort()).toEqual(expected);
-    expect(await countChangedSinceLastSend(db, seeded.eventId)).toBe(expected.length);
 
     const update = await newDraft("update");
     expect(update).toMatchObject({ kind: "update", audience: "changed_since_last_send", replyTo: "desk@da.example.com" });
@@ -640,7 +653,7 @@ describe("changed since last send (D13)", () => {
     expect(sent.data).toMatchObject({ recipients: expected.length, sent: expected.length, eventAdvanced: true });
     const rows = await messagesOf(update.id);
     expect(rows.map((m) => recipientKey(m.contactType, m.entityId)).sort()).toEqual(expected);
-    expect(await countChangedSinceLastSend(db, seeded.eventId)).toBe(0);
+    expect((await changedSinceLastSend(db, seeded.eventId)).size).toBe(0);
 
     // Nobody is left to update.
     const empty = await newDraft("update");
@@ -1047,7 +1060,7 @@ describe("campaign writes on an event archived mid-action", () => {
     if (!draft.ok) throw new Error(draft.error.message);
     const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, other.eventId));
     const unarchive = () => db.update(events).set({ status: "matched" }).where(eq(events.id, other.eventId));
-    const refused = { ok: false, error: { code: "locked", message: "This event is archived." } };
+    const refused = { ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } };
     const campaignCount = async () =>
       (await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, other.eventId))).length;
     const auditCount = async () =>

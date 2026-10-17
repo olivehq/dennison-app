@@ -8,10 +8,11 @@ import { NOT_ACTIVE_RUN_MESSAGE, VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/
 import { recordAudit } from "@/server/audit/audit";
 import {
   assertEventEditable,
-  claimEditableEvent,
-  claimUnarchivedEvent,
+  claimEvent,
   EVENT_CHANGED_MESSAGE,
   EventChangedError,
+  inEventTransaction,
+  Refused,
 } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { cachePerRender } from "@/server/render-cache";
@@ -131,7 +132,7 @@ export const RUN_ERROR_MESSAGE = "Matching stopped with an error. Run matching a
  *
  * Runs on every matching page load, so it first checks for a stuck run
  * without a lock. Only when there is one does it open a transaction that
- * claims the event row while unarchived (`claimUnarchivedEvent`, the event
+ * claims the event row while unarchived (`claimEvent`, the event
  * row before the run rows, as `startRun` does), so an archive waits for it
  * or goes first and makes it change nothing.
  */
@@ -147,7 +148,7 @@ export async function failRunsOlderThan(
   if (!any) return 0;
   const message = timedOutMessage(minutes);
   return db.transaction(async (tx) => {
-    if (!(await claimUnarchivedEvent(tx, eventId))) return 0;
+    if (!(await claimEvent(tx, eventId, "unarchived"))) return 0;
     const rows = await tx
       .update(matchRuns)
       .set({ status: "failed", warnings: [message], completedAt: now })
@@ -195,13 +196,6 @@ async function loadKeptFromActiveRun(db: Db, roster: Roster, activeRunId: string
     }));
 }
 
-/** Thrown inside the run's setup transaction to return `result` (nothing is written yet). */
-class RunRefused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
 /**
  * Runs the engine and stores the result as a new `match_runs` row. The first
  * completed run of an event becomes active on its own; later runs wait for
@@ -209,7 +203,7 @@ class RunRefused extends Error {
  *
  * The readiness gate, the roster, rankings, and kept rows, and the running
  * row are read and written in one transaction that holds the event row
- * (`claimEditableEvent`), so an import apply, which takes the same row, lands
+ * (`inEventTransaction`), so an import apply, which takes the same row, lands
  * wholly before or wholly after the inputs. The engine runs after it commits.
  */
 export async function startRun(db: Db, input: StartRunInput): Promise<ActionResult<StartRunResult>> {
@@ -218,44 +212,37 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
   const locked = assertEventEditable(event);
   if (locked) return locked;
 
-  let setup: { roster: Roster; kept: Appointment[]; parentRunId: string | null; run: MatchRun };
-  try {
-    setup = await db.transaction(async (tx) => {
-      await claimEditableEvent(tx, input.eventId);
-      const readiness = await matchingReadiness(tx, input.eventId);
-      if (!readiness.ready) throw new RunRefused(fail("validation", readiness.reasons.join(" ")));
-      const roster = (await loadRoster(tx, input.eventId))!;
-      // A plain run starts from scratch and never reads the active run.
-      let kept: Appointment[] = [];
-      let parentRunId: string | null = null;
-      if (input.keepExisting) {
-        const active = await findActiveRun(tx, input.eventId);
-        if (!active) {
-          throw new RunRefused(
-            fail("validation", "There is no active run to keep. Run matching without keeping existing appointments."),
-          );
-        }
-        kept = await loadKeptFromActiveRun(tx, roster, active.id);
-        parentRunId = active.id;
+  const setup = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
+    const readiness = await matchingReadiness(tx, input.eventId);
+    if (!readiness.ready) throw new Refused(fail("validation", readiness.reasons.join(" ")));
+    const roster = (await loadRoster(tx, input.eventId))!;
+    // A plain run starts from scratch and never reads the active run.
+    let kept: Appointment[] = [];
+    let parentRunId: string | null = null;
+    if (input.keepExisting) {
+      const active = await findActiveRun(tx, input.eventId);
+      if (!active) {
+        throw new Refused(
+          fail("validation", "There is no active run to keep. Run matching without keeping existing appointments."),
+        );
       }
-      const [run] = await tx
-        .insert(matchRuns)
-        .values({
-          eventId: input.eventId,
-          status: "running",
-          settingsSnapshot: roster.event.settings,
-          parentRunId,
-          createdBy: input.adminId,
-        })
-        .returning();
-      return { roster, kept, parentRunId, run };
-    });
-  } catch (error) {
-    if (error instanceof RunRefused) return error.result;
-    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
-    throw error;
-  }
-  const { roster, kept, parentRunId, run } = setup;
+      kept = await loadKeptFromActiveRun(tx, roster, active.id);
+      parentRunId = active.id;
+    }
+    const [run] = await tx
+      .insert(matchRuns)
+      .values({
+        eventId: input.eventId,
+        status: "running",
+        settingsSnapshot: roster.event.settings,
+        parentRunId,
+        createdBy: input.adminId,
+      })
+      .returning();
+    return { roster, kept, parentRunId, run };
+  });
+  if (!setup.ok) return setup;
+  const { roster, kept, parentRunId, run } = setup.data;
 
   try {
     const started = performance.now();
@@ -269,7 +256,7 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
 
     const isActive = await db.transaction(async (tx) => {
       // Lock or archive may have landed while the engine ran.
-      await claimEditableEvent(tx, input.eventId);
+      if (!(await claimEvent(tx, input.eventId, "edit"))) throw new EventChangedError();
       if (result.appointments.length > 0) {
         await tx.insert(appointments).values(
           result.appointments.map((a) => ({
@@ -398,19 +385,18 @@ export async function activateRun(
   if (run.isActive) return ok({ runId: run.id });
 
   try {
-    await db.transaction(async (tx) => {
-      await claimEditableEvent(tx, run.eventId);
+    const done = await inEventTransaction(db, run.eventId, "edit", async (tx) => {
       const previous = await findActiveRun(tx, run.eventId);
       if (previous?.id === run.id) return;
       const { expected } = input;
       if (expected && ((previous?.id ?? null) !== expected.activeRunId || (previous?.version ?? null) !== expected.version)) {
-        throw new RunRefused(fail("conflict", ACTIVATE_STALE_MESSAGE));
+        throw new Refused(fail("conflict", ACTIVATE_STALE_MESSAGE));
       }
       // Settings may have lost slots since the run (D98 amendment): its appointments would sit in slots that no longer exist.
       const highest = await highestSlotOfRun(tx, run.id);
       const slotCount = await currentSlotCount(tx, run.eventId);
       if (highest !== null && highest > slotCount) {
-        throw new RunRefused(
+        throw new Refused(
           fail(
             "validation",
             `This run uses slot ${highest}, but the event now has ${slotCount} slots. Run matching again with the current settings, or add the slots back in Settings.`,
@@ -433,9 +419,8 @@ export async function activateRun(
         after: { activeRunId: run.id },
       });
     });
+    if (!done.ok) return done;
   } catch (error) {
-    if (error instanceof RunRefused) return error.result;
-    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     if (isUniqueViolation(error)) return fail("conflict", ACTIVATE_CONFLICT_MESSAGE);
     throw error;
   }
@@ -559,8 +544,7 @@ export async function setPinned(
   }
 
   try {
-    const version = await db.transaction(async (tx) => {
-      await claimEditableEvent(tx, row.eventId);
+    const saved = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
       const roster = await loadRoster(tx, row.eventId);
       if (!roster) throw new EventChangedError();
       const rows = await tx.select().from(appointments).where(eq(appointments.runId, run.id));
@@ -587,9 +571,9 @@ export async function setPinned(
       });
       return bumped.version;
     });
-    return ok({ appointmentId: row.id, pinned: input.pinned, version });
+    if (!saved.ok) return saved;
+    return ok({ appointmentId: row.id, pinned: input.pinned, version: saved.data });
   } catch (error) {
-    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     if (error instanceof VersionConflict) {
       const current = await findRun(db, run.id);
       return fail("conflict", current?.isActive ? VERSION_CONFLICT_MESSAGE : NOT_ACTIVE_RUN_MESSAGE);

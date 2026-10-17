@@ -128,17 +128,6 @@ export async function getMatchingReadiness(eventId: string, db: Db = getDb()): P
   };
 }
 
-/** What activating `runId` would change against the event's active run. */
-export async function compareWithActiveRun(
-  eventId: string,
-  runId: string,
-  db: Db = getDb(),
-): Promise<ActionResult<RunComparison> | null> {
-  const active = await findActiveRun(db, eventId);
-  if (!active || active.id === runId) return null;
-  return compareRuns(db, { runId, otherRunId: active.id });
-}
-
 export type CompareTarget = "parent" | "active";
 
 export type RunComparisonView = {

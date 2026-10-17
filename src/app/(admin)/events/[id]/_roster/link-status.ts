@@ -1,5 +1,5 @@
 import type { ContactType } from "@/db/schema";
-import { contactKey } from "@/server/tokens/tokens";
+import { recipientKey } from "@/lib/schemas/email";
 import type { ReadLink } from "@/server/tokens/queries";
 import type { LinkInfo } from "./types";
 
@@ -9,6 +9,6 @@ import type { LinkInfo } from "./types";
  * module's rule, the same one the exports use.
  */
 export function linkOf(links: ReadonlyMap<string, ReadLink>, contactType: ContactType, entityId: string): LinkInfo {
-  const link = links.get(contactKey({ contactType, entityId }));
+  const link = links.get(recipientKey(contactType, entityId));
   return link ? { tokenId: link.tokenId, state: link.status } : null;
 }

@@ -8,13 +8,16 @@ import {
   type AccessToken,
   type ContactType,
   type Event,
+  type Participant,
+  type Supplier,
 } from "@/db/schema";
 import { env } from "@/lib/env";
 import { fail, ok, type ActionResult } from "@/lib/errors";
+import { recipientKey } from "@/lib/schemas/email";
 import { endOfDayInTimezone } from "@/lib/time";
 import { decryptToken, encryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { recordAudit } from "@/server/audit/audit";
-import { claimUnarchivedEvent } from "@/server/events/editable";
+import { ARCHIVED_MESSAGE, inEventTransaction, Refused } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { displayNameFor } from "@/server/roster/display-name";
 
@@ -28,6 +31,8 @@ import { displayNameFor } from "@/server/roster/display-name";
 export const TOKEN_TTL_DAYS = 60;
 
 export type ContactRef = {
+  /** `recipientKey(contactType, entityId)`; also stored in `email_campaigns.selected_recipients` (D60). */
+  key: string;
   contactType: ContactType;
   /** participants.id for buyers, suppliers.id for both supplier contacts. */
   entityId: string;
@@ -74,12 +79,23 @@ function isActiveToken(row: Pick<AccessToken, "revokedAt" | "expiresAt">, now: D
   return row.revokedAt === null && row.expiresAt > now;
 }
 
-export function contactKey(contact: Pick<ContactRef, "contactType" | "entityId">): string {
-  return `${contact.contactType}\u0000${contact.entityId}`;
+/** How a supplier contact reads everywhere a person sees it: "Supplier (Contact)", or just the supplier when the contact has no name. */
+export function supplierContactName(supplierName: string, contactName: string | null): string {
+  return contactName ? `${supplierName} (${contactName})` : supplierName;
 }
 
-/** Everyone who should hold a link: active people with an email address. */
-export async function listContacts(db: Db, eventId: string): Promise<ContactRef[]> {
+/**
+ * The one list of who holds a link and who can be emailed: active buyers and
+ * the admin and attendee contacts of active suppliers, each with an email
+ * address. Withdrawn people and contacts without an email are left out. The
+ * source rows come along so the email module can build merge values.
+ */
+export type Contact = ContactRef & {
+  buyer: Participant | null;
+  supplier: Supplier | null;
+};
+
+export async function listContacts(db: Db, eventId: string): Promise<Contact[]> {
   const [buyers, supplierRows] = await Promise.all([
     db
       .select()
@@ -90,26 +106,34 @@ export async function listContacts(db: Db, eventId: string): Promise<ContactRef[
       .from(suppliers)
       .where(and(eq(suppliers.eventId, eventId), eq(suppliers.status, "active"))),
   ]);
-  const contacts: ContactRef[] = [];
+  const contacts: Contact[] = [];
   for (const b of buyers) {
     if (!b.email) continue;
-    contacts.push({ contactType: "buyer", entityId: b.id, name: displayNameFor(b), email: b.email });
+    contacts.push({
+      key: recipientKey("buyer", b.id),
+      contactType: "buyer",
+      entityId: b.id,
+      name: displayNameFor(b),
+      email: b.email,
+      buyer: b,
+      supplier: null,
+    });
   }
   for (const s of supplierRows) {
-    if (s.adminContactEmail) {
+    const people: [ContactType, string | null, string | null][] = [
+      ["supplier_admin", s.adminContactName, s.adminContactEmail],
+      ["supplier_attendee", s.attendeeContactName, s.attendeeContactEmail],
+    ];
+    for (const [contactType, contactName, email] of people) {
+      if (!email) continue;
       contacts.push({
-        contactType: "supplier_admin",
+        key: recipientKey(contactType, s.id),
+        contactType,
         entityId: s.id,
-        name: s.adminContactName ?? s.name,
-        email: s.adminContactEmail,
-      });
-    }
-    if (s.attendeeContactEmail) {
-      contacts.push({
-        contactType: "supplier_attendee",
-        entityId: s.id,
-        name: s.attendeeContactName ?? s.name,
-        email: s.attendeeContactEmail,
+        name: supplierContactName(s.name, contactName),
+        email,
+        buyer: null,
+        supplier: s,
       });
     }
   }
@@ -182,11 +206,11 @@ async function issueForContacts(
   return issued;
 }
 
-/** Each contact's newest token, keyed by `contactKey`. */
+/** Each contact's newest token, keyed by `recipientKey`. */
 function newestTokens(rows: AccessToken[]): Map<string, AccessToken> {
   const newest = new Map<string, AccessToken>();
   for (const row of rows) {
-    const key = contactKey(row);
+    const key = recipientKey(row.contactType, row.entityId);
     if (isNewerToken(row, newest.get(key))) newest.set(key, row);
   }
   return newest;
@@ -209,7 +233,7 @@ export async function issueTokensForEvent(db: Db, eventId: string): Promise<Acti
   ]);
   const newest = newestTokens(existing);
   const missing = contacts.filter((c) => {
-    const row = newest.get(contactKey(c));
+    const row = newest.get(c.key);
     return !row || (row.revokedAt === null && !isActiveToken(row, now));
   });
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
@@ -220,7 +244,7 @@ export async function issueTokensForEvent(db: Db, eventId: string): Promise<Acti
 export type ContactLink = { tokenId: string; token: string };
 
 export type ContactLinks = {
-  /** Each contact's working link, keyed by `contactKey`. */
+  /** Each contact's working link, keyed by `recipientKey`. */
   links: Map<string, ContactLink>;
   /** Contacts whose newest link was revoked. They get no link here; Regenerate on the roster gives them one. */
   revoked: Set<string>;
@@ -267,7 +291,7 @@ export async function linksForContacts(
   const missing: Pick<ContactRef, "contactType" | "entityId">[] = [];
   const unreadable: string[] = [];
   for (const contact of contacts) {
-    const key = contactKey(contact);
+    const key = recipientKey(contact.contactType, contact.entityId);
     if (links.has(key) || revoked.has(key)) continue;
     const row = newest.get(key);
     if (row?.revokedAt) {
@@ -297,17 +321,74 @@ export async function linksForContacts(
         entityId: contact.entityId,
         expiresAt,
       });
-      links.set(contactKey(contact), { tokenId: issued.tokenId, token: issued.token });
+      links.set(recipientKey(contact.contactType, contact.entityId), { tokenId: issued.tokenId, token: issued.token });
     }
   });
   return ok({ links, revoked, issued: missing.length });
+}
+
+/**
+ * After a contact's email changed (D129). Only a live link is touched: one an
+ * admin revoked, or one that expired, stays as it is. When an email is still
+ * set, the live link is revoked and a link for the new address is issued in
+ * the same transaction, so "respect revoke" (D137) can't leave the person with
+ * no link. When the email was cleared, the live link is ended by expiring it,
+ * not revoking it: nobody chose to cut this person off, so once an address is
+ * set again the next lock, access list, or send gives them a link, as after
+ * any expiry. A revoke would hold until Regenerate. Also used by supplier
+ * imports.
+ */
+export async function replaceLinksForChangedEmail(
+  tx: Db,
+  event: Pick<Event, "id" | "eventDate" | "timezone">,
+  input: { entityId: string; contacts: { contactType: ContactType; hasEmail: boolean }[] },
+): Promise<{ revoked: number; expired: number; reissued: ContactType[] }> {
+  let revoked = 0;
+  let expired = 0;
+  const reissued: ContactType[] = [];
+  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
+  for (const { contactType, hasEmail } of input.contacts) {
+    const now = new Date();
+    const liveLink = and(
+      eq(accessTokens.eventId, event.id),
+      eq(accessTokens.contactType, contactType),
+      eq(accessTokens.entityId, input.entityId),
+      isNull(accessTokens.revokedAt),
+      gt(accessTokens.expiresAt, now),
+    );
+    if (!hasEmail) {
+      const ended = await tx.update(accessTokens).set({ expiresAt: now }).where(liveLink).returning({ id: accessTokens.id });
+      expired += ended.length;
+      continue;
+    }
+    const ended = await tx.update(accessTokens).set({ revokedAt: now }).where(liveLink).returning({ id: accessTokens.id });
+    revoked += ended.length;
+    if (ended.length === 0) continue;
+    await issueTokenForContact(tx, { eventId: event.id, contactType, entityId: input.entityId, expiresAt });
+    reissued.push(contactType);
+  }
+  return { revoked, expired, reissued };
+}
+
+/** The supplier contacts whose email differs, with whether an address is still set, for `replaceLinksForChangedEmail`. */
+export function changedSupplierContacts(
+  before: Pick<Supplier, "adminContactEmail" | "attendeeContactEmail">,
+  after: Pick<Supplier, "adminContactEmail" | "attendeeContactEmail">,
+): { contactType: "supplier_admin" | "supplier_attendee"; hasEmail: boolean }[] {
+  const changed: { contactType: "supplier_admin" | "supplier_attendee"; hasEmail: boolean }[] = [];
+  if (before.adminContactEmail !== after.adminContactEmail) {
+    changed.push({ contactType: "supplier_admin", hasEmail: Boolean(after.adminContactEmail) });
+  }
+  if (before.attendeeContactEmail !== after.attendeeContactEmail) {
+    changed.push({ contactType: "supplier_attendee", hasEmail: Boolean(after.attendeeContactEmail) });
+  }
+  return changed;
 }
 
 const tokenIdSchema = z.uuid();
 
 type TokenContext = { row: AccessToken; event: Event };
 
-const ARCHIVED_MESSAGE = "This event is archived and can't be changed.";
 const WITHDRAWN_MESSAGE = "This person has withdrawn. Restore them before giving them a new link.";
 
 /**
@@ -333,37 +414,23 @@ async function loadTokenForChange(
   return ok({ row, event });
 }
 
-/** Thrown inside a link transaction to roll it back and return `result`. */
-class LinkRefused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
 /**
- * The checks of `loadTokenForChange` again, inside the transaction: lock the
- * event row while it is not archived (archive, and roster withdrawals through
- * `claimEditableEvent`, take the same row), then re-read the person.
+ * Runs a link change in a transaction that takes the event row while it is
+ * not archived (archive and roster withdrawals take the same row), then
+ * re-reads the person, so the checks of `loadTokenForChange` hold under the lock.
  */
-async function recheckInTransaction(
-  tx: Db,
+function inLinkTransaction<T>(
+  db: Db,
   row: Pick<AccessToken, "eventId" | "contactType" | "entityId">,
   options: { allowWithdrawn: boolean },
-): Promise<void> {
-  if (!(await claimUnarchivedEvent(tx, row.eventId))) throw new LinkRefused(fail("locked", ARCHIVED_MESSAGE));
-  if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
-    throw new LinkRefused(fail("conflict", WITHDRAWN_MESSAGE));
-  }
-}
-
-/** Runs a link transaction, turning `LinkRefused` into its result. */
-async function inLinkTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
-  try {
-    return ok(await db.transaction(work));
-  } catch (error) {
-    if (error instanceof LinkRefused) return error.result;
-    throw error;
-  }
+  work: (tx: Db) => Promise<T>,
+): Promise<ActionResult<T>> {
+  return inEventTransaction(db, row.eventId, "unarchived", async (tx) => {
+    if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
+      throw new Refused(fail("conflict", WITHDRAWN_MESSAGE));
+    }
+    return work(tx);
+  });
 }
 
 async function contactStatus(db: Db, row: Pick<AccessToken, "contactType" | "entityId">): Promise<string | null> {
@@ -389,8 +456,7 @@ export async function revokeToken(
   if (!loaded.ok) return loaded;
   const { row } = loaded.data;
   if (row.revokedAt) return ok({ tokenId: row.id, eventId: row.eventId });
-  const done = await inLinkTransaction(db, async (tx) => {
-    await recheckInTransaction(tx, row, { allowWithdrawn: true });
+  const done = await inLinkTransaction(db, row, { allowWithdrawn: true }, async (tx) => {
     const changed = await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })
@@ -427,8 +493,7 @@ export async function regenerateToken(
   if (!loaded.ok) return loaded;
   const { row, event } = loaded.data;
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  const issued = await inLinkTransaction(db, async (tx) => {
-    await recheckInTransaction(tx, row, { allowWithdrawn: false });
+  const issued = await inLinkTransaction(db, row, { allowWithdrawn: false }, async (tx) => {
     await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })

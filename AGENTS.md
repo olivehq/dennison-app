@@ -79,7 +79,7 @@ A change is done when `pnpm check` passes, new behavior has a test (engine and s
 
 ## Invariants that are easy to break
 
-- A locked event rejects every mutation except unlock, exports, email sends, and participant link actions (regenerate and revoke a link). An archived event rejects all of them except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`claimEditableEvent`, `advanceStatus`).
+- A locked event rejects every mutation except unlock, exports, email sends, and participant link actions (regenerate and revoke a link). An archived event rejects all of them except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`inEventTransaction`, `advanceStatus`).
 - Withdrawn people are excluded from matching input and from "free in slot" lists, but their rankings and past appointments stay in the database.
 - `match_runs.version` increments on every save. A save with a stale version returns the conflict error, never overwrites.
 - The engine must be deterministic for the same input. No `Math.random`, no `Date.now()` inside `src/engine`.

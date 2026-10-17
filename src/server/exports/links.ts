@@ -1,6 +1,7 @@
 import type { Db } from "@/db/client";
 import { readContactLinks, type ReadLink } from "@/server/tokens/queries";
-import { contactKey, listContacts, type ContactRef } from "@/server/tokens/tokens";
+import { recipientKey } from "@/lib/schemas/email";
+import { listContacts, type Contact, type ContactRef } from "@/server/tokens/tokens";
 
 /**
  * The schedule link line(s) printed under each person's schedule in the
@@ -36,27 +37,30 @@ export function linkValue(link: ReadLink | undefined): string {
   }
 }
 
-function labelFor(contact: Pick<ContactRef, "contactType" | "name">): string {
+type LinkContact = Pick<ContactRef, "contactType" | "entityId" | "name"> & Partial<Pick<Contact, "supplier">>;
+
+/** The file is already one supplier's schedule, so the label names the contact alone, not "Supplier (Contact)". */
+function labelFor(contact: LinkContact): string {
   switch (contact.contactType) {
     case "buyer":
       return "Schedule link";
     case "supplier_admin":
-      return `Admin schedule link (${contact.name})`;
+      return `Admin schedule link (${contact.supplier?.adminContactName || contact.name})`;
     case "supplier_attendee":
-      return `Attendee schedule link (${contact.name})`;
+      return `Attendee schedule link (${contact.supplier?.attendeeContactName || contact.name})`;
   }
 }
 
 /** One row per contact, grouped by person: a buyer has one, a supplier up to two (`listContacts` lists admin, then attendee). */
 export function buildLinkRows(
-  contacts: Pick<ContactRef, "contactType" | "entityId" | "name">[],
+  contacts: LinkContact[],
   links: ReadonlyMap<string, ReadLink>,
 ): PersonLinkRows {
   const rows = new Map<string, LinkRow[]>();
   for (const contact of contacts) {
     const key = personLinkKey(contact.contactType === "buyer" ? "buyer" : "supplier", contact.entityId);
     const list = rows.get(key) ?? [];
-    list.push({ label: labelFor(contact), value: linkValue(links.get(contactKey(contact))) });
+    list.push({ label: labelFor(contact), value: linkValue(links.get(recipientKey(contact.contactType, contact.entityId))) });
     rows.set(key, list);
   }
   return rows;

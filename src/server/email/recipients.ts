@@ -1,14 +1,12 @@
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { participants, suppliers, type ContactType, type Event } from "@/db/schema";
+import type { Event } from "@/db/schema";
 import { env } from "@/lib/env";
 import { fail, ok, type ActionResult } from "@/lib/errors";
-import { recipientKey, type EmailAudience } from "@/lib/schemas/email";
+import type { EmailAudience } from "@/lib/schemas/email";
 import { formatEventDate } from "@/lib/time";
 import { compareNames } from "@/lib/names";
 import { getEvent } from "@/server/events/queries";
-import { displayNameFor } from "@/server/roster/display-name";
-import { contactKey, linkFor, linksForContacts } from "@/server/tokens/tokens";
+import { linkFor, linksForContacts, listContacts, type ContactRef } from "@/server/tokens/tokens";
 import type { MergeValues } from "./merge";
 import { changedSinceLastSend } from "./schedule-hash";
 
@@ -18,14 +16,7 @@ import { changedSinceLastSend } from "./schedule-hash";
  * address. Withdrawn people and contacts without an email never get mail.
  */
 
-export type AudienceContact = {
-  /** recipientKey(contactType, entityId) */
-  key: string;
-  contactType: ContactType;
-  /** participants.id for buyers, suppliers.id for both supplier contacts. */
-  entityId: string;
-  name: string;
-  email: string;
+export type AudienceContact = ContactRef & {
   /** Every merge value except the schedule link. */
   mergeValues: Omit<MergeValues, "schedule_link">;
 };
@@ -50,66 +41,42 @@ function eventValues(event: Event) {
   return { event_name: event.name, event_date: formatEventDate(event.eventDate, event.timezone) };
 }
 
-/** Every contact who can be emailed, sorted by name. */
+/** Every contact who can be emailed (`listContacts`), with merge values, sorted by name. */
 export async function listAudienceContacts(db: Db, eventId: string): Promise<AudienceContact[] | null> {
   const event = await getEvent(eventId, db);
   if (!event) return null;
-  const [buyerRows, supplierRows] = await Promise.all([
-    db
-      .select()
-      .from(participants)
-      .where(and(eq(participants.eventId, eventId), eq(participants.status, "active"))),
-    db
-      .select()
-      .from(suppliers)
-      .where(and(eq(suppliers.eventId, eventId), eq(suppliers.status, "active"))),
-  ]);
   const shared = eventValues(event);
-  const contacts: AudienceContact[] = [];
-  for (const b of buyerRows) {
-    if (!b.email) continue;
-    contacts.push({
-      key: recipientKey("buyer", b.id),
-      contactType: "buyer",
-      entityId: b.id,
-      name: displayNameFor(b),
-      email: b.email,
-      mergeValues: {
-        first_name: b.firstName,
-        last_name: b.lastName,
-        organization: b.organization ?? "",
-        supplier_name: "",
-        desk: "",
-        ...shared,
-      },
-    });
-  }
-  for (const s of supplierRows) {
-    const people: [ContactType, string | null, string | null][] = [
-      ["supplier_admin", s.adminContactName, s.adminContactEmail],
-      ["supplier_attendee", s.attendeeContactName, s.attendeeContactEmail],
-    ];
-    for (const [contactType, contactName, email] of people) {
-      if (!email) continue;
+  const contacts = await listContacts(db, eventId);
+  return contacts
+    .map(({ buyer, supplier, ...c }): AudienceContact => {
+      if (buyer) {
+        return {
+          ...c,
+          mergeValues: {
+            first_name: buyer.firstName,
+            last_name: buyer.lastName,
+            organization: buyer.organization ?? "",
+            supplier_name: "",
+            desk: "",
+            ...shared,
+          },
+        };
+      }
+      const contactName = c.contactType === "supplier_admin" ? supplier!.adminContactName : supplier!.attendeeContactName;
       const { first, last } = splitName(contactName ?? "");
-      contacts.push({
-        key: recipientKey(contactType, s.id),
-        contactType,
-        entityId: s.id,
-        name: contactName ? `${s.name} (${contactName})` : s.name,
-        email,
+      return {
+        ...c,
         mergeValues: {
-          first_name: first || s.name,
+          first_name: first || supplier!.name,
           last_name: last,
-          organization: s.name,
-          supplier_name: s.name,
-          desk: s.deskNumber === null ? "" : String(s.deskNumber),
+          organization: supplier!.name,
+          supplier_name: supplier!.name,
+          desk: supplier!.deskNumber === null ? "" : String(supplier!.deskNumber),
           ...shared,
         },
-      });
-    }
-  }
-  return contacts.sort((a, b) => compareNames(a.name, b.name) || a.contactType.localeCompare(b.contactType));
+      };
+    })
+    .sort((a, b) => compareNames(a.name, b.name) || a.contactType.localeCompare(b.contactType));
 }
 
 export function filterAudience(
@@ -151,11 +118,11 @@ export async function withLinks(
   if (!result.ok) return result;
   return ok(
     contacts.map((c) => {
-      const link = result.data.links.get(contactKey(c));
+      const link = result.data.links.get(c.key);
       return {
         ...c,
         tokenId: link?.tokenId ?? null,
-        linkRevoked: result.data.revoked.has(contactKey(c)),
+        linkRevoked: result.data.revoked.has(c.key),
         mergeValues: { ...c.mergeValues, schedule_link: link ? linkFor(link.token) : PENDING_LINK },
       };
     }),

@@ -3,8 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { participants, rankings } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
-import { compareWithActiveRun, getMatchingReadiness } from "./queries";
-import { startRun } from "./runs";
+import { getMatchingReadiness } from "./queries";
 import { seedEvent, type Seeded } from "./test-seed";
 
 let db: Db;
@@ -40,20 +39,5 @@ describe("getMatchingReadiness", () => {
       buyerRankings: 0,
       supplierRankings: 0,
     });
-  });
-});
-
-describe("compareWithActiveRun", () => {
-  it("is null for the active run and compares any other run against it", async () => {
-    const first = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
-    const second = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: true });
-    if (!first.ok || !second.ok) throw new Error("runs failed");
-    expect(await compareWithActiveRun(seeded.eventId, first.data.runId, db)).toBeNull();
-    const comparison = await compareWithActiveRun(seeded.eventId, second.data.runId, db);
-    expect(comparison?.ok).toBe(true);
-    if (comparison?.ok) {
-      // Keeping existing pins every appointment, so nothing is removed.
-      expect(comparison.data.removed).toEqual([]);
-    }
   });
 });

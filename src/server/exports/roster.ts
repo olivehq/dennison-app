@@ -11,7 +11,6 @@ import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { listParticipants, listSuppliers } from "@/server/roster/queries";
 import { readContactLinks, type ReadLink } from "@/server/tokens/queries";
-import { contactKey } from "@/server/tokens/tokens";
 import { toCsv } from "./common";
 
 /**
@@ -121,7 +120,7 @@ export async function participantsFullCsv(eventId: string, db: Db = getDb()): Pr
         p.status === "active" ? "Active" : "Withdrawn",
         withdrawnOn ? when(withdrawnOn) : "",
         run ? p.appointmentCount : "",
-        linkLabel(links.get(contactKey({ contactType: "buyer", entityId: p.id })), p.email),
+        linkLabel(links.get(recipientKey("buyer", p.id)), p.email),
         changeLabel(changes, recipientKey("buyer", p.id)),
         when(p.createdAt),
         when(p.updatedAt),
@@ -163,8 +162,8 @@ export async function suppliersFullCsv(eventId: string, db: Db = getDb()): Promi
         s.status === "active" ? "Active" : "Withdrawn",
         withdrawnOn ? when(withdrawnOn) : "",
         run ? s.appointmentCount : "",
-        linkLabel(links.get(contactKey({ contactType: "supplier_admin", entityId: s.id })), s.adminContactEmail),
-        linkLabel(links.get(contactKey({ contactType: "supplier_attendee", entityId: s.id })), s.attendeeContactEmail),
+        linkLabel(links.get(recipientKey("supplier_admin", s.id)), s.adminContactEmail),
+        linkLabel(links.get(recipientKey("supplier_attendee", s.id)), s.attendeeContactEmail),
         states.includes("Changed") ? "Changed" : states.includes("Up to date") ? "Up to date" : "",
         when(s.createdAt),
         when(s.updatedAt),

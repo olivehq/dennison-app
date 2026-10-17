@@ -1,19 +1,17 @@
-import { and, eq, gt, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
-  accessTokens,
   participants,
   suppliers,
   type ContactType,
-  type Event,
   type Participant,
   type Supplier,
 } from "@/db/schema";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
-import { issueTokenForContact, tokenExpiry } from "@/server/tokens/tokens";
-import { inEditableTransaction, loadEditableEvent, Refused } from "./editable";
+import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
+import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 
 type Actor = { adminId: string };
 
@@ -31,49 +29,6 @@ export type UpsertSupplierInput = Actor & {
 };
 
 export type ByIdInput = Actor & { id: string };
-
-/**
- * After a contact's email changed (D129). Only a live link is touched: one an
- * admin revoked, or one that expired, stays as it is. When an email is still
- * set, the live link is revoked and a link for the new address is issued in
- * the same transaction, so "respect revoke" (D137) can't leave the person with
- * no link. When the email was cleared, the live link is ended by expiring it,
- * not revoking it: nobody chose to cut this person off, so once an address is
- * set again the next lock, access list, or send gives them a link, as after
- * any expiry. A revoke would hold until Regenerate. Also used by supplier
- * imports.
- */
-export async function replaceLinksForChangedEmail(
-  tx: Db,
-  event: Pick<Event, "id" | "eventDate" | "timezone">,
-  input: { entityId: string; contacts: { contactType: ContactType; hasEmail: boolean }[] },
-): Promise<{ revoked: number; expired: number; reissued: ContactType[] }> {
-  let revoked = 0;
-  let expired = 0;
-  const reissued: ContactType[] = [];
-  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  for (const { contactType, hasEmail } of input.contacts) {
-    const now = new Date();
-    const liveLink = and(
-      eq(accessTokens.eventId, event.id),
-      eq(accessTokens.contactType, contactType),
-      eq(accessTokens.entityId, input.entityId),
-      isNull(accessTokens.revokedAt),
-      gt(accessTokens.expiresAt, now),
-    );
-    if (!hasEmail) {
-      const ended = await tx.update(accessTokens).set({ expiresAt: now }).where(liveLink).returning({ id: accessTokens.id });
-      expired += ended.length;
-      continue;
-    }
-    const ended = await tx.update(accessTokens).set({ revokedAt: now }).where(liveLink).returning({ id: accessTokens.id });
-    revoked += ended.length;
-    if (ended.length === 0) continue;
-    await issueTokenForContact(tx, { eventId: event.id, contactType, entityId: input.entityId, expiresAt });
-    reissued.push(contactType);
-  }
-  return { revoked, expired, reissued };
-}
 
 function linkCount(count: number): string {
   return `${count} link${count === 1 ? "" : "s"}`;
@@ -139,15 +94,19 @@ export async function upsertParticipant(
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
     return fail("not_found", "That participant no longer exists.");
   }
-  if (await emailTaken(db, input.eventId, input.data.email, existing?.id)) {
-    return fail("conflict", "Another participant in this event already uses that email.", {
-      email: ["Already used by another participant."],
-    });
-  }
 
   const values = participantValues(input.data);
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
-    if (!existing) {
+  const saved = await inEventTransaction(db, input.eventId, "edit", async (tx, event) => {
+    const current = existing ? await lockParticipant(tx, existing.id) : null;
+    // Under the event row lock, so two saves can't both see the email free.
+    if (await emailTaken(tx, input.eventId, input.data.email, current?.id)) {
+      throw new Refused(
+        fail("conflict", "Another participant in this event already uses that email.", {
+          email: ["Already used by another participant."],
+        }),
+      );
+    }
+    if (!current) {
       const [row] = await tx.insert(participants).values({ eventId: input.eventId, ...values }).returning();
       await recordAudit(tx, {
         eventId: input.eventId,
@@ -159,11 +118,10 @@ export async function upsertParticipant(
       });
       return row;
     }
-    const current = await lockParticipant(tx, existing.id);
     const [row] = await tx.update(participants).set(values).where(eq(participants.id, current.id)).returning();
     const emailChanged = current.email !== row.email;
     const links = emailChanged
-      ? await replaceLinksForChangedEmail(tx, loaded.event, {
+      ? await replaceLinksForChangedEmail(tx, event, {
           entityId: row.id,
           contacts: [{ contactType: "buyer", hasEmail: Boolean(row.email) }],
         })
@@ -197,7 +155,7 @@ async function setParticipantStatus(
 
   // Rankings, appointments, and links stay; the schedule flags the gaps and
   // restore reverses it. Neither withdraw nor restore touches links (D130).
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     // Compare-and-set on the status read, so a double click audits once.
     const [row] = await tx
       .update(participants)
@@ -225,32 +183,6 @@ export function withdrawParticipant(db: Db, input: ByIdInput): Promise<ActionRes
 
 export function restoreParticipant(db: Db, input: ByIdInput): Promise<ActionResult<{ id: string }>> {
   return setParticipantStatus(db, input, "active");
-}
-
-export async function setBiztechOptIn(
-  db: Db,
-  input: ByIdInput & { optIn: boolean },
-): Promise<ActionResult<{ id: string }>> {
-  const existing = await findParticipant(db, input.id);
-  if (!existing) return fail("not_found", "That participant no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
-  if (existing.biztechOptIn === input.optIn) return ok({ id: existing.id });
-
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
-    await tx.update(participants).set({ biztechOptIn: input.optIn }).where(eq(participants.id, existing.id));
-    await recordAudit(tx, {
-      eventId: existing.eventId,
-      adminId: input.adminId,
-      action: "participant.biztech_opt_in",
-      entityType: "participant",
-      entityId: existing.id,
-      before: { biztechOptIn: existing.biztechOptIn },
-      after: { biztechOptIn: input.optIn },
-    });
-  });
-  if (!done.ok) return done;
-  return ok({ id: existing.id });
 }
 
 // ---------------------------------------------------------------------------
@@ -325,14 +257,6 @@ function supplierValues(data: SupplierInput) {
   };
 }
 
-/** Contact types whose email changed, so their links must be revoked. */
-function changedContacts(before: Supplier, after: Supplier): ContactType[] {
-  const changed: ContactType[] = [];
-  if (before.adminContactEmail !== after.adminContactEmail) changed.push("supplier_admin");
-  if (before.attendeeContactEmail !== after.attendeeContactEmail) changed.push("supplier_attendee");
-  return changed;
-}
-
 export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promise<ActionResult<{ id: string }>> {
   const loaded = await loadEditableEvent(db, input.eventId);
   if (!loaded.ok) return loaded.error;
@@ -342,7 +266,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
     return fail("not_found", "That supplier no longer exists.");
   }
 
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+  const saved = await inEventTransaction(db, input.eventId, "edit", async (tx, event) => {
     const current = existing ? await lockSupplier(tx, existing.id) : null;
     // Under the event row lock, so two saves can't both see the name free.
     if (await nameTaken(tx, input.eventId, input.data.name, current?.id)) {
@@ -372,14 +296,8 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       return row;
     }
     const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, current.id)).returning();
-    const contactTypes = changedContacts(current, row);
-    const links = await replaceLinksForChangedEmail(tx, loaded.event, {
-      entityId: row.id,
-      contacts: contactTypes.map((contactType) => ({
-        contactType,
-        hasEmail: Boolean(contactType === "supplier_admin" ? row.adminContactEmail : row.attendeeContactEmail),
-      })),
-    });
+    const changed = changedSupplierContacts(current, row);
+    const links = await replaceLinksForChangedEmail(tx, event, { entityId: row.id, contacts: changed });
     await recordAudit(tx, {
       eventId: input.eventId,
       adminId: input.adminId,
@@ -388,7 +306,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       entityId: row.id,
       before: current,
       after: links.reissued.length ? { ...row, linksReissued: links.reissued } : row,
-      note: contactTypes.length ? emailChangeNote("Contact email changed", links) : null,
+      note: changed.length ? emailChangeNote("Contact email changed", links) : null,
     });
     return row;
   });
@@ -413,7 +331,7 @@ async function setSupplierStatus(
   if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     // A restored supplier can't share a desk: if another active supplier holds
     // its number now, the desk is cleared and lock assigns one again (D17).
     let note: string | undefined;
@@ -457,36 +375,4 @@ export function withdrawSupplier(db: Db, input: ByIdInput): Promise<ActionResult
 
 export function restoreSupplier(db: Db, input: ByIdInput): Promise<ActionResult<SupplierStatusResult>> {
   return setSupplierStatus(db, input, "active");
-}
-
-/**
- * A number sets a manual desk that survives lock-time assignment (D17);
- * null clears it so the alphabetical rule applies again.
- */
-export async function setSupplierDesk(
-  db: Db,
-  input: ByIdInput & { deskNumber: number | null },
-): Promise<ActionResult<{ id: string }>> {
-  const existing = await findSupplier(db, input.id);
-  if (!existing) return fail("not_found", "That supplier no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
-
-  const values = { deskNumber: input.deskNumber, deskOverride: input.deskNumber !== null };
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
-    const taken = await deskTakenBy(tx, existing.eventId, input.deskNumber, existing.id);
-    if (taken) throw new Refused(deskConflict(input.deskNumber as number, taken));
-    await tx.update(suppliers).set(values).where(eq(suppliers.id, existing.id));
-    await recordAudit(tx, {
-      eventId: existing.eventId,
-      adminId: input.adminId,
-      action: "supplier.desk",
-      entityType: "supplier",
-      entityId: existing.id,
-      before: { deskNumber: existing.deskNumber, deskOverride: existing.deskOverride },
-      after: values,
-    });
-  });
-  if (!done.ok) return done;
-  return ok({ id: existing.id });
 }

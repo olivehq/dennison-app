@@ -15,9 +15,10 @@ import { isEmailConfigured, sendBatch, sendEmail, type EmailMessage as OutgoingE
 import { sanitizeEmailHtml } from "@/lib/email/sanitize-html";
 import { env } from "@/lib/env";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
+import { eventAllows } from "@/lib/event-gates";
 import { campaignFieldsSchema, recipientKey, type CampaignFieldsInput, type EmailAudience } from "@/lib/schemas/email";
 import { recordAudit } from "@/server/audit/audit";
-import { claimUnarchivedEvent } from "@/server/events/editable";
+import { claimEvent, inEventTransaction, Refused } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { findUnknownFields, renderTemplate, renderText, SAMPLE_MERGE_VALUES, type MergeValues } from "./merge";
@@ -33,8 +34,6 @@ import { hashForContact, scheduleHashesForEvent } from "./schedule-hash";
 /** Resend's batch API takes at most 100 messages per call. */
 export const SEND_CHUNK_SIZE = 100;
 
-/** Event statuses that allow sending: every link is final (AGENTS.md, scope 2.6). */
-const SENDABLE_EVENT_STATUSES: readonly Event["status"][] = ["locked", "sent"];
 
 export const NOT_LOCKED_MESSAGE = "Lock the schedule before sending so every link is final.";
 
@@ -117,23 +116,6 @@ async function refuseArchived(db: Db, eventId: string): Promise<ActionResult<nev
   return null;
 }
 
-/**
- * Runs a campaign write and its audit row in one transaction that first
- * claims the event row while it is not archived (D89), so an archive that
- * lands after `refuseArchived` either waits for this or makes it refuse.
- * `work` must return its failures before it writes anything.
- */
-async function inUnarchivedTransaction<T>(
-  db: Db,
-  eventId: string,
-  work: (tx: Db) => Promise<ActionResult<T>>,
-): Promise<ActionResult<T>> {
-  return db.transaction(async (tx) => {
-    if (!(await claimUnarchivedEvent(tx, eventId))) return fail("locked", ARCHIVED_MESSAGE);
-    return work(tx);
-  });
-}
-
 function campaignSnapshot(c: EmailCampaign) {
   return {
     name: c.name,
@@ -174,7 +156,9 @@ export async function createCampaign(
   const archived = await refuseArchived(db, input.eventId);
   if (archived) return archived;
   const kind = input.kind ?? "initial";
-  return inUnarchivedTransaction(db, input.eventId, async (tx) => {
+  // Campaign writes claim the event row while it is not archived (D89), so an
+  // archive that lands after `refuseArchived` waits for this or makes it the conflict.
+  return inEventTransaction(db, input.eventId, "unarchived", async (tx) => {
     const sender = await senderDefaults(tx, input.eventId, input.adminId);
     const [row] = await tx
       .insert(emailCampaigns)
@@ -197,7 +181,7 @@ export async function createCampaign(
       entityId: row.id,
       after: campaignSnapshot(row),
     });
-    return ok(row);
+    return row;
   });
 }
 
@@ -214,7 +198,7 @@ export async function updateCampaign(
   if (archived) return archived;
   if (campaign.status !== "draft") return fail("conflict", "This campaign was already sent and can't be edited. Duplicate it instead.");
   const fields = parsed.data;
-  return inUnarchivedTransaction(db, campaign.eventId, async (tx) => {
+  return inEventTransaction(db, campaign.eventId, "unarchived", async (tx) => {
     const [row] = await tx
       .update(emailCampaigns)
       .set({
@@ -225,7 +209,7 @@ export async function updateCampaign(
       })
       .where(and(eq(emailCampaigns.id, campaign.id), eq(emailCampaigns.status, "draft")))
       .returning();
-    if (!row) return fail("conflict", "This campaign was sent while you were editing.");
+    if (!row) throw new Refused(fail("conflict", "This campaign was sent while you were editing."));
     await recordAudit(tx, {
       eventId: campaign.eventId,
       adminId: input.adminId,
@@ -235,7 +219,7 @@ export async function updateCampaign(
       before: campaignSnapshot(campaign),
       after: campaignSnapshot(row),
     });
-    return ok(row);
+    return row;
   });
 }
 
@@ -253,7 +237,7 @@ export async function duplicateCampaign(
   const archived = await refuseArchived(db, source.eventId);
   if (archived) return archived;
   const isUpdate = input.kind === "update";
-  return inUnarchivedTransaction(db, source.eventId, async (tx) => {
+  return inEventTransaction(db, source.eventId, "unarchived", async (tx) => {
     const [row] = await tx
       .insert(emailCampaigns)
       .values({
@@ -278,7 +262,7 @@ export async function duplicateCampaign(
       entityId: row.id,
       after: { ...campaignSnapshot(row), sourceId: source.id },
     });
-    return ok(row);
+    return row;
   });
 }
 
@@ -436,7 +420,7 @@ export async function sendTest(
   }
   const result = { toEmail: input.toEmail, recipientName: sample.data.recipient?.name ?? null, delivered };
   return db.transaction(async (tx) => {
-    if (!(await claimUnarchivedEvent(tx, campaign.eventId))) {
+    if (!(await claimEvent(tx, campaign.eventId, "unarchived"))) {
       // Archived while the test went out. The admin did get it, but an
       // archived event takes no writes, so nothing is recorded.
       console.warn(`[email] campaign ${campaign.id}: test sent, not recorded because the event was archived meanwhile.`);
@@ -657,7 +641,7 @@ function deliveryProblems(d: Delivered) {
 /**
  * Locks the event row (`FOR UPDATE`) and returns its status, or null when the
  * event is gone. Every transaction here that writes a campaign row calls this
- * (or `claimUnarchivedEvent`) first, so they all lock the event before the
+ * (or `claimEvent`) first, so they all lock the event before the
  * campaign and two of them can't deadlock. Unlock, archive, and retention
  * take the event row first too.
  */
@@ -680,7 +664,7 @@ async function claimCampaign(
   return db.transaction(async (tx) => {
     const status = await lockEventRow(tx, campaign.eventId);
     if (!status) return fail("not_found", "That event no longer exists.");
-    if (!SENDABLE_EVENT_STATUSES.includes(status)) return fail("locked", NOT_LOCKED_MESSAGE);
+    if (!eventAllows("locked", status)) return fail("locked", NOT_LOCKED_MESSAGE);
     const [claimed] = await tx
       .update(emailCampaigns)
       .set({ status: "sending" })
@@ -744,7 +728,7 @@ async function loadSendable(
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
   const event = await getEvent(campaign.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  if (!SENDABLE_EVENT_STATUSES.includes(event.status)) return fail("locked", NOT_LOCKED_MESSAGE);
+  if (!eventAllows("locked", event.status)) return fail("locked", NOT_LOCKED_MESSAGE);
   return ok({ campaign, event });
 }
 

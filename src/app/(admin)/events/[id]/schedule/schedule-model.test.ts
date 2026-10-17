@@ -32,6 +32,7 @@ import {
   withdrawnNote,
   writeUrlState,
 } from "./schedule-model";
+import type { Person } from "./schedule-model";
 
 const TARGETS = { supplierTarget: 2, buyerMin: 1, buyerMax: 2 };
 
@@ -205,6 +206,18 @@ describe("lanesFor", () => {
     expect(lanesFor(model, "buyer", { ...none, free: 1 }, TARGETS).map((p) => p.id)).toEqual(["b2", "b3"]);
   });
 
+  it("shows the same free people in the timeline filter and the slot board", () => {
+    for (const m of [model, withWithdrawn]) {
+      for (const slot of [1, 2, 3]) {
+        for (const mode of ["supplier", "buyer"] as const) {
+          const list: Person[] = mode === "supplier" ? m.suppliers : m.buyers;
+          const lanes = lanesFor(m, mode, { ...none, free: slot }, TARGETS).map((p) => p.id);
+          expect(lanes).toEqual(freeIn(m, list, slot).map((p) => p.id));
+        }
+      }
+    }
+  });
+
   it("keeps count problems only", () => {
     expect(lanesFor(model, "supplier", { ...none, flagged: true }, TARGETS).map((p) => p.id)).toEqual(["s2", "s3"]);
   });
@@ -223,6 +236,7 @@ describe("lanesFor", () => {
   it("never lists a withdrawn person as free in a slot, even with meetings in other slots", () => {
     expect(lanesFor(withWithdrawn, "buyer", { ...none, free: 2 }, TARGETS).map((p) => p.id)).toEqual([]);
     expect(lanesFor(withWithdrawn, "buyer", { ...none, free: 1 }, TARGETS).map((p) => p.id)).toEqual(["b1"]);
+    expect(freeIn(withWithdrawn, withWithdrawn.buyers, 2)).toEqual([]);
     // Without the slot filter the lane still shows, so its meetings can be fixed.
     expect(lanesFor(withWithdrawn, "buyer", none, TARGETS).map((p) => p.id)).toEqual(["b1", "w1"]);
   });

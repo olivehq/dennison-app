@@ -21,12 +21,10 @@ import {
 } from "@/lib/schemas/import";
 import { deleteFile, getFile, importFileKey, putFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
-import { claimEditableEvent, EventChangedError, eventChangedResult } from "@/server/events/editable";
-import { getEvent } from "@/server/events/queries";
+import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
 import { advanceStatus } from "@/server/events/status";
 import { fullNameFor } from "@/server/roster/display-name";
-import { inEditableTransaction, loadEditableEvent, Refused } from "@/server/roster/editable";
-import { replaceLinksForChangedEmail } from "@/server/roster/roster";
+import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 import {
   isStructuralFailure,
   parseImportFile,
@@ -153,7 +151,7 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
   try {
     const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer);
     const state = importStateFor(evaluation.status, evaluation.report);
-    const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+    const saved = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
       await tx.insert(imports).values({
         id: importId,
         eventId: input.eventId,
@@ -231,7 +229,7 @@ function evaluationColumns(evaluation: Evaluation) {
  * event was locked or archived since.
  */
 async function writeFreshReport(db: Db, row: Import, options: { statusToo: boolean }): Promise<Evaluation | null> {
-  const written = await inEditableTransaction(db, row.eventId, async (tx) => {
+  const written = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
     const evaluation = await evaluateStored(tx, row);
     const columns = options.statusToo ? evaluationColumns(evaluation) : { validation: evaluation.report };
     const updated = await tx
@@ -270,8 +268,6 @@ async function revalidatePending(db: Db, eventId: string): Promise<{ importId: s
 }
 
 export type AliasMapping = { raw: string; entityType: EntityType; entityId: string };
-
-export type SaveAliasInput = AliasMapping & { eventId: string; adminId: string };
 
 export type SaveAliasesInput = { eventId: string; aliases: AliasMapping[]; adminId: string };
 
@@ -339,7 +335,7 @@ export async function saveAliases(
     canonicalNames.push(canonicalName);
   }
 
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+  const saved = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
     const organizations = await rosterOrganizations(tx, input.eventId);
     const ids: string[] = [];
     for (const [i, alias] of aliases.entries()) {
@@ -375,17 +371,6 @@ export async function saveAliases(
   if (!saved.ok) return saved;
   const revalidated = await revalidatePending(db, input.eventId);
   return ok({ aliasIds: saved.data, imports: revalidated });
-}
-
-/** Maps one raw name to an entity (source manual) and re-validates every pending import of the event. */
-export async function saveAlias(
-  db: Db,
-  input: SaveAliasInput,
-): Promise<ActionResult<{ aliasId: string; imports: RevalidatedImport[] }>> {
-  const { eventId, adminId, ...alias } = input;
-  const result = await saveAliases(db, { eventId, adminId, aliases: [alias] });
-  if (!result.ok) return result;
-  return ok({ aliasId: result.data.aliasIds[0], imports: result.data.imports });
 }
 
 // ---------------------------------------------------------------------------
@@ -454,13 +439,7 @@ async function applySuppliers(
       continue;
     }
     await db.update(suppliers).set(values).where(eq(suppliers.id, current.id));
-    const changed: { contactType: "supplier_admin" | "supplier_attendee"; hasEmail: boolean }[] = [];
-    if (current.adminContactEmail !== row.adminContactEmail) {
-      changed.push({ contactType: "supplier_admin", hasEmail: Boolean(row.adminContactEmail) });
-    }
-    if (current.attendeeContactEmail !== row.attendeeContactEmail) {
-      changed.push({ contactType: "supplier_attendee", hasEmail: Boolean(row.attendeeContactEmail) });
-    }
+    const changed = changedSupplierContacts(current, row);
     if (changed.length) await replaceLinksForChangedEmail(db, event, { entityId: current.id, contacts: changed });
     counts.updated += 1;
   }
@@ -596,69 +575,57 @@ export async function applyImport(
     );
   }
 
-  let summary: ApplySummary;
-  try {
-    summary = await db.transaction(async (tx) => {
-      // Lock the event row while it is editable (D85): a lock or archive since
-      // the check above is a conflict, and applies of one event run one at a time.
-      await claimEditableEvent(tx, row.eventId);
-      // Settings (the biztech rule) as they are under the lock.
-      const event = (await getEvent(row.eventId, tx))!;
-      const result: ApplySummary = {
-        kind: row.kind,
-        created: 0,
-        updated: 0,
-        rankers: 0,
-        rankingsDeleted: 0,
-        rankingsWritten: 0,
-        optedIn: 0,
-        optedOut: 0,
-        aliasesSaved: 0,
-        eventAdvanced: false,
-      };
-      if (parsed.kind === "participants") {
-        Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
-      } else if (parsed.kind === "suppliers") {
-        Object.assign(result, await applySuppliers(tx, event, parsed.rows));
-      } else if (analysis && isRankingKind(row.kind)) {
-        Object.assign(result, await applyRankings(tx, event, row.id, row.kind, analysis));
-        result.aliasesSaved = await saveAutoAliases(tx, event.id, analysis.inexact);
-      }
-      // Compare-and-set on the status read above: a second apply (or a delete)
-      // that got here first makes this match nothing, and the throw rolls back
-      // every roster and ranking write above.
-      const marked = await tx
-        .update(imports)
-        .set({ status: "applied", appliedAt: new Date(), validation: report, rowCount: report.counts.rows })
-        .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
-        .returning({ id: imports.id });
-      if (marked.length === 0) throw new ImportStatusChanged();
-      result.eventAdvanced = await advanceStatus(tx, event.id, "draft", "imported");
-      await recordAudit(tx, {
-        eventId: event.id,
-        adminId: input.adminId,
-        action: "import.apply",
-        entityType: "import",
-        entityId: row.id,
-        before: { status: row.status },
-        after: { status: "applied", ...result },
-      });
-      return result;
-    });
-  } catch (error) {
-    if (error instanceof ImportStatusChanged) {
-      return fail("conflict", STATUS_CHANGED_MESSAGE);
+  // Lock the event row while it is editable (D85): a lock or archive since the
+  // check above is a conflict, and applies of one event run one at a time.
+  // `event` has the settings (the biztech rule) as they are under the lock.
+  const applied = await inEventTransaction(db, row.eventId, "edit", async (tx, event) => {
+    const result: ApplySummary = {
+      kind: row.kind,
+      created: 0,
+      updated: 0,
+      rankers: 0,
+      rankingsDeleted: 0,
+      rankingsWritten: 0,
+      optedIn: 0,
+      optedOut: 0,
+      aliasesSaved: 0,
+      eventAdvanced: false,
+    };
+    if (parsed.kind === "participants") {
+      Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
+    } else if (parsed.kind === "suppliers") {
+      Object.assign(result, await applySuppliers(tx, event, parsed.rows));
+    } else if (analysis && isRankingKind(row.kind)) {
+      Object.assign(result, await applyRankings(tx, event, row.id, row.kind, analysis));
+      result.aliasesSaved = await saveAutoAliases(tx, event.id, analysis.inexact);
     }
-    if (error instanceof EventChangedError) return eventChangedResult(error)!;
-    throw error;
-  }
+    // Compare-and-set on the status read above: a second apply (or a delete)
+    // that got here first makes this match nothing, and the throw rolls back
+    // every roster and ranking write above.
+    const marked = await tx
+      .update(imports)
+      .set({ status: "applied", appliedAt: new Date(), validation: report, rowCount: report.counts.rows })
+      .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
+      .returning({ id: imports.id });
+    if (marked.length === 0) throw new Refused(fail("conflict", STATUS_CHANGED_MESSAGE));
+    result.eventAdvanced = await advanceStatus(tx, event.id, "draft", "imported");
+    await recordAudit(tx, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "import.apply",
+      entityType: "import",
+      entityId: row.id,
+      before: { status: row.status },
+      after: { status: "applied", ...result },
+    });
+    return result;
+  });
+  if (!applied.ok) return applied;
+  const summary = applied.data;
   // A roster change can resolve (or break) names in ranking files waiting to be applied.
   if (!isRankingKind(row.kind)) await revalidatePending(db, row.eventId);
   return ok({ importId: row.id, summary });
 }
-
-/** Thrown inside the apply transaction to roll it back when the import's status moved underneath it. */
-class ImportStatusChanged extends Error {}
 
 const STATUS_CHANGED_MESSAGE = "This import was applied or changed by someone else. Reload the page.";
 
@@ -677,7 +644,7 @@ export async function deleteImportRecord(
   const loaded = await loadEditableEvent(db, row.eventId);
   if (!loaded.ok) return loaded.error;
 
-  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
+  const done = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
     const deleted = await tx.delete(rankings).where(eq(rankings.importId, row.id)).returning({ id: rankings.id });
     await tx.delete(imports).where(eq(imports.id, row.id));
     await recordAudit(tx, {
@@ -715,7 +682,7 @@ export async function ignoreImport(
   }
   if (row.status === "ignored") return fail("conflict", "This file is already ignored.");
 
-  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
+  const done = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
     // Compare-and-set on the status read: an apply that got here first wins.
     const marked = await tx
       .update(imports)
@@ -748,7 +715,7 @@ export async function stopIgnoringImport(
   if (!loaded.ok) return loaded.error;
   if (row.status !== "ignored") return fail("conflict", "This file isn't ignored.");
 
-  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
+  const done = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
     // Ignored files were never re-validated, so check it now, after the lock is held.
     const evaluation = await evaluateStored(tx, row);
     const state = importStateFor(evaluation.status, evaluation.report);
