@@ -1,5 +1,5 @@
 {
-  "id": "b5aed27f-4077-4d34-9a41-3e94cebcc5f6",
+  "id": "913b8702-4d4f-4cbb-ae86-cdceeb5a1a3f",
   "prevId": "3121f649-a2af-453d-8bca-c10cf0bbb513",
   "version": "7",
   "dialect": "postgresql",
@@ -772,6 +772,27 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_events_event_action_idx": {
+          "name": "audit_events_event_action_idx",
+          "columns": [
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "action",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
