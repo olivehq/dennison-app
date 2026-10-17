@@ -400,7 +400,7 @@ export function lanesFor(
   return list.filter((p) => {
     if (!hasLane(model, p)) return false;
     const mine = appointmentsOf(model, p.id);
-    if (filters.free && (p.withdrawn || mine.has(filters.free))) return false;
+    if (filters.free && !isFreeIn(model, p, filters.free)) return false;
     if (filters.flagged && healthOf(p, targets) === "ok") return false;
     if (filters.withdrawnOnly && ![...mine.values()].some((a) => a.counterpartWithdrawn)) return false;
     if (filters.mostlyNeither && !isMostlyNeither(mine.values())) return false;
@@ -413,9 +413,14 @@ export function lanesFor(
   });
 }
 
+/** Free in a slot: active and without a meeting then. The one rule behind the timeline filter and the slot board. */
+export function isFreeIn(model: ScheduleModel, person: Person, slot: number): boolean {
+  return !person.withdrawn && !appointmentsOf(model, person.id).has(slot);
+}
+
 /** Active people with no meeting in `slot`. */
 export function freeIn<T extends Person>(model: ScheduleModel, list: readonly T[], slot: number): T[] {
-  return list.filter((p) => !p.withdrawn && !appointmentsOf(model, p.id).has(slot));
+  return list.filter((p) => isFreeIn(model, p, slot));
 }
 
 export function busyCount(model: ScheduleModel, list: readonly Person[], slot: number): number {
