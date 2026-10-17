@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { eventAllows } from "@/lib/event-gates";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEmailSummary, listCampaigns } from "@/server/email/queries";
@@ -19,7 +20,7 @@ export default async function EmailsPage({ params }: { params: Promise<{ id: str
   const event = await getEvent(id);
   if (!event) notFound();
   const [campaigns, summary] = await Promise.all([listCampaigns(event.id), getEmailSummary(event.id)]);
-  const canSend = event.status === "locked" || event.status === "sent";
+  const canSend = eventAllows("locked", event.status);
   const archived = event.status === "archived";
 
   const rows: CampaignTableRow[] = campaigns.map((c) => ({

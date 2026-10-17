@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { isEmailConfigured } from "@/lib/email/adapter";
 import { isEditorCompatibleHtml, sanitizeEmailHtml } from "@/lib/email/sanitize-html";
+import { eventAllows } from "@/lib/event-gates";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getAudienceOptions, getCampaign } from "@/server/email/queries";
@@ -36,7 +37,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   const detail = /^[0-9a-f-]{36}$/i.test(campaignId) ? await getCampaign(campaignId) : null;
   if (!detail || detail.campaign.eventId !== event.id) notFound();
   const { campaign, messages, stats } = detail;
-  const canSend = event.status === "locked" || event.status === "sent";
+  const canSend = eventAllows("locked", event.status);
   const archived = event.status === "archived";
   const sendBlockedReason = archived ? ARCHIVED : canSend ? null : NOT_LOCKED;
   const at = (date: Date) => formatTimestamp(date, event.timezone);

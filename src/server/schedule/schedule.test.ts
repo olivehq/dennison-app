@@ -601,7 +601,13 @@ describe("lock and unlock", () => {
     expect(event.status).toBe("locked");
 
     const again = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
-    expect(!again.ok && again.error.code).toBe("conflict");
+    expect(again).toEqual({ ok: false, error: { code: "conflict", message: "The schedule is already locked." } });
+  });
+
+  it("lock on an archived event says it is archived, not already locked", async () => {
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, seeded.eventId));
+    const result = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "This event is archived and can't be changed." } });
   });
 
   it("refuses edits and desk changes while locked", async () => {

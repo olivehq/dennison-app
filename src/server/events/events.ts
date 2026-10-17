@@ -1,4 +1,4 @@
-import { and, count, eq, max, ne, notInArray } from "drizzle-orm";
+import { and, count, eq, max } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import { appointments, events, imports, matchRuns, participants, type Event } from "@/db/schema";
@@ -7,34 +7,10 @@ import { eventSchema, type EventInput } from "@/lib/schemas/event";
 import { defaultEventSettings, eventSettingsSchema, type EventSettings } from "@/lib/schemas/event-settings";
 import { deleteFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEventEditable, EventChangedError, eventChangedResult, READ_ONLY_STATUSES } from "./editable";
+import { assertEventEditable, EventChangedError, inEventTransaction, Refused } from "./editable";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "./status";
 
 const idSchema = z.uuid();
-
-/** Matches the event only while it is still editable: the compare half of a compare-and-set. */
-function editableEvent(id: string) {
-  return and(eq(events.id, id), notInArray(events.status, [...READ_ONLY_STATUSES]));
-}
-
-/** Thrown inside a transaction to roll it back and return `result`. */
-class Refused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
-/** Runs `work` in a transaction, turning `EventChangedError` into the conflict result and `Refused` into its result. */
-async function inTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
-  try {
-    return ok(await db.transaction(work));
-  } catch (error) {
-    if (error instanceof Refused) return error.result;
-    const changed = eventChangedResult(error);
-    if (changed) return changed;
-    throw error;
-  }
-}
 
 /** The highest slot number used by the event's active run, or null without one. */
 async function highestActiveSlot(db: Db, eventId: string): Promise<number | null> {
@@ -80,10 +56,9 @@ export async function createEvent(
   return ok({ id: event.id });
 }
 
-/** Writes the event's name, date, and timezone with a compare-and-set on its editable status. */
+/** Writes the event's name, date, and timezone. Call it under `inEventTransaction`'s `edit` claim. */
 async function writeDetails(tx: Db, event: Event, details: EventInput, actorId: string): Promise<void> {
-  const changed = await tx.update(events).set(details).where(editableEvent(event.id)).returning({ id: events.id });
-  if (changed.length === 0) throw new EventChangedError();
+  await tx.update(events).set(details).where(eq(events.id, event.id));
   await recordAudit(tx, {
     eventId: event.id,
     adminId: actorId,
@@ -106,7 +81,8 @@ export function scheduleResetMessage(highestSlot: number): string {
  * `needs_schedule_reset`, unless `clearSchedule` is set: then the active run
  * is deactivated in the same transaction (no run is active, and a `matched`
  * event goes back to `imported`), so the admin can run matching again with
- * the new settings. Earlier runs stay in the list.
+ * the new settings. Earlier runs stay in the list. `event` is the row as
+ * `inEventTransaction` claimed it, so the merge keeps a concurrent setRetainData.
  */
 async function writeSettings(
   tx: Db,
@@ -115,10 +91,6 @@ async function writeSettings(
   actorId: string,
   clearSchedule: boolean,
 ): Promise<{ clearedRunId: string | null }> {
-  // Lock the row while it is still editable and merge into what is stored now,
-  // so a concurrent setRetainData is kept.
-  const [current] = await tx.select({ settings: events.settings }).from(events).where(editableEvent(event.id)).for("update");
-  if (!current) throw new EventChangedError();
   let clearedRunId: string | null = null;
   // Fewer slots than the active schedule uses would orphan its appointments.
   const highest = await highestActiveSlot(tx, event.id);
@@ -148,7 +120,7 @@ async function writeSettings(
       after: { activeRunId: null, slotCount: submitted.slotCount },
     });
   }
-  const settings: EventSettings = { ...current.settings, ...submitted };
+  const settings: EventSettings = { ...event.settings, ...submitted };
   await tx.update(events).set({ settings }).where(eq(events.id, event.id));
   await recordAudit(tx, {
     eventId: event.id,
@@ -156,7 +128,7 @@ async function writeSettings(
     action: "event.settings",
     entityType: "event",
     entityId: event.id,
-    before: current.settings,
+    before: event.settings,
     after: settings,
   });
   return { clearedRunId };
@@ -190,7 +162,7 @@ export async function updateEvent(
   const parsed = eventSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  const done = await inTransaction(db, (tx) => writeDetails(tx, event, parsed.data, actorId));
+  const done = await inEventTransaction(db, event.id, "edit", (tx, current) => writeDetails(tx, current, parsed.data, actorId));
   if (!done.ok) return done;
   return ok({ id: event.id });
 }
@@ -211,8 +183,8 @@ export async function updateEventSettings(
   const parsed = eventSettingsSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  const done = await inTransaction(db, (tx) =>
-    writeSettings(tx, event, withoutRetainData(parsed.data), actorId, options.clearSchedule ?? false),
+  const done = await inEventTransaction(db, event.id, "edit", (tx, current) =>
+    writeSettings(tx, current, withoutRetainData(parsed.data), actorId, options.clearSchedule ?? false),
   );
   if (!done.ok) return done;
   return ok({ id: event.id, clearedRunId: done.data.clearedRunId });
@@ -254,11 +226,11 @@ export async function saveEventForm(
   if (settings && !settings.success) Object.assign(fieldErrors, fieldErrorsOf(fromZod(settings.error), "settings."));
   if (Object.keys(fieldErrors).length > 0) return fail("validation", "Check the highlighted fields.", fieldErrors);
 
-  const done = await inTransaction(db, async (tx) => {
+  const done = await inEventTransaction(db, event.id, "edit", async (tx, current) => {
     const saved = settings?.success
-      ? await writeSettings(tx, event, withoutRetainData(settings.data), actorId, input.clearSchedule ?? false)
+      ? await writeSettings(tx, current, withoutRetainData(settings.data), actorId, input.clearSchedule ?? false)
       : { clearedRunId: null };
-    if (details?.success) await writeDetails(tx, event, details.data, actorId);
+    if (details?.success) await writeDetails(tx, current, details.data, actorId);
     return saved;
   });
   if (!done.ok) {
@@ -290,15 +262,9 @@ export async function setRetainData(
   const current = event.settings.retainData ?? false;
   if (current === parsed.data) return ok({ id: event.id, retainData: current });
 
-  const done = await inTransaction(db, async (tx) => {
-    // The only writer of retainData: lock the row and change that one key of
-    // the stored settings, so a concurrent settings save is kept.
-    const [row] = await tx
-      .select({ settings: events.settings })
-      .from(events)
-      .where(and(eq(events.id, event.id), ne(events.status, "archived")))
-      .for("update");
-    if (!row) throw new EventChangedError();
+  // The only writer of retainData: lock the row and change that one key of
+  // the stored settings, so a concurrent settings save is kept.
+  const done = await inEventTransaction(db, event.id, "unarchived", async (tx, row) => {
     const stored = row.settings.retainData ?? false;
     if (stored === parsed.data) return;
     await tx.update(events).set({ settings: { ...row.settings, retainData: parsed.data } }).where(eq(events.id, event.id));
@@ -334,15 +300,9 @@ export async function deleteEvent(
   if (event.status !== "draft") {
     return fail("conflict", "Only draft events can be deleted. Archive this one instead.");
   }
-  const done = await inTransaction(db, async (tx) => {
-    // Lock the row while it is still a draft, then count, so a participant
-    // added or a status change in between can't slip past the checks.
-    const [draft] = await tx
-      .select({ id: events.id })
-      .from(events)
-      .where(and(eq(events.id, event.id), eq(events.status, "draft")))
-      .for("update");
-    if (!draft) throw new EventChangedError();
+  // Lock the row while it is still a draft, then count, so a participant
+  // added or a status change in between can't slip past the checks.
+  const done = await inEventTransaction(db, event.id, "draft", async (tx) => {
     const [{ value: participantCount }] = await tx
       .select({ value: count() })
       .from(participants)
@@ -392,7 +352,7 @@ export async function archiveEvent(
   const event = loaded.data;
   if (event.status === "archived") return fail("conflict", "This event is already archived.");
 
-  const done = await inTransaction(db, async (tx) => {
+  const done = await inEventTransaction(db, event.id, "unarchived", async (tx) => {
     const changed = await tx
       .update(events)
       .set({ status: "archived" })

@@ -14,7 +14,7 @@ import { fail, ok, type ActionResult } from "@/lib/errors";
 import { endOfDayInTimezone } from "@/lib/time";
 import { decryptToken, encryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { recordAudit } from "@/server/audit/audit";
-import { claimUnarchivedEvent } from "@/server/events/editable";
+import { ARCHIVED_MESSAGE, inEventTransaction, Refused } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { displayNameFor } from "@/server/roster/display-name";
 
@@ -307,7 +307,6 @@ const tokenIdSchema = z.uuid();
 
 type TokenContext = { row: AccessToken; event: Event };
 
-const ARCHIVED_MESSAGE = "This event is archived and can't be changed.";
 const WITHDRAWN_MESSAGE = "This person has withdrawn. Restore them before giving them a new link.";
 
 /**
@@ -333,37 +332,23 @@ async function loadTokenForChange(
   return ok({ row, event });
 }
 
-/** Thrown inside a link transaction to roll it back and return `result`. */
-class LinkRefused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
 /**
- * The checks of `loadTokenForChange` again, inside the transaction: lock the
- * event row while it is not archived (archive, and roster withdrawals through
- * `claimEditableEvent`, take the same row), then re-read the person.
+ * Runs a link change in a transaction that takes the event row while it is
+ * not archived (archive and roster withdrawals take the same row), then
+ * re-reads the person, so the checks of `loadTokenForChange` hold under the lock.
  */
-async function recheckInTransaction(
-  tx: Db,
+function inLinkTransaction<T>(
+  db: Db,
   row: Pick<AccessToken, "eventId" | "contactType" | "entityId">,
   options: { allowWithdrawn: boolean },
-): Promise<void> {
-  if (!(await claimUnarchivedEvent(tx, row.eventId))) throw new LinkRefused(fail("locked", ARCHIVED_MESSAGE));
-  if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
-    throw new LinkRefused(fail("conflict", WITHDRAWN_MESSAGE));
-  }
-}
-
-/** Runs a link transaction, turning `LinkRefused` into its result. */
-async function inLinkTransaction<T>(db: Db, work: (tx: Db) => Promise<T>): Promise<ActionResult<T>> {
-  try {
-    return ok(await db.transaction(work));
-  } catch (error) {
-    if (error instanceof LinkRefused) return error.result;
-    throw error;
-  }
+  work: (tx: Db) => Promise<T>,
+): Promise<ActionResult<T>> {
+  return inEventTransaction(db, row.eventId, "unarchived", async (tx) => {
+    if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
+      throw new Refused(fail("conflict", WITHDRAWN_MESSAGE));
+    }
+    return work(tx);
+  });
 }
 
 async function contactStatus(db: Db, row: Pick<AccessToken, "contactType" | "entityId">): Promise<string | null> {
@@ -389,8 +374,7 @@ export async function revokeToken(
   if (!loaded.ok) return loaded;
   const { row } = loaded.data;
   if (row.revokedAt) return ok({ tokenId: row.id, eventId: row.eventId });
-  const done = await inLinkTransaction(db, async (tx) => {
-    await recheckInTransaction(tx, row, { allowWithdrawn: true });
+  const done = await inLinkTransaction(db, row, { allowWithdrawn: true }, async (tx) => {
     const changed = await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })
@@ -427,8 +411,7 @@ export async function regenerateToken(
   if (!loaded.ok) return loaded;
   const { row, event } = loaded.data;
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  const issued = await inLinkTransaction(db, async (tx) => {
-    await recheckInTransaction(tx, row, { allowWithdrawn: false });
+  const issued = await inLinkTransaction(db, row, { allowWithdrawn: false }, async (tx) => {
     await tx
       .update(accessTokens)
       .set({ revokedAt: new Date() })

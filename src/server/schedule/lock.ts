@@ -2,14 +2,17 @@ import { and, eq, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@/db/client";
 import { appointments, participants, suppliers, type Supplier } from "@/db/schema";
-import { fail, ok, type ActionResult } from "@/lib/errors";
+import { fail, type ActionResult } from "@/lib/errors";
+import { eventAllows } from "@/lib/event-gates";
 import { compareNames } from "@/lib/names";
 import { recordAudit } from "@/server/audit/audit";
 import {
+  ARCHIVED_MESSAGE,
   assertEventEditable,
-  claimEditableEvent,
-  EVENT_CHANGED_MESSAGE,
   EventChangedError,
+  inEventTransaction,
+  isEventEditable,
+  Refused,
 } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
@@ -96,28 +99,13 @@ function withdrawnLockMessage(n: number): string {
     : `${n} appointments involve someone who withdrew. Re-run matching keeping existing appointments, or remove them, before locking.`;
 }
 
-/** Runs `work` in a transaction, turning `EventChangedError` into the conflict result. */
-async function inTransaction<T>(db: Db, work: (tx: Db) => Promise<ActionResult<T>>): Promise<ActionResult<T>> {
-  try {
-    return await db.transaction(work);
-  } catch (error) {
-    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
-    throw error;
-  }
-}
-
-class Refused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
 /**
  * Freezes the schedule: desks (D17), participant links (D14), status `locked`.
- * The status change is a compare-and-set on the status read here and runs
- * first in the transaction, so it holds the event row while desks and links
- * are written, and a concurrent edit, lock, or archive makes this a conflict.
- * Refused while any appointment involves a withdrawn person.
+ * The transaction claims the event row first and the status change is a
+ * compare-and-set on the status read here, so the row is held while desks
+ * and links are written, and a concurrent edit, lock, or archive makes this a
+ * conflict. Refused while any appointment involves a withdrawn person, and
+ * with the archived message on an archived event.
  */
 export async function lockSchedule(
   db: Db,
@@ -125,38 +113,33 @@ export async function lockSchedule(
 ): Promise<ActionResult<LockResult>> {
   const event = await getEvent(input.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(event);
-  if (locked) return fail("conflict", "The schedule is already locked.");
+  if (event.status === "archived") return fail("locked", ARCHIVED_MESSAGE);
+  if (!isEventEditable(event)) return fail("conflict", "The schedule is already locked.");
   const active = await findActiveRun(db, event.id);
   if (!active) return fail("validation", "Run matching and activate a run before locking.");
 
-  try {
-    return await inTransaction(db, async (tx) => {
-      if (!(await advanceStatus(tx, event.id, event.status, "locked"))) throw new EventChangedError();
-      // Read again under the row lock: the active run or a withdrawal may have changed since.
-      const current = await findActiveRun(tx, event.id);
-      if (current?.id !== active.id) throw new EventChangedError();
-      const withdrawn = await countWithdrawnAppointments(tx, active.id);
-      if (withdrawn > 0) throw new Refused(fail("conflict", withdrawnLockMessage(withdrawn)));
-      const { after: desks } = await applyDesks(tx, event.id);
-      const issued = await issueTokensForEvent(tx, event.id);
-      // Throwing rolls the desk changes back; the event was loaded a moment ago so this cannot happen.
-      if (!issued.ok) throw new Error(issued.error.message);
-      await recordAudit(tx, {
-        eventId: event.id,
-        adminId: input.adminId,
-        action: "schedule.lock",
-        entityType: "event",
-        entityId: event.id,
-        before: { status: event.status },
-        after: { status: "locked", runId: active.id, desks, tokensIssued: issued.data.length },
-      });
-      return ok({ eventId: event.id, desks, tokensIssued: issued.data.length });
+  return inEventTransaction(db, event.id, "edit", async (tx) => {
+    if (!(await advanceStatus(tx, event.id, event.status, "locked"))) throw new EventChangedError();
+    // Read again under the row lock: the active run or a withdrawal may have changed since.
+    const current = await findActiveRun(tx, event.id);
+    if (current?.id !== active.id) throw new EventChangedError();
+    const withdrawn = await countWithdrawnAppointments(tx, active.id);
+    if (withdrawn > 0) throw new Refused(fail("conflict", withdrawnLockMessage(withdrawn)));
+    const { after: desks } = await applyDesks(tx, event.id);
+    const issued = await issueTokensForEvent(tx, event.id);
+    // Throwing rolls the desk changes back; the event was loaded a moment ago so this cannot happen.
+    if (!issued.ok) throw new Error(issued.error.message);
+    await recordAudit(tx, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "schedule.lock",
+      entityType: "event",
+      entityId: event.id,
+      before: { status: event.status },
+      after: { status: "locked", runId: active.id, desks, tokensIssued: issued.data.length },
     });
-  } catch (error) {
-    if (error instanceof Refused) return error.result;
-    throw error;
-  }
+    return { eventId: event.id, desks, tokensIssued: issued.data.length };
+  });
 }
 
 /**
@@ -172,30 +155,23 @@ export async function unlockSchedule(
   if (reason === "") return fail("validation", "Say why you are unlocking.", { reason: ["Required."] });
   const event = await getEvent(input.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  if (event.status !== "locked" && event.status !== "sent") {
-    return fail("validation", "The schedule is not locked.");
-  }
-  try {
-    return await inTransaction(db, async (tx) => {
-      if (!(await advanceStatus(tx, event.id, event.status, "matched"))) throw new EventChangedError();
-      // Checked under the row lock the status change took; throwing rolls it back.
-      if (await hasSendInProgress(tx, event.id)) throw new Refused(fail("conflict", SEND_IN_PROGRESS_MESSAGE));
-      await recordAudit(tx, {
-        eventId: event.id,
-        adminId: input.adminId,
-        action: "schedule.unlock",
-        entityType: "event",
-        entityId: event.id,
-        before: { status: event.status },
-        after: { status: "matched" },
-        note: reason,
-      });
-      return ok({ eventId: event.id });
+  if (!eventAllows("locked", event.status)) return fail("validation", "The schedule is not locked.");
+  return inEventTransaction(db, event.id, "locked", async (tx) => {
+    if (!(await advanceStatus(tx, event.id, event.status, "matched"))) throw new EventChangedError();
+    // Checked under the row lock the status change took; throwing rolls it back.
+    if (await hasSendInProgress(tx, event.id)) throw new Refused(fail("conflict", SEND_IN_PROGRESS_MESSAGE));
+    await recordAudit(tx, {
+      eventId: event.id,
+      adminId: input.adminId,
+      action: "schedule.unlock",
+      entityType: "event",
+      entityId: event.id,
+      before: { status: event.status },
+      after: { status: "matched" },
+      note: reason,
     });
-  } catch (error) {
-    if (error instanceof Refused) return error.result;
-    throw error;
-  }
+    return { eventId: event.id };
+  });
 }
 
 /** Re-runs the D17 desk rule while unlocked. Overrides are kept. */
@@ -207,8 +183,7 @@ export async function reassignDesks(
   if (!event) return fail("not_found", "That event no longer exists.");
   const locked = assertEventEditable(event);
   if (locked) return locked;
-  return inTransaction(db, async (tx) => {
-    await claimEditableEvent(tx, event.id);
+  return inEventTransaction(db, event.id, "edit", async (tx) => {
     const { before, after } = await applyDesks(tx, event.id);
     await recordAudit(tx, {
       eventId: event.id,
@@ -219,6 +194,6 @@ export async function reassignDesks(
       before: { desks: before },
       after: { desks: after },
     });
-    return ok({ eventId: event.id, desks: after });
+    return { eventId: event.id, desks: after };
   });
 }

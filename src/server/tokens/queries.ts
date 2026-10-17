@@ -5,7 +5,7 @@ import { ok, type ActionResult } from "@/lib/errors";
 import { compareNames } from "@/lib/names";
 import { decryptToken } from "@/lib/tokens";
 import { displayNameFor } from "@/server/roster/display-name";
-import { claimUnarchivedEvent } from "@/server/events/editable";
+import { claimEvent } from "@/server/events/editable";
 import { contactKey, isNewerToken, linkFor, linksForContacts, listContacts } from "./tokens";
 
 export type TokenStatus = "active" | "revoked" | "expired";
@@ -105,7 +105,7 @@ export async function issueAccessList(db: Db, eventId: string): Promise<ActionRe
   const contacts = await listContacts(db, eventId);
   const issued = await db.transaction(async (tx) => {
     // Archive refuses link changes (D89); the row lock keeps one from landing mid-issue.
-    if (!(await claimUnarchivedEvent(tx, eventId))) return ok(null);
+    if (!(await claimEvent(tx, eventId, "unarchived"))) return ok(null);
     return linksForContacts(tx, eventId, contacts, { issueMissing: true });
   });
   if (!issued.ok) return issued;

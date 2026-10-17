@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, like } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens, admins, appointments, auditEvents, events, matchRuns, rankings, suppliers } from "@/db/schema";
+import { accessTokens, admins, appointments, auditEvents, events, matchRuns, participants, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
@@ -77,6 +77,23 @@ describe("participants", () => {
     const result = await upsertParticipant(db, { eventId, data: { ...ann, firstName: "Other" }, adminId });
     expect(result).toMatchObject({ ok: false, error: { code: "conflict", fieldErrors: { email: expect.any(Array) } } });
     expect(await listParticipants(eventId, {}, db)).toHaveLength(1);
+  });
+
+  it("checks the email under the event lock, so a participant added meanwhile is seen", async () => {
+    const event = await createEvent("Participant email race");
+    const between = async () => {
+      await db.insert(participants).values({ eventId: event, email: ann.email, firstName: "Ann", lastName: "Lee" });
+    };
+    const result = await upsertParticipant(raceBeforeTransaction(db, between), { eventId: event, data: ann, adminId });
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: "Another participant in this event already uses that email.",
+        fieldErrors: { email: ["Already used by another participant."] },
+      },
+    });
+    expect(await listParticipants(event, {}, db)).toHaveLength(1);
   });
 
   it("allows the same email in another event", async () => {

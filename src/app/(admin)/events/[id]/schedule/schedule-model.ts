@@ -1,4 +1,5 @@
 import type { QualityStats } from "@/engine";
+import { eventAllows } from "@/lib/event-gates";
 import { compareNames } from "@/lib/names";
 import type {
   ScheduleAppointment,
@@ -536,11 +537,9 @@ export type WorkspaceData = {
   manualChanges: number;
 };
 
-const LOCKED_STATUSES: ReadonlySet<WorkspaceData["status"]> = new Set(["locked", "sent", "archived"]);
-
 /** Locked, sent, and archived events refuse edits (AGENTS.md invariants). */
 export function isLockedStatus(status: WorkspaceData["status"]): boolean {
-  return LOCKED_STATUSES.has(status);
+  return !eventAllows("edit", status);
 }
 
 /** One schedule edit, before it is saved: what the preview panel and the remove confirm describe. */

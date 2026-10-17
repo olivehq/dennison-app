@@ -12,8 +12,8 @@ import {
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
+import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
 import { issueTokenForContact, tokenExpiry } from "@/server/tokens/tokens";
-import { inEditableTransaction, loadEditableEvent, Refused } from "./editable";
 
 type Actor = { adminId: string };
 
@@ -139,15 +139,19 @@ export async function upsertParticipant(
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
     return fail("not_found", "That participant no longer exists.");
   }
-  if (await emailTaken(db, input.eventId, input.data.email, existing?.id)) {
-    return fail("conflict", "Another participant in this event already uses that email.", {
-      email: ["Already used by another participant."],
-    });
-  }
 
   const values = participantValues(input.data);
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
-    if (!existing) {
+  const saved = await inEventTransaction(db, input.eventId, "edit", async (tx, event) => {
+    const current = existing ? await lockParticipant(tx, existing.id) : null;
+    // Under the event row lock, so two saves can't both see the email free.
+    if (await emailTaken(tx, input.eventId, input.data.email, current?.id)) {
+      throw new Refused(
+        fail("conflict", "Another participant in this event already uses that email.", {
+          email: ["Already used by another participant."],
+        }),
+      );
+    }
+    if (!current) {
       const [row] = await tx.insert(participants).values({ eventId: input.eventId, ...values }).returning();
       await recordAudit(tx, {
         eventId: input.eventId,
@@ -159,11 +163,10 @@ export async function upsertParticipant(
       });
       return row;
     }
-    const current = await lockParticipant(tx, existing.id);
     const [row] = await tx.update(participants).set(values).where(eq(participants.id, current.id)).returning();
     const emailChanged = current.email !== row.email;
     const links = emailChanged
-      ? await replaceLinksForChangedEmail(tx, loaded.event, {
+      ? await replaceLinksForChangedEmail(tx, event, {
           entityId: row.id,
           contacts: [{ contactType: "buyer", hasEmail: Boolean(row.email) }],
         })
@@ -197,7 +200,7 @@ async function setParticipantStatus(
 
   // Rankings, appointments, and links stay; the schedule flags the gaps and
   // restore reverses it. Neither withdraw nor restore touches links (D130).
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     // Compare-and-set on the status read, so a double click audits once.
     const [row] = await tx
       .update(participants)
@@ -237,7 +240,7 @@ export async function setBiztechOptIn(
   if (!loaded.ok) return loaded.error;
   if (existing.biztechOptIn === input.optIn) return ok({ id: existing.id });
 
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     await tx.update(participants).set({ biztechOptIn: input.optIn }).where(eq(participants.id, existing.id));
     await recordAudit(tx, {
       eventId: existing.eventId,
@@ -342,7 +345,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
     return fail("not_found", "That supplier no longer exists.");
   }
 
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+  const saved = await inEventTransaction(db, input.eventId, "edit", async (tx, event) => {
     const current = existing ? await lockSupplier(tx, existing.id) : null;
     // Under the event row lock, so two saves can't both see the name free.
     if (await nameTaken(tx, input.eventId, input.data.name, current?.id)) {
@@ -373,7 +376,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
     }
     const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, current.id)).returning();
     const contactTypes = changedContacts(current, row);
-    const links = await replaceLinksForChangedEmail(tx, loaded.event, {
+    const links = await replaceLinksForChangedEmail(tx, event, {
       entityId: row.id,
       contacts: contactTypes.map((contactType) => ({
         contactType,
@@ -413,7 +416,7 @@ async function setSupplierStatus(
   if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     // A restored supplier can't share a desk: if another active supplier holds
     // its number now, the desk is cleared and lock assigns one again (D17).
     let note: string | undefined;
@@ -473,7 +476,7 @@ export async function setSupplierDesk(
   if (!loaded.ok) return loaded.error;
 
   const values = { deskNumber: input.deskNumber, deskOverride: input.deskNumber !== null };
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
+  const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {
     const taken = await deskTakenBy(tx, existing.eventId, input.deskNumber, existing.id);
     if (taken) throw new Refused(deskConflict(input.deskNumber as number, taken));
     await tx.update(suppliers).set(values).where(eq(suppliers.id, existing.id));

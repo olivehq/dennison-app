@@ -37,6 +37,7 @@ import { Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger } 
 import { Toggle } from "@/components/ui/toggle";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { eventAllows } from "@/lib/event-gates";
 import { nowInTimezone } from "@/lib/time";
 import { eventSectionHref } from "../event-sections";
 import { ClockStrip } from "./clock-strip";
@@ -190,7 +191,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
   const targets = settings;
   const topN = settings.mutualTopN;
   const locked = isLockedStatus(data.status);
-  const canUnlock = data.status === "locked" || data.status === "sent";
+  const canUnlock = eventAllows("locked", data.status);
 
   // URL state
   const [urlState, updateUrl, urlRef] = useWorkspaceUrlState(slots);

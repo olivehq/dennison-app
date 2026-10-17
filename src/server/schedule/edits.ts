@@ -33,12 +33,7 @@ import {
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { compareNames } from "@/lib/names";
-import {
-  assertEventEditable,
-  claimEditableEvent,
-  EVENT_CHANGED_MESSAGE,
-  EventChangedError,
-} from "@/server/events/editable";
+import { assertEventEditable, inEventTransaction, Refused } from "@/server/events/editable";
 import { isUniqueViolation } from "@/server/matching/common";
 import {
   loadPeople,
@@ -277,13 +272,6 @@ function affectedPeople(
 
 class VersionConflict extends Error {}
 
-/** Thrown inside the edit's transaction to roll back and return `result` (a check that failed under the lock). */
-class EditRefused extends Error {
-  constructor(readonly result: ActionResult<never>) {
-    super(result.ok ? "" : result.error.message);
-  }
-}
-
 type Change = {
   deleteIds: string[];
   insert: Omit<EngineAppointment, "source"> | null;
@@ -345,14 +333,13 @@ async function commit(
   options: EditOptions,
 ): Promise<ActionResult<EditResult>> {
   try {
-    const saved = await db.transaction(async (tx) => {
-      await claimEditableEvent(tx, read.eventId);
+    const saved = await inEventTransaction(db, read.eventId, "edit", async (tx) => {
       const loaded = await loadContext(tx, read.id);
-      if (!loaded.ok) throw new EditRefused(loaded);
+      if (!loaded.ok) throw new Refused(loaded);
       const ctx = loaded.data;
       if (ctx.run.version !== read.version) throw new VersionConflict();
       const planned = planner(ctx);
-      if (!planned.ok) throw new EditRefused(planned);
+      if (!planned.ok) throw new Refused(planned);
       const { wouldBe, change } = planned.data;
       const stats = computeStats(wouldBe, {
         settings: ctx.event.settings,
@@ -403,10 +390,9 @@ async function commit(
         affected: affectedPeople(ctx, wouldBe, change.touched),
       };
     });
-    return ok({ runId: read.id, eventId: read.eventId, ...saved });
+    if (!saved.ok) return saved;
+    return ok({ runId: read.id, eventId: read.eventId, ...saved.data });
   } catch (error) {
-    if (error instanceof EditRefused) return error.result;
-    if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     if (error instanceof VersionConflict) {
       const current = await findRun(db, read.id);
       return fail("conflict", current?.isActive ? VERSION_CONFLICT_MESSAGE : NOT_ACTIVE_RUN_MESSAGE);

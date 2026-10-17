@@ -15,6 +15,7 @@ import {
 } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { recordAudit } from "@/server/audit/audit";
+import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { raceBeforeTransaction, recordQueries } from "@/server/events/test-race";
 import { clearLoggedEmails, getLoggedEmails, isEmailConfigured, sendBatch, sendEmail } from "@/lib/email/adapter";
@@ -1047,7 +1048,7 @@ describe("campaign writes on an event archived mid-action", () => {
     if (!draft.ok) throw new Error(draft.error.message);
     const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, other.eventId));
     const unarchive = () => db.update(events).set({ status: "matched" }).where(eq(events.id, other.eventId));
-    const refused = { ok: false, error: { code: "locked", message: "This event is archived." } };
+    const refused = { ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } };
     const campaignCount = async () =>
       (await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, other.eventId))).length;
     const auditCount = async () =>
