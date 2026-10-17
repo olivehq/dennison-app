@@ -19,7 +19,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ActionResult } from "@/lib/errors";
 import type { EntityType, ImportKind, ImportState, UnknownName } from "@/lib/schemas/import";
-import { saveAliasAction, saveAliasesAction } from "@/server/imports/actions";
+import { saveAliasesAction } from "@/server/imports/actions";
 import { plural } from "../import-labels";
 
 export type EntityOption = { value: string; label: string; hint?: string };
@@ -89,7 +89,10 @@ function MappingRow({
   const save = () => {
     if (!selected) return;
     startTransition(async () => {
-      const result = await saveAliasAction({ eventId, raw: name.raw, entityType: name.entityType, entityId: selected.value });
+      const result = await saveAliasesAction({
+        eventId,
+        aliases: [{ raw: name.raw, entityType: name.entityType, entityId: selected.value }],
+      });
       if (!result.ok) {
         toast.error(result.error.message);
         return;

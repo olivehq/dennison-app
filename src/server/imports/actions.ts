@@ -8,7 +8,6 @@ import {
   IMPORT_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
   saveAliasesSchema,
-  saveAliasSchema,
   uploadImportSchema,
   type ImportKind,
   type ImportState,
@@ -19,7 +18,6 @@ import {
   createImport,
   deleteImportRecord,
   ignoreImport,
-  saveAlias,
   saveAliases,
   stopIgnoringImport,
   type ApplySummary,
@@ -78,18 +76,7 @@ export async function uploadImport(
   return { ok: true, data: { importId: result.data.importId, state: result.data.state } };
 }
 
-export async function saveAliasAction(
-  input: unknown,
-): Promise<ActionResult<{ aliasId: string; imports: { importId: string; kind: ImportKind; state: ImportState }[] }>> {
-  const actor = await requireAdmin();
-  const parsed = saveAliasSchema.safeParse(input);
-  if (!parsed.success) return fromZod(parsed.error);
-  const result = await saveAlias(getDb(), { ...parsed.data, adminId: actor.id });
-  if (result.ok) revalidateEvent(parsed.data.eventId);
-  return result;
-}
-
-/** Saves several mappings at once ("Save all suggested") and re-validates pending imports once. */
+/** Saves one or more name mappings ("Save all suggested" sends many) and re-validates pending imports once. */
 export async function saveAliasesAction(
   input: unknown,
 ): Promise<ActionResult<{ aliasIds: string[]; imports: { importId: string; kind: ImportKind; state: ImportState }[] }>> {

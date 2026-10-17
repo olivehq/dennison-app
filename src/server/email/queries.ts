@@ -17,15 +17,6 @@ import { scheduleChangeState, type ScheduleChangeState } from "./schedule-hash";
 
 /** Reads for the emails pages, the roster "changed since last email" column, and the overview. */
 
-export const MESSAGE_STATUSES: readonly EmailMessageStatus[] = [
-  "queued",
-  "sent",
-  "delivered",
-  "bounced",
-  "complained",
-  "failed",
-];
-
 export type StatusCounts = Record<EmailMessageStatus, number> & { total: number };
 
 function emptyCounts(): StatusCounts {

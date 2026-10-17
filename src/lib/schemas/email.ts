@@ -27,12 +27,6 @@ export function recipientKey(contactType: RecipientContactType, entityId: string
   return `${contactType}:${entityId}`;
 }
 
-export function parseRecipientKey(key: string): { contactType: RecipientContactType; entityId: string } | null {
-  if (!recipientKeySchema.safeParse(key).success) return null;
-  const [contactType, entityId] = key.split(":") as [RecipientContactType, string];
-  return { contactType, entityId: entityId.toLowerCase() };
-}
-
 const address = z.string().trim().toLowerCase().pipe(z.email("Enter a valid email address."));
 
 /** The editable fields of a campaign. `replyTo` is required so replies reach a person (scope 2.7). */

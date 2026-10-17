@@ -5,7 +5,6 @@ import { emailMessages, type ContactType, type EmailMessageStatus } from "@/db/s
 import { recipientKey } from "@/lib/schemas/email";
 import {
   loadActiveSchedule,
-  loadPersonSchedule,
   participantSlots,
   type ParticipantSlot,
   type PersonRef,
@@ -59,21 +58,10 @@ function personKey(ref: PersonRef): string {
   return `${ref.type}:${ref.id}`;
 }
 
-/** The hash of one contact's current schedule, or null when the person does not exist. */
-export async function scheduleHashFor(
-  db: Db,
-  eventId: string,
-  contactType: ContactType,
-  entityId: string,
-): Promise<string | null> {
-  const schedule = await loadPersonSchedule(db, eventId, personRef(contactType, entityId));
-  return schedule ? hashParticipantSlots(schedule.slots) : null;
-}
-
 /**
  * Current hashes for every buyer and supplier of the event, keyed by
  * "buyer:<id>" or "supplier:<id>". One read of the active schedule instead of
- * one per person; the result matches `scheduleHashFor` (tested).
+ * one per person.
  */
 export async function scheduleHashesForEvent(db: Db, eventId: string): Promise<Map<string, string>> {
   const schedule = await loadActiveSchedule(db, eventId);
@@ -128,8 +116,4 @@ export async function scheduleChangeState(db: Db, eventId: string): Promise<Sche
 /** Recipient keys ("buyer:<id>", "supplier_admin:<id>", ...) whose schedule changed since their last email (D13). */
 export async function changedSinceLastSend(db: Db, eventId: string): Promise<Set<string>> {
   return (await scheduleChangeState(db, eventId)).changed;
-}
-
-export async function countChangedSinceLastSend(db: Db, eventId: string): Promise<number> {
-  return (await changedSinceLastSend(db, eventId)).size;
 }

@@ -171,27 +171,6 @@ export const templates: Record<ImportKind, ImportTemplate> = {
   },
 };
 
-export type TemplateSummary = {
-  kind: ImportKind;
-  title: string;
-  description: string;
-  formats: readonly ImportFormat[];
-  columns: { header: string; required: boolean; description: string }[];
-};
-
-/** Serialisable description of every template for the upload cards. */
-export const templateSummary: TemplateSummary[] = Object.values(templates).map((template) => ({
-  kind: template.kind,
-  title: template.title,
-  description: template.description,
-  formats: template.formats,
-  columns: template.columns.map(({ header, required, description }) => ({
-    header,
-    required,
-    description,
-  })),
-}));
-
 export const CHOICE_HEADER = /^choice\s*#?\s*(\d+)$/i;
 
 const MATRIX_CORNER_HEADERS = new Set([

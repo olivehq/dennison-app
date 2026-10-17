@@ -87,19 +87,6 @@ export async function wasParticipantDataDeleted(eventId: string, db: Db = getDb(
   return row !== undefined;
 }
 
-export class EventNotFoundError extends Error {
-  constructor(id: string) {
-    super(`Event ${id} not found`);
-    this.name = "EventNotFoundError";
-  }
-}
-
-export async function getEventOrThrow(id: string, db: Db = getDb()): Promise<Event> {
-  const event = await getEvent(id, db);
-  if (!event) throw new EventNotFoundError(id);
-  return event;
-}
-
 export type EventCounts = {
   participants: number;
   suppliers: number;

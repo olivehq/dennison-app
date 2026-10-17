@@ -271,8 +271,6 @@ async function revalidatePending(db: Db, eventId: string): Promise<{ importId: s
 
 export type AliasMapping = { raw: string; entityType: EntityType; entityId: string };
 
-export type SaveAliasInput = AliasMapping & { eventId: string; adminId: string };
-
 export type SaveAliasesInput = { eventId: string; aliases: AliasMapping[]; adminId: string };
 
 type RevalidatedImport = { importId: string; kind: ImportKind; state: ImportState };
@@ -375,17 +373,6 @@ export async function saveAliases(
   if (!saved.ok) return saved;
   const revalidated = await revalidatePending(db, input.eventId);
   return ok({ aliasIds: saved.data, imports: revalidated });
-}
-
-/** Maps one raw name to an entity (source manual) and re-validates every pending import of the event. */
-export async function saveAlias(
-  db: Db,
-  input: SaveAliasInput,
-): Promise<ActionResult<{ aliasId: string; imports: RevalidatedImport[] }>> {
-  const { eventId, adminId, ...alias } = input;
-  const result = await saveAliases(db, { eventId, adminId, aliases: [alias] });
-  if (!result.ok) return result;
-  return ok({ aliasId: result.data.aliasIds[0], imports: result.data.imports });
 }
 
 // ---------------------------------------------------------------------------

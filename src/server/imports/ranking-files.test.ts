@@ -14,7 +14,7 @@ import {
   createImport,
   deleteImportRecord,
   ignoreImport,
-  saveAlias,
+  saveAliases,
   stopIgnoringImport,
 } from "./imports";
 import { matchingReadiness } from "@/server/matching/readiness";
@@ -168,7 +168,7 @@ describe("supplier ranking choices: email, then company (feedback item 1)", () =
     const pending = await expectOk(
       await upload(roster, "supplier_rankings", listSheet([{ name: "20 Hotel", choices: ["GHI Association"] }, { name: "30 Hotel", choices: ["GHI Association"] }])),
     );
-    await expectOk(await saveAlias(db, { eventId: roster.eventId, raw: "GHI Association", entityType: "buyer", entityId: david1, adminId }));
+    await expectOk(await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw: "GHI Association", entityType: "buyer", entityId: david1 }] }));
     const detail = await getImport(pending.importId, db);
     expect(detail?.state).toBe("ready");
     expect(detail?.report?.warnings).toContainEqual({
@@ -193,7 +193,7 @@ describe("supplier ranking choices: email, then company (feedback item 1)", () =
     const pending = await expectOk(
       await upload(roster, "supplier_rankings", listSheet([{ name: "20 Hotel", choices: ["GHI Association"] }])),
     );
-    await expectOk(await saveAlias(db, { eventId: roster.eventId, raw: "GHI Association", entityType: "buyer", entityId: david1, adminId }));
+    await expectOk(await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw: "GHI Association", entityType: "buyer", entityId: david1 }] }));
     const detail = await getImport(pending.importId, db);
     const warning = detail?.report?.warnings.find((w) => w.message.includes("GHI Association"));
     expect(warning?.row).toBe(2);
@@ -215,7 +215,7 @@ describe("mapping an email text or a company text (review findings)", () => {
     const pending = await expectOk(await upload(roster, "supplier_rankings", listSheet([{ name: "10 Hotel", choices: [raw] }])));
     expect(pending.state).toBe("needs_mapping");
     const saved = await expectOk(
-      await saveAlias(db, { eventId: roster.eventId, raw, entityType: "buyer", entityId: roster.ids["jdoe@example.com"], adminId }),
+      await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw, entityType: "buyer", entityId: roster.ids["jdoe@example.com"] }] }),
     );
     expect(saved.imports).toContainEqual({ importId: pending.importId, kind: "supplier_rankings", state: "ready" });
     const detail = await getImport(pending.importId, db);
@@ -239,10 +239,10 @@ describe("mapping an email text or a company text (review findings)", () => {
 
   it("a plain unknown name still gets a cross-year alias, a company does not", async () => {
     await expectOk(
-      await saveAlias(db, { eventId: roster.eventId, raw: "Janie D.", entityType: "buyer", entityId: roster.ids["jdoe@example.com"], adminId }),
+      await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw: "Janie D.", entityType: "buyer", entityId: roster.ids["jdoe@example.com"] }] }),
     );
     await expectOk(
-      await saveAlias(db, { eventId: roster.eventId, raw: "GHI Association", entityType: "buyer", entityId: roster.ids["dsmith1@example.com"], adminId }),
+      await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw: "GHI Association", entityType: "buyer", entityId: roster.ids["dsmith1@example.com"] }] }),
     );
     const globalFor = (raw: string) =>
       db.select().from(nameAliases).where(and(isNull(nameAliases.eventId), eq(nameAliases.rawText, raw)));
@@ -411,7 +411,7 @@ describe("ignoring a file (feedback item 4)", () => {
     expect(await ignoreImport(db, { importId: pending, adminId })).toMatchObject({ ok: false, error: { code: "conflict" } });
     // A mapping re-validates pending imports; the ignored one is left alone.
     const saved = await expectOk(
-      await saveAlias(db, { eventId: roster.eventId, raw: "Biz 2", entityType: "supplier", entityId: roster.ids["Biz Two"], adminId }),
+      await saveAliases(db, { eventId: roster.eventId, adminId, aliases: [{ raw: "Biz 2", entityType: "supplier", entityId: roster.ids["Biz Two"] }] }),
     );
     expect(saved.imports.map((entry) => entry.importId)).not.toContain(pending);
     expect((await getImport(pending, db))?.status).toBe("ignored");

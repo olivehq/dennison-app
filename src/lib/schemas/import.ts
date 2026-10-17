@@ -108,13 +108,6 @@ export const uploadImportSchema = z.object({
   kind: importKindSchema,
 });
 
-export const saveAliasSchema = z.object({
-  eventId: z.uuid(),
-  raw: z.string().trim().min(1, "The raw name is empty."),
-  entityType: entityTypeSchema,
-  entityId: z.uuid(),
-});
-
 export const saveAliasesSchema = z.object({
   eventId: z.uuid(),
   aliases: z
@@ -142,7 +135,6 @@ export type NameSuggestion = z.infer<typeof nameSuggestionSchema>;
 export type UnknownName = z.infer<typeof unknownNameSchema>;
 export type ImportValidationReport = z.infer<typeof importValidationReportSchema>;
 export type UploadImportInput = z.infer<typeof uploadImportSchema>;
-export type SaveAliasInput = z.infer<typeof saveAliasSchema>;
 export type SaveAliasesInput = z.infer<typeof saveAliasesSchema>;
 
 export function isRankingKind(kind: ImportKind): kind is RankingKind {

@@ -12,8 +12,6 @@ import { displayNameFor, getParticipant, getSupplier, listParticipants, listSupp
 import {
   restoreParticipant,
   restoreSupplier,
-  setBiztechOptIn,
-  setSupplierDesk,
   upsertParticipant,
   upsertSupplier,
   withdrawParticipant,
@@ -93,9 +91,9 @@ describe("participants", () => {
       tokenHash: "hash-ann",
       expiresAt: new Date(Date.now() + 86_400_000),
     });
-    const sameEmail = await upsertParticipant(db, { eventId, id: annId, data: { ...ann, title: "VP" }, adminId });
+    const sameEmail = await upsertParticipant(db, { eventId, id: annId, data: { ...ann, title: "VP", biztechOptIn: true }, adminId });
     expect(sameEmail.ok).toBe(true);
-    expect((await getParticipant(annId, db))?.title).toBe("VP");
+    expect(await getParticipant(annId, db)).toMatchObject({ title: "VP", biztechOptIn: true });
     const [kept] = await db.select().from(accessTokens).where(eq(accessTokens.tokenHash, "hash-ann"));
     expect(kept.revokedAt).toBeNull();
 
@@ -146,12 +144,6 @@ describe("participants", () => {
     expect(audit.filter((a) => a.action === "participant.withdraw")).toHaveLength(1);
   });
 
-  it("flips biztech opt-in", async () => {
-    const result = await setBiztechOptIn(db, { id: annId, optIn: true, adminId });
-    expect(result.ok).toBe(true);
-    expect((await getParticipant(annId, db))?.biztechOptIn).toBe(true);
-  });
-
   it("reports not_found for unknown ids", async () => {
     const missing = "00000000-0000-0000-0000-000000000000";
     expect(await withdrawParticipant(db, { id: missing, adminId })).toMatchObject({ ok: false, error: { code: "not_found" } });
@@ -200,22 +192,15 @@ describe("suppliers", () => {
     expect(tokens.find((t) => t.tokenHash === "hash-attendee")?.revokedAt).not.toBeNull();
   });
 
-  it("sets and clears a desk override and refuses a taken desk", async () => {
-    const other = await upsertSupplier(db, { eventId, data: { ...hyatt, name: "Visit SLO CAL", adminContact: null, attendeeContact: null }, adminId });
-    if (!other.ok) throw new Error("setup");
-    expect((await setSupplierDesk(db, { id: other.data.id, deskNumber: 4, adminId })).ok).toBe(true);
-
-    const taken = await setSupplierDesk(db, { id: hyattId, deskNumber: 4, adminId });
-    expect(taken).toMatchObject({ ok: false, error: { code: "conflict", fieldErrors: { deskNumber: expect.any(Array) } } });
-
-    expect((await setSupplierDesk(db, { id: hyattId, deskNumber: 7, adminId })).ok).toBe(true);
-    expect(await getSupplier(hyattId, db)).toMatchObject({ deskNumber: 7, deskOverride: true });
-    expect((await setSupplierDesk(db, { id: hyattId, deskNumber: null, adminId })).ok).toBe(true);
-    expect(await getSupplier(hyattId, db)).toMatchObject({ deskNumber: null, deskOverride: false });
-  });
-
   it("saves a desk with the supplier: a new number is an override, the same number is left alone", async () => {
-    const [slo] = await listSuppliers(eventId, {}, db).then((rows) => rows.filter((s) => s.name === "Visit SLO CAL"));
+    const created = await upsertSupplier(db, {
+      eventId,
+      data: { ...hyatt, name: "Visit SLO CAL", adminContact: null, attendeeContact: null, deskNumber: 4 },
+      adminId,
+    });
+    if (!created.ok) throw new Error("setup");
+    const slo = { id: created.data.id };
+    expect(await getSupplier(slo.id, db)).toMatchObject({ deskNumber: 4, deskOverride: true });
     const taken = await upsertSupplier(db, { eventId, id: hyattId, data: { ...hyatt, deskNumber: 4 }, adminId });
     expect(taken).toMatchObject({ ok: false, error: { code: "conflict", fieldErrors: { deskNumber: expect.any(Array) } } });
 
@@ -255,7 +240,6 @@ describe("locked events", () => {
       upsertParticipant(db, { eventId: lockedEvent, data: ann, adminId }),
       upsertSupplier(db, { eventId: lockedEvent, data: { name: "New", type: "hotel", deskOverride: false }, adminId }),
       withdrawSupplier(db, { id: person.id, adminId }),
-      setSupplierDesk(db, { id: person.id, deskNumber: 1, adminId }),
     ]);
     for (const result of results) {
       expect(result).toMatchObject({ ok: false, error: { code: "locked" } });
@@ -283,8 +267,10 @@ describe("restoring a supplier whose desk was taken", () => {
       .values({ eventId: event, name: "Gone Inn", type: "hotel", deskNumber: 5, deskOverride: true })
       .returning();
     expect((await withdrawSupplier(db, { id: gone.id, adminId })).ok).toBe(true);
-    const [taker] = await db.insert(suppliers).values({ eventId: event, name: "New Inn", type: "hotel" }).returning();
-    expect((await setSupplierDesk(db, { id: taker.id, deskNumber: 5, adminId })).ok).toBe(true);
+    const [taker] = await db
+      .insert(suppliers)
+      .values({ eventId: event, name: "New Inn", type: "hotel", deskNumber: 5, deskOverride: true })
+      .returning();
 
     const note = "Desk 5 is now assigned to New Inn, so the desk was cleared. Reassign desks or set one by hand.";
     expect(await restoreSupplier(db, { id: gone.id, adminId })).toEqual({ ok: true, data: { id: gone.id, note } });
@@ -656,8 +642,7 @@ describe("withdraw and restore leave links alone (D130)", () => {
 
     await withdrawSupplier(db, { id: inn.id, adminId });
     expect((await revokeToken(db, admin.tokenId, adminId)).ok).toBe(true);
-    const [taker] = await db.insert(suppliers).values({ eventId: event, name: "Taker Inn", type: "hotel" }).returning();
-    expect((await setSupplierDesk(db, { id: taker.id, deskNumber: 3, adminId })).ok).toBe(true);
+    await db.insert(suppliers).values({ eventId: event, name: "Taker Inn", type: "hotel", deskNumber: 3, deskOverride: true });
     const restored = await restoreSupplier(db, { id: inn.id, adminId });
     expect(restored.ok).toBe(true);
 

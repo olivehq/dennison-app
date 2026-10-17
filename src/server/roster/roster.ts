@@ -227,32 +227,6 @@ export function restoreParticipant(db: Db, input: ByIdInput): Promise<ActionResu
   return setParticipantStatus(db, input, "active");
 }
 
-export async function setBiztechOptIn(
-  db: Db,
-  input: ByIdInput & { optIn: boolean },
-): Promise<ActionResult<{ id: string }>> {
-  const existing = await findParticipant(db, input.id);
-  if (!existing) return fail("not_found", "That participant no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
-  if (existing.biztechOptIn === input.optIn) return ok({ id: existing.id });
-
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
-    await tx.update(participants).set({ biztechOptIn: input.optIn }).where(eq(participants.id, existing.id));
-    await recordAudit(tx, {
-      eventId: existing.eventId,
-      adminId: input.adminId,
-      action: "participant.biztech_opt_in",
-      entityType: "participant",
-      entityId: existing.id,
-      before: { biztechOptIn: existing.biztechOptIn },
-      after: { biztechOptIn: input.optIn },
-    });
-  });
-  if (!done.ok) return done;
-  return ok({ id: existing.id });
-}
-
 // ---------------------------------------------------------------------------
 // Suppliers
 // ---------------------------------------------------------------------------
@@ -457,36 +431,4 @@ export function withdrawSupplier(db: Db, input: ByIdInput): Promise<ActionResult
 
 export function restoreSupplier(db: Db, input: ByIdInput): Promise<ActionResult<SupplierStatusResult>> {
   return setSupplierStatus(db, input, "active");
-}
-
-/**
- * A number sets a manual desk that survives lock-time assignment (D17);
- * null clears it so the alphabetical rule applies again.
- */
-export async function setSupplierDesk(
-  db: Db,
-  input: ByIdInput & { deskNumber: number | null },
-): Promise<ActionResult<{ id: string }>> {
-  const existing = await findSupplier(db, input.id);
-  if (!existing) return fail("not_found", "That supplier no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
-
-  const values = { deskNumber: input.deskNumber, deskOverride: input.deskNumber !== null };
-  const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
-    const taken = await deskTakenBy(tx, existing.eventId, input.deskNumber, existing.id);
-    if (taken) throw new Refused(deskConflict(input.deskNumber as number, taken));
-    await tx.update(suppliers).set(values).where(eq(suppliers.id, existing.id));
-    await recordAudit(tx, {
-      eventId: existing.eventId,
-      adminId: input.adminId,
-      action: "supplier.desk",
-      entityType: "supplier",
-      entityId: existing.id,
-      before: { deskNumber: existing.deskNumber, deskOverride: existing.deskOverride },
-      after: values,
-    });
-  });
-  if (!done.ok) return done;
-  return ok({ id: existing.id });
 }
