@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { Db } from "@/db/client";
+import { isUniqueViolation, type Db } from "@/db/client";
 import { appointments, events, matchRuns, participants, rankings } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
@@ -9,7 +9,6 @@ import { VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
 import { displayNameFor } from "@/server/roster/display-name";
 import { removeAppointment, replaceAppointment, swapCandidates } from "@/server/schedule/edits";
-import { isUniqueViolation, nameWarning } from "./common";
 import { loadRoster, toEngineBuyers, toEngineSuppliers } from "./input";
 import { activationPreviews, compareRunForPage, getActiveRun, getRun, listRuns } from "./queries";
 import {
@@ -18,6 +17,7 @@ import {
   compareRuns,
   diffAppointments,
   failRunsOlderThan,
+  nameWarning,
   RUN_ERROR_MESSAGE,
   RUN_TIMEOUT_MINUTES,
   setPinned,

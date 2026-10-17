@@ -86,3 +86,15 @@ export async function closeDb(): Promise<void> {
 export function isPgliteDb(db: Db): db is PgliteDatabase<Schema> {
   return "$client" in db && db.$client instanceof PGlite;
 }
+
+/**
+ * True for a Postgres unique violation (23505). Drizzle wraps driver errors,
+ * so the cause chain is walked; works for postgres.js and PGlite.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  for (let current = error, depth = 0; current instanceof Error && depth < 5; current = current.cause, depth++) {
+    if ((current as { code?: unknown }).code === "23505") return true;
+    if (/duplicate key value violates unique constraint/i.test(current.message)) return true;
+  }
+  return false;
+}

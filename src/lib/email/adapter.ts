@@ -18,7 +18,8 @@ type EmailAdapter = {
   sendBatch(messages: EmailMessage[]): Promise<SentEmail[]>;
 };
 
-const RESEND_BATCH_LIMIT = 100;
+/** Resend's batch API takes at most 100 messages per call. Callers chunk to this size. */
+export const RESEND_BATCH_LIMIT = 100;
 
 function toResendPayload(message: EmailMessage) {
   return {
@@ -45,16 +46,11 @@ function resendAdapter(apiKey: string): EmailAdapter {
       return { id: data.id };
     },
     async sendBatch(messages) {
-      const ids: SentEmail[] = [];
-      for (let i = 0; i < messages.length; i += RESEND_BATCH_LIMIT) {
-        const chunk = messages.slice(i, i + RESEND_BATCH_LIMIT);
-        const { data, error } = await resend.batch.send(chunk.map(toResendPayload));
-        if (error || !data) {
-          throw new Error(`Resend rejected the batch: ${error?.message ?? "no ids returned"}`);
-        }
-        ids.push(...data.data.map((item) => ({ id: item.id })));
+      const { data, error } = await resend.batch.send(messages.map(toResendPayload));
+      if (error || !data) {
+        throw new Error(`Resend rejected the batch: ${error?.message ?? "no ids returned"}`);
       }
-      return ids;
+      return data.data.map((item) => ({ id: item.id }));
     },
   };
 }
@@ -107,6 +103,9 @@ export function sendEmail(message: EmailMessage): Promise<SentEmail> {
 
 export function sendBatch(messages: EmailMessage[]): Promise<SentEmail[]> {
   if (messages.length === 0) return Promise.resolve([]);
+  if (messages.length > RESEND_BATCH_LIMIT) {
+    return Promise.reject(new Error(`A batch holds at most ${RESEND_BATCH_LIMIT} messages, got ${messages.length}.`));
+  }
   return getAdapter().sendBatch(messages);
 }
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearLoggedEmails, getLoggedEmails, recipientDomain, sendBatch, sendEmail } from "./adapter";
+import { clearLoggedEmails, getLoggedEmails, recipientDomain, RESEND_BATCH_LIMIT, sendBatch, sendEmail } from "./adapter";
 
 beforeEach(() => {
   clearLoggedEmails();
@@ -29,6 +29,13 @@ describe("email adapter (logger)", () => {
     expect(ids).toHaveLength(3);
     expect(getLoggedEmails().map((m) => m.subject)).toEqual(["a", "b", "c"]);
     expect(await sendBatch([])).toEqual([]);
+  });
+
+  it("refuses a batch over the provider limit instead of splitting it", async () => {
+    const message = { to: "a@example.com", from: "AW <schedule@example.com>", subject: "a", html: "<p></p>" };
+    const before = getLoggedEmails().length;
+    await expect(sendBatch(Array.from({ length: RESEND_BATCH_LIMIT + 1 }, () => message))).rejects.toThrow(/at most 100/);
+    expect(getLoggedEmails()).toHaveLength(before);
   });
 });
 

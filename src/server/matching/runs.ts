@@ -1,5 +1,5 @@
 import { and, eq, lt, max, sql } from "drizzle-orm";
-import type { Db } from "@/db/client";
+import { isUniqueViolation, type Db } from "@/db/client";
 import { appointments, events, matchRuns, type MatchRun } from "@/db/schema";
 import { buildRankingIndex, computeStats, runMatching, type Appointment, type QualityStats } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
@@ -17,7 +17,6 @@ import {
 import { getEvent } from "@/server/events/queries";
 import { cachePerRender } from "@/server/render-cache";
 import { advanceStatus } from "@/server/events/status";
-import { isUniqueViolation, nameWarning } from "./common";
 import {
   buildMatchInput,
   loadRoster,
@@ -27,6 +26,13 @@ import {
   type Roster,
 } from "./input";
 import { matchingReadiness } from "./readiness";
+
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** Replaces every database id in an engine warning with the person's display name. */
+export function nameWarning(warning: string, names: ReadonlyMap<string, string>): string {
+  return warning.replace(UUID_PATTERN, (id) => names.get(id.toLowerCase()) ?? id);
+}
 
 export type StartRunInput = {
   eventId: string;

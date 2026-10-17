@@ -1,6 +1,6 @@
 import { and, eq, or } from "drizzle-orm";
 import { z } from "zod";
-import type { Db } from "@/db/client";
+import { isUniqueViolation, type Db } from "@/db/client";
 import {
   appointments,
   auditEvents,
@@ -34,7 +34,6 @@ import {
 import { recordAudit } from "@/server/audit/audit";
 import { compareNames } from "@/lib/names";
 import { assertEventEditable, inEventTransaction, Refused } from "@/server/events/editable";
-import { isUniqueViolation } from "@/server/matching/common";
 import {
   loadPeople,
   loadRoster,

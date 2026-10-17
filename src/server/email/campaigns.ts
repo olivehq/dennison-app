@@ -11,7 +11,7 @@ import {
   type EmailMessageStatus,
   type Event,
 } from "@/db/schema";
-import { isEmailConfigured, sendBatch, sendEmail, type EmailMessage as OutgoingEmail } from "@/lib/email/adapter";
+import { isEmailConfigured, RESEND_BATCH_LIMIT, sendBatch, sendEmail, type EmailMessage as OutgoingEmail } from "@/lib/email/adapter";
 import { sanitizeEmailHtml } from "@/lib/email/sanitize-html";
 import { env } from "@/lib/env";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
@@ -30,10 +30,6 @@ import { hashForContact, scheduleHashesForEvent } from "./schedule-hash";
  * resend to bounced (scope 2.7). Every send goes through the email adapter;
  * nothing here logs a message body.
  */
-
-/** Resend's batch API takes at most 100 messages per call. */
-export const SEND_CHUNK_SIZE = 100;
-
 
 export const NOT_LOCKED_MESSAGE = "Lock the schedule before sending so every link is final.";
 
@@ -551,9 +547,9 @@ async function deliver(db: Db, campaign: EmailCampaign, recipients: Recipient[])
     log(`the status of ${ids.length} messages was not saved, so they stay queued: ${result.statusError}`);
   };
 
-  for (let start = 0; start < recipients.length; start += SEND_CHUNK_SIZE) {
-    const chunk = recipients.slice(start, start + SEND_CHUNK_SIZE);
-    const ids = rows.slice(start, start + SEND_CHUNK_SIZE).map((r) => r.id);
+  for (let start = 0; start < recipients.length; start += RESEND_BATCH_LIMIT) {
+    const chunk = recipients.slice(start, start + RESEND_BATCH_LIMIT);
+    const ids = rows.slice(start, start + RESEND_BATCH_LIMIT).map((r) => r.id);
     try {
       await db.update(emailMessages).set({ sentAt: new Date() }).where(inArray(emailMessages.id, ids));
     } catch (error) {
