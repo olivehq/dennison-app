@@ -1,4 +1,7 @@
+import type { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
 import type { Db } from "@/db/client";
+import * as schema from "@/db/schema";
 
 /**
  * Test helper for compare-and-set checks: a `Db` that runs `between` once,
@@ -20,4 +23,16 @@ export function raceBeforeTransaction(db: Db, between: () => Promise<unknown>, n
       return Reflect.get(target, property, receiver);
     },
   });
+}
+
+/**
+ * Test helper for lock order: a second handle on the same PGlite database that
+ * records every SQL statement it runs, in order, so a test can check which row
+ * a transaction locks first. Only for databases made by `createTestDb`.
+ */
+export function recordQueries(db: Db): { db: Db; queries: string[] } {
+  const queries: string[] = [];
+  const client = (db as unknown as { $client: PGlite }).$client;
+  const recorded = drizzle({ client, schema, logger: { logQuery: (query) => void queries.push(query) } });
+  return { db: recorded as unknown as Db, queries };
 }

@@ -24,7 +24,7 @@ export default async function TeamPage() {
       kind: "invite",
       name: invite.name,
       email: invite.email,
-      state: "invited",
+      state: invite.revoked ? "revoked" : "invited",
       expiresAt: invite.expiresAt,
       expired: invite.expired,
       isSelf: false,

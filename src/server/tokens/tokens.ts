@@ -1,9 +1,8 @@
-import { and, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
-  events,
   participants,
   suppliers,
   type AccessToken,
@@ -15,6 +14,7 @@ import { fail, ok, type ActionResult } from "@/lib/errors";
 import { endOfDayInTimezone } from "@/lib/time";
 import { decryptToken, encryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { recordAudit } from "@/server/audit/audit";
+import { claimUnarchivedEvent } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { displayNameFor } from "@/server/roster/display-name";
 
@@ -182,10 +182,22 @@ async function issueForContacts(
   return issued;
 }
 
+/** Each contact's newest token, keyed by `contactKey`. */
+function newestTokens(rows: AccessToken[]): Map<string, AccessToken> {
+  const newest = new Map<string, AccessToken>();
+  for (const row of rows) {
+    const key = contactKey(row);
+    if (isNewerToken(row, newest.get(key))) newest.set(key, row);
+  }
+  return newest;
+}
+
 /**
- * Creates a token for every contact that has no active one. Called at lock
- * time. Contacts that already hold a live token are left alone, so calling
- * this twice is safe. Returns only the newly issued plain tokens.
+ * Creates a token for every contact who never had one or whose newest token
+ * expired. Called at lock time. Contacts that already hold a live token are
+ * left alone, so calling this twice is safe. A contact whose newest token is
+ * revoked gets nothing (D137): only Regenerate gives them a link again.
+ * Returns only the newly issued plain tokens.
  */
 export async function issueTokensForEvent(db: Db, eventId: string): Promise<ActionResult<IssuedToken[]>> {
   const event = await getEvent(eventId, db);
@@ -195,79 +207,83 @@ export async function issueTokensForEvent(db: Db, eventId: string): Promise<Acti
     listContacts(db, eventId),
     db.select().from(accessTokens).where(eq(accessTokens.eventId, eventId)),
   ]);
-  const covered = new Set(existing.filter((t) => isActiveToken(t, now)).map(contactKey));
-  const missing = contacts.filter((c) => !covered.has(contactKey(c)));
+  const newest = newestTokens(existing);
+  const missing = contacts.filter((c) => {
+    const row = newest.get(contactKey(c));
+    return !row || (row.revokedAt === null && !isActiveToken(row, now));
+  });
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
   const issued = await db.transaction((tx) => issueForContacts(tx, eventId, missing, expiresAt));
   return ok(issued);
 }
 
-/**
- * Revokes every live token of the event and issues a fresh one per contact.
- * Used when plain links are needed again (the access CSV), since the
- * database only holds hashes. Older links stop working.
- */
-export async function rotateTokensForEvent(db: Db, eventId: string): Promise<ActionResult<IssuedToken[]>> {
-  const event = await getEvent(eventId, db);
-  if (!event) return fail("not_found", "That event no longer exists.");
-  const contacts = await listContacts(db, eventId);
-  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  const issued = await db.transaction(async (tx) => {
-    await tx
-      .update(accessTokens)
-      .set({ revokedAt: new Date() })
-      .where(and(eq(accessTokens.eventId, eventId), isNull(accessTokens.revokedAt)));
-    return issueForContacts(tx, eventId, contacts, expiresAt);
-  });
-  return ok(issued);
-}
-
 export type ContactLink = { tokenId: string; token: string };
 
+export type ContactLinks = {
+  /** Each contact's working link, keyed by `contactKey`. */
+  links: Map<string, ContactLink>;
+  /** Contacts whose newest link was revoked. They get no link here; Regenerate on the roster gives them one. */
+  revoked: Set<string>;
+  /** How many contacts got a new link from this call. Always 0 without `issueMissing`. */
+  issued: number;
+};
+
+/** True when `row` is a newer token for the contact than `current`; at an equal time a live token wins. */
+export function isNewerToken(
+  row: Pick<AccessToken, "createdAt" | "revokedAt">,
+  current: Pick<AccessToken, "createdAt" | "revokedAt"> | undefined,
+): boolean {
+  return (
+    !current ||
+    row.createdAt > current.createdAt ||
+    (row.createdAt.getTime() === current.createdAt.getTime() && row.revokedAt === null && current.revokedAt !== null)
+  );
+}
+
 /**
- * The current link of each contact, keyed by `contactKey` (D59). A contact's
- * newest active token is reused when its ciphertext decrypts. With
- * `issueMissing`, contacts with no usable token get a new one; an active token
- * from before D59 (no ciphertext) is revoked first, since its plain value is
- * gone. Without `issueMissing` nothing is written and those contacts are
- * absent from the map. Callers audit what they did with the links.
+ * The current link of each contact (D59), from the contact's newest token. A
+ * live token is reused when its ciphertext decrypts. A revoked newest token
+ * is respected: the contact is listed in `revoked` and never gets a new link
+ * here, since an admin revoked it on purpose. With `issueMissing`, a contact
+ * who never had a link or whose link expired gets a new one, and a live token
+ * from before D59 (no ciphertext) is revoked and replaced, since its plain
+ * value is gone. Without `issueMissing` nothing is written and those contacts
+ * are absent from `links`. Callers audit what they did with the links.
  */
 export async function linksForContacts(
   db: Db,
   eventId: string,
   contacts: Pick<ContactRef, "contactType" | "entityId">[],
   options: { issueMissing: boolean },
-): Promise<ActionResult<Map<string, ContactLink>>> {
+): Promise<ActionResult<ContactLinks>> {
   const event = await getEvent(eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
   const now = new Date();
-  const rows = await db
-    .select()
-    .from(accessTokens)
-    .where(eq(accessTokens.eventId, eventId))
-    .orderBy(desc(accessTokens.createdAt));
-  const newestActive = new Map<string, AccessToken>();
-  for (const row of rows) {
-    const key = contactKey(row);
-    if (isActiveToken(row, now) && !newestActive.has(key)) newestActive.set(key, row);
-  }
+  const rows = await db.select().from(accessTokens).where(eq(accessTokens.eventId, eventId));
+  const newest = newestTokens(rows);
 
   const links = new Map<string, ContactLink>();
+  const revoked = new Set<string>();
   const missing: Pick<ContactRef, "contactType" | "entityId">[] = [];
   const unreadable: string[] = [];
   for (const contact of contacts) {
     const key = contactKey(contact);
-    if (links.has(key)) continue;
-    const row = newestActive.get(key);
-    const token = row?.tokenCiphertext ? decryptToken(row.tokenCiphertext) : null;
-    if (row && token) {
-      links.set(key, { tokenId: row.id, token });
+    if (links.has(key) || revoked.has(key)) continue;
+    const row = newest.get(key);
+    if (row?.revokedAt) {
+      revoked.add(key);
+      continue;
+    }
+    const live = row && isActiveToken(row, now) ? row : undefined;
+    const token = live?.tokenCiphertext ? decryptToken(live.tokenCiphertext) : null;
+    if (live && token) {
+      links.set(key, { tokenId: live.id, token });
     } else {
       missing.push(contact);
-      if (row) unreadable.push(row.id);
+      if (live) unreadable.push(live.id);
     }
   }
-  if (!options.issueMissing || missing.length === 0) return ok(links);
+  if (!options.issueMissing || missing.length === 0) return ok({ links, revoked, issued: 0 });
 
   const expiresAt = tokenExpiry(event.eventDate, event.timezone);
   await db.transaction(async (tx) => {
@@ -284,7 +300,7 @@ export async function linksForContacts(
       links.set(contactKey(contact), { tokenId: issued.tokenId, token: issued.token });
     }
   });
-  return ok(links);
+  return ok({ links, revoked, issued: missing.length });
 }
 
 const tokenIdSchema = z.uuid();
@@ -334,12 +350,7 @@ async function recheckInTransaction(
   row: Pick<AccessToken, "eventId" | "contactType" | "entityId">,
   options: { allowWithdrawn: boolean },
 ): Promise<void> {
-  const [event] = await tx
-    .select({ id: events.id })
-    .from(events)
-    .where(and(eq(events.id, row.eventId), ne(events.status, "archived")))
-    .for("update");
-  if (!event) throw new LinkRefused(fail("locked", ARCHIVED_MESSAGE));
+  if (!(await claimUnarchivedEvent(tx, row.eventId))) throw new LinkRefused(fail("locked", ARCHIVED_MESSAGE));
   if (!options.allowWithdrawn && (await contactStatus(tx, row)) !== "active") {
     throw new LinkRefused(fail("conflict", WITHDRAWN_MESSAGE));
   }
@@ -449,11 +460,23 @@ export async function regenerateToken(
   return ok({ ...issued.data, previousTokenId: row.id, eventId: row.eventId });
 }
 
+export type VerifyTokenOptions = {
+  /**
+   * Runs the `lastViewedAt` write. `/s/[token]` passes Next's `after()` so the
+   * write happens once the page is sent. Without it the write is awaited.
+   */
+  defer?: (task: () => Promise<unknown>) => void;
+};
+
 /**
  * The contact behind a link, or null when the token is unknown, revoked, or
  * expired. Records the view. Used by `/s/[token]`.
  */
-export async function verifyToken(db: Db, token: string): Promise<VerifiedToken | null> {
+export async function verifyToken(
+  db: Db,
+  token: string,
+  options: VerifyTokenOptions = {},
+): Promise<VerifiedToken | null> {
   if (!token || token.length > 128) return null;
   const now = new Date();
   const [row] = await db
@@ -468,6 +491,10 @@ export async function verifyToken(db: Db, token: string): Promise<VerifiedToken 
     )
     .limit(1);
   if (!row) return null;
-  await db.update(accessTokens).set({ lastViewedAt: now }).where(eq(accessTokens.id, row.id));
+  const recordView = async () => {
+    await db.update(accessTokens).set({ lastViewedAt: now }).where(eq(accessTokens.id, row.id));
+  };
+  if (options.defer) options.defer(recordView);
+  else await recordView();
   return { tokenId: row.id, eventId: row.eventId, contactType: row.contactType, entityId: row.entityId };
 }

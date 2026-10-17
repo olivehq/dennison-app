@@ -30,8 +30,29 @@ export function describeAuthError(error: AuthClientError, fallback: string): str
   }
 }
 
-/** Only allow same-site paths as a post-login destination. */
-export function safeNextPath(next: string | undefined, fallback = "/events"): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return fallback;
-  return next;
+/** A stand-in origin: `next` must resolve against it and stay on it. */
+const SAME_SITE = "http://same-site.invalid";
+
+/**
+ * Only allow same-site paths as a post-login destination. A repeated `next`
+ * (an array), backslashes, control characters (also percent-encoded), and
+ * anything that resolves to another origin or a `//` path fall back.
+ */
+export function safeNextPath(next: string | string[] | undefined, fallback = "/events"): string {
+  if (typeof next !== "string" || !next.startsWith("/")) return fallback;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(next);
+  } catch {
+    return fallback;
+  }
+  if (decoded.startsWith("//") || /[\\\u0000-\u001f\u007f]/.test(decoded)) return fallback;
+  let url: URL;
+  try {
+    url = new URL(next, SAME_SITE);
+  } catch {
+    return fallback;
+  }
+  if (url.origin !== SAME_SITE || url.pathname.startsWith("//")) return fallback;
+  return url.pathname + url.search + url.hash;
 }

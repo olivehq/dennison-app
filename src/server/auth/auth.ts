@@ -2,13 +2,12 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { accounts, adminInvites, admins, rateLimits, sessions, verifications } from "@/db/schema";
+import { accounts, admins, rateLimits, sessions, verifications } from "@/db/schema";
 import { sendEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
-import { recordAudit } from "@/server/audit/audit";
-import { findPendingInviteByToken } from "./admins";
+import { acceptInvite, findPendingInviteByToken } from "./admins";
 
 const ONE_HOUR = 60 * 60;
 const TEN_MINUTES = 60 * 10;
@@ -98,22 +97,23 @@ export function createAuth(db: Db) {
             }
             return { data: { ...user, email, invitedBy: invite.invitedBy } };
           },
-          after: async (user) => {
+          // The before hook's read is not locked, so an invite revoked (or
+          // expired) after it could still be accepted. Accepting is a
+          // compare-and-set: it only takes an invite that is still pending
+          // and unexpired, waiting on a revoke that holds the row. If it
+          // fails, the user just created is deleted and sign-up fails. Better
+          // Auth runs this right after inserting the user, before it links the
+          // password or starts a session (transactions are off in the adapter).
+          after: async (user, context) => {
             const email = user.email.toLowerCase();
-            await db.transaction(async (tx) => {
-              await tx
-                .update(adminInvites)
-                .set({ acceptedAt: new Date() })
-                .where(and(eq(adminInvites.email, email), isNull(adminInvites.acceptedAt)));
-              await recordAudit(tx, {
-                eventId: null,
-                adminId: user.id,
-                action: "admin.accept_invite",
-                entityType: "admin",
-                entityId: user.id,
-                after: { email, name: user.name },
+            const token = (context?.body as { inviteToken?: unknown } | undefined)?.inviteToken;
+            const accepted = typeof token === "string" && (await acceptInvite(db, { email, token, user }));
+            if (!accepted) {
+              await db.delete(admins).where(eq(admins.id, user.id));
+              throw new APIError("FORBIDDEN", {
+                message: "This invitation was revoked or expired while you were signing up. Ask a colleague to send a new one.",
               });
-            });
+            }
           },
         },
       },

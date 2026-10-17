@@ -1,10 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import {
   appointments,
   auditEvents,
   matchRuns,
+  rankings,
   type Appointment,
   type Event,
   type MatchRun,
@@ -40,6 +41,7 @@ import {
 } from "@/server/events/editable";
 import { isUniqueViolation } from "@/server/matching/common";
 import {
+  loadPeople,
   loadRoster,
   toEngineBuyers,
   toEngineRankings,
@@ -98,7 +100,7 @@ export const UNDOABLE_ACTIONS: ReadonlySet<string> = new Set([
 type EditOptions = {
   /** Set by `undoAudit`: the row is recorded as `appointment.undo` pointing at this audit id. */
   undoOf?: string;
-  /** Set by `undoAudit` when it re-adds a removed appointment that was pinned. */
+  /** Set by `undoAudit` when it puts back an appointment that was pinned (after a remove or a replace). */
   pinned?: boolean;
 };
 
@@ -171,15 +173,27 @@ function checkSlot(ctx: EditContext, slot: number): ActionResult<never> | null {
   return fail("validation", `Slot ${slot} does not exist. This event has ${ctx.event.settings.slotCount} slots.`);
 }
 
-/** Scope 2.2 step 1 through the engine's `isEligible`, with a reason an admin can act on. */
-function checkEligible(ctx: EditContext, buyerId: string, supplierId: string): ActionResult<never> | null {
+/** Why an undo can't put a withdrawn person back, and where to restore them. */
+function undoWithdrawnMessage(name: string, page: "Participants" | "Suppliers"): string {
+  return `${name} has withdrawn, so this change can't be undone. Restore them on the ${page} page first, or leave the slot as it is.`;
+}
+
+/**
+ * Scope 2.2 step 1 through the engine's `isEligible`, with a reason an admin
+ * can act on. `undo` words a withdrawal as a refused undo (D12).
+ */
+function checkEligible(ctx: EditContext, buyerId: string, supplierId: string, undo = false): ActionResult<never> | null {
   const buyer = ctx.buyerById.get(buyerId);
   const supplier = ctx.supplierById.get(supplierId);
   if (!buyer) return fail("not_found", "That buyer is not on this event's roster.");
   if (!supplier) return fail("not_found", "That supplier is not on this event's roster.");
   const name = (id: string) => ctx.roster.names.get(id) ?? id;
-  if (buyer.status === "withdrawn") return fail("conflict", `${name(buyer.id)} has withdrawn.`);
-  if (supplier.status === "withdrawn") return fail("conflict", `${name(supplier.id)} has withdrawn.`);
+  if (buyer.status === "withdrawn") {
+    return fail("conflict", undo ? undoWithdrawnMessage(name(buyer.id), "Participants") : `${name(buyer.id)} has withdrawn.`);
+  }
+  if (supplier.status === "withdrawn") {
+    return fail("conflict", undo ? undoWithdrawnMessage(name(supplier.id), "Suppliers") : `${name(supplier.id)} has withdrawn.`);
+  }
   if (ctx.index.isRejected(buyer.id, supplier.id)) {
     return fail("conflict", `${name(buyer.id)} marked ${name(supplier.id)} as N/A.`);
   }
@@ -213,15 +227,20 @@ function describeConflict(ctx: EditContext, conflict: Conflict, changed: { buyer
   }
 }
 
+/** Appended to a hard-rule conflict when an undo hits it, so the admin knows the way out. */
+export const UNDO_CONFLICT_HINT = "Move or remove that meeting first, then undo again.";
+
 /** The hard rules, checked by the engine on the schedule as it would be after the edit. */
 function checkConflicts(
   ctx: EditContext,
   wouldBe: EngineAppointment[],
   changed: { buyerId: string; supplierId: string },
+  undo = false,
 ): ActionResult<never> | null {
   const conflicts = findConflicts(wouldBe);
   if (conflicts.length === 0) return null;
-  return fail("conflict", describeConflict(ctx, conflicts[0], changed));
+  const message = describeConflict(ctx, conflicts[0], changed);
+  return fail("conflict", undo ? `${message} ${UNDO_CONFLICT_HINT}` : message);
 }
 
 function countsFor(rows: { buyerId: string; supplierId: string }[]): Map<string, number> {
@@ -258,6 +277,13 @@ function affectedPeople(
 
 class VersionConflict extends Error {}
 
+/** Thrown inside the edit's transaction to roll back and return `result` (a check that failed under the lock). */
+class EditRefused extends Error {
+  constructor(readonly result: ActionResult<never>) {
+    super(result.ok ? "" : result.error.message);
+  }
+}
+
 type Change = {
   deleteIds: string[];
   insert: Omit<EngineAppointment, "source"> | null;
@@ -271,33 +297,73 @@ type Change = {
   touched: { buyerIds: string[]; supplierIds: string[] };
 };
 
+/** What an edit would do to the schedule, or why it can't. */
+type Plan = { wouldBe: EngineAppointment[]; change: Change };
+
 /**
- * One transaction: claim the event as still editable, bump the version only
- * if it still matches and the run is still active (the real optimistic
- * lock), apply the row changes, store fresh stats, audit.
+ * Checks one edit against a context and says what it writes. Pure, so the
+ * same checks run on the first read (a quick refusal) and again inside the
+ * transaction on what is committed by then.
  */
-async function commit(
+type Planner = (ctx: EditContext) => ActionResult<Plan>;
+
+/**
+ * Loads, checks the version (D11), plans, then commits. The plan on the first
+ * read only refuses early; `commit` plans again under the event lock.
+ */
+async function runEdit(
   db: Db,
-  ctx: EditContext,
-  wouldBe: EngineAppointment[],
-  change: Change,
+  input: { runId: string; version: number },
+  planner: Planner,
   adminId: string,
   options: EditOptions,
 ): Promise<ActionResult<EditResult>> {
-  const stats = computeStats(wouldBe, {
-    settings: ctx.event.settings,
-    buyers: toEngineBuyers(ctx.roster.participants),
-    suppliers: toEngineSuppliers(ctx.roster.suppliers),
-  });
-  const affected = affectedPeople(ctx, wouldBe, change.touched);
+  const loaded = await loadContext(db, input.runId);
+  if (!loaded.ok) return loaded;
+  const stale = checkVersion(loaded.data, input.version);
+  if (stale) return stale;
+  const planned = planner(loaded.data);
+  if (!planned.ok) return planned;
+  return commit(db, loaded.data.run, planner, adminId, options);
+}
 
+/**
+ * One transaction: claim the event as still editable, then read the run,
+ * settings, roster, rankings, and rows again and plan the edit on them.
+ * Settings saves, withdrawals, and import applies take the same event row
+ * but don't bump the run version, so this second plan is what catches a slot
+ * that no longer exists, a person who withdrew, or a pair marked N/A since
+ * the first read. Then bump the version only if it still matches and the run
+ * is still active (the real optimistic lock), apply the row changes, store
+ * fresh stats, audit.
+ */
+async function commit(
+  db: Db,
+  read: MatchRun,
+  planner: Planner,
+  adminId: string,
+  options: EditOptions,
+): Promise<ActionResult<EditResult>> {
   try {
-    const { version, auditEventId } = await db.transaction(async (tx) => {
-      await claimEditableEvent(tx, ctx.event.id);
+    const saved = await db.transaction(async (tx) => {
+      await claimEditableEvent(tx, read.eventId);
+      const loaded = await loadContext(tx, read.id);
+      if (!loaded.ok) throw new EditRefused(loaded);
+      const ctx = loaded.data;
+      if (ctx.run.version !== read.version) throw new VersionConflict();
+      const planned = planner(ctx);
+      if (!planned.ok) throw new EditRefused(planned);
+      const { wouldBe, change } = planned.data;
+      const stats = computeStats(wouldBe, {
+        settings: ctx.event.settings,
+        buyers: toEngineBuyers(ctx.roster.participants),
+        suppliers: toEngineSuppliers(ctx.roster.suppliers),
+      });
+
       const [bumped] = await tx
         .update(matchRuns)
-        .set({ version: ctx.run.version + 1, stats })
-        .where(and(eq(matchRuns.id, ctx.run.id), eq(matchRuns.version, ctx.run.version), eq(matchRuns.isActive, true)))
+        .set({ version: read.version + 1, stats })
+        .where(and(eq(matchRuns.id, read.id), eq(matchRuns.version, read.version), eq(matchRuns.isActive, true)))
         .returning({ version: matchRuns.version });
       if (!bumped) throw new VersionConflict();
 
@@ -309,8 +375,8 @@ async function commit(
         [inserted] = await tx
           .insert(appointments)
           .values({
-            runId: ctx.run.id,
-            eventId: ctx.event.id,
+            runId: read.id,
+            eventId: read.eventId,
             slot: change.insert.slot,
             buyerId: change.insert.buyerId,
             supplierId: change.insert.supplierId,
@@ -322,7 +388,7 @@ async function commit(
           .returning();
       }
       const audit = await recordAudit(tx, {
-        eventId: ctx.event.id,
+        eventId: read.eventId,
         adminId,
         action: options.undoOf ? "appointment.undo" : change.audit.action,
         entityType: "appointment",
@@ -331,13 +397,18 @@ async function commit(
         after: inserted ? { ...snapshot(inserted), ...change.audit.after } : null,
         note: options.undoOf ? undoNote(options.undoOf) : change.audit.note,
       });
-      return { version: bumped.version, auditEventId: audit.id };
+      return {
+        version: bumped.version,
+        auditEventId: audit.id,
+        affected: affectedPeople(ctx, wouldBe, change.touched),
+      };
     });
-    return ok({ runId: ctx.run.id, eventId: ctx.event.id, version, affected, auditEventId });
+    return ok({ runId: read.id, eventId: read.eventId, ...saved });
   } catch (error) {
+    if (error instanceof EditRefused) return error.result;
     if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     if (error instanceof VersionConflict) {
-      const current = await findRun(db, ctx.run.id);
+      const current = await findRun(db, read.id);
       return fail("conflict", current?.isActive ? VERSION_CONFLICT_MESSAGE : NOT_ACTIVE_RUN_MESSAGE);
     }
     if (isUniqueViolation(error)) {
@@ -376,43 +447,38 @@ export async function replaceAppointment(
   adminId: string,
   options: EditOptions = {},
 ): Promise<ActionResult<EditResult>> {
-  const loaded = await loadContext(db, input.runId);
-  if (!loaded.ok) return loaded;
-  const ctx = loaded.data;
-  const stale = checkVersion(ctx, input.version);
-  if (stale) return stale;
   if (input.removeBuyerId === input.addBuyerId) {
     return fail("validation", "Pick a different buyer to replace this one with.");
   }
-  const existing = findRow(ctx, input.slot, input.supplierId, input.removeBuyerId);
-  if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
-  const ineligible = checkEligible(ctx, input.addBuyerId, input.supplierId);
-  if (ineligible) return ineligible;
+  const planner: Planner = (ctx) => {
+    const existing = findRow(ctx, input.slot, input.supplierId, input.removeBuyerId);
+    if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
+    const badSlot = checkSlot(ctx, input.slot);
+    if (badSlot) return badSlot;
+    const ineligible = checkEligible(ctx, input.addBuyerId, input.supplierId, options.undoOf !== undefined);
+    if (ineligible) return ineligible;
 
-  // A pinned slot stays pinned: the admin protected the slot, and the replacement is a deliberate choice too.
-  const added = stamped(ctx, input.slot, input.addBuyerId, input.supplierId, existing.pinned);
-  const wouldBe = [...ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow), added];
-  const conflict = checkConflicts(ctx, wouldBe, added);
-  if (conflict) return conflict;
-
-  return commit(
-    db,
-    ctx,
-    wouldBe,
-    {
-      deleteIds: [existing.id],
-      insert: added,
-      audit: {
-        action: "appointment.replace",
-        before: snapshot(existing),
-        note: input.note ?? null,
-        after: existing.pinned ? { pinKept: true } : undefined,
+    // A pin belongs to the meeting it was set on, so the replacement starts unpinned. Undo puts the old pin back.
+    const added = stamped(ctx, input.slot, input.addBuyerId, input.supplierId, options.pinned ?? false);
+    const wouldBe = [...ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow), added];
+    const conflict = checkConflicts(ctx, wouldBe, added, options.undoOf !== undefined);
+    if (conflict) return conflict;
+    return ok({
+      wouldBe,
+      change: {
+        deleteIds: [existing.id],
+        insert: added,
+        audit: {
+          action: "appointment.replace",
+          before: snapshot(existing),
+          note: input.note ?? null,
+          after: existing.pinned && !added.pinned ? { pinDropped: true } : undefined,
+        },
+        touched: { buyerIds: [input.removeBuyerId, input.addBuyerId], supplierIds: [input.supplierId] },
       },
-      touched: { buyerIds: [input.removeBuyerId, input.addBuyerId], supplierIds: [input.supplierId] },
-    },
-    adminId,
-    options,
-  );
+    });
+  };
+  return runEdit(db, input, planner, adminId, options);
 }
 
 /** Fills an open supplier slot. */
@@ -422,34 +488,27 @@ export async function addAppointment(
   adminId: string,
   options: EditOptions = {},
 ): Promise<ActionResult<EditResult>> {
-  const loaded = await loadContext(db, input.runId);
-  if (!loaded.ok) return loaded;
-  const ctx = loaded.data;
-  const stale = checkVersion(ctx, input.version);
-  if (stale) return stale;
-  const badSlot = checkSlot(ctx, input.slot);
-  if (badSlot) return badSlot;
-  const ineligible = checkEligible(ctx, input.buyerId, input.supplierId);
-  if (ineligible) return ineligible;
+  const planner: Planner = (ctx) => {
+    const badSlot = checkSlot(ctx, input.slot);
+    if (badSlot) return badSlot;
+    const ineligible = checkEligible(ctx, input.buyerId, input.supplierId, options.undoOf !== undefined);
+    if (ineligible) return ineligible;
 
-  const added = stamped(ctx, input.slot, input.buyerId, input.supplierId, options.pinned ?? false);
-  const wouldBe = [...ctx.rows.map(toEngineRow), added];
-  const conflict = checkConflicts(ctx, wouldBe, added);
-  if (conflict) return conflict;
-
-  return commit(
-    db,
-    ctx,
-    wouldBe,
-    {
-      deleteIds: [],
-      insert: added,
-      audit: { action: "appointment.add", before: null, note: input.note ?? null },
-      touched: { buyerIds: [input.buyerId], supplierIds: [input.supplierId] },
-    },
-    adminId,
-    options,
-  );
+    const added = stamped(ctx, input.slot, input.buyerId, input.supplierId, options.pinned ?? false);
+    const wouldBe = [...ctx.rows.map(toEngineRow), added];
+    const conflict = checkConflicts(ctx, wouldBe, added, options.undoOf !== undefined);
+    if (conflict) return conflict;
+    return ok({
+      wouldBe,
+      change: {
+        deleteIds: [],
+        insert: added,
+        audit: { action: "appointment.add", before: null, note: input.note ?? null },
+        touched: { buyerIds: [input.buyerId], supplierIds: [input.supplierId] },
+      },
+    });
+  };
+  return runEdit(db, input, planner, adminId, options);
 }
 
 /** Leaves the supplier's slot open. */
@@ -459,43 +518,50 @@ export async function removeAppointment(
   adminId: string,
   options: EditOptions = {},
 ): Promise<ActionResult<EditResult>> {
-  const loaded = await loadContext(db, input.runId);
-  if (!loaded.ok) return loaded;
-  const ctx = loaded.data;
-  const stale = checkVersion(ctx, input.version);
-  if (stale) return stale;
-  const existing = findRow(ctx, input.slot, input.supplierId, input.buyerId);
-  if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
-
-  const wouldBe = ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow);
-  return commit(
-    db,
-    ctx,
-    wouldBe,
-    {
-      deleteIds: [existing.id],
-      insert: null,
-      audit: { action: "appointment.remove", before: snapshot(existing), note: input.note ?? null },
-      touched: { buyerIds: [input.buyerId], supplierIds: [input.supplierId] },
-    },
-    adminId,
-    options,
-  );
+  const planner: Planner = (ctx) => {
+    const existing = findRow(ctx, input.slot, input.supplierId, input.buyerId);
+    if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
+    return ok({
+      wouldBe: ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow),
+      change: {
+        deleteIds: [existing.id],
+        insert: null,
+        audit: { action: "appointment.remove", before: snapshot(existing), note: input.note ?? null },
+        touched: { buyerIds: [input.buyerId], supplierIds: [input.supplierId] },
+      },
+    });
+  };
+  return runEdit(db, input, planner, adminId, options);
 }
 
-export type SwapCandidate = {
+/** Someone who can take the slot. `buyerId` and `supplierId` are the pair the pick would book. */
+type CandidateBase = {
   buyerId: string;
+  supplierId: string;
+  /** The candidate's display name (D34 for buyers). */
   name: string;
-  organization: string | null;
-  title: string | null;
-  biztechOptIn: boolean;
   buyerRank: number | null;
   supplierRank: number | null;
   strength: MatchStrength;
-  /** Current appointment count and what it becomes if picked. */
+  /** The candidate's current appointment count and what it becomes if picked. */
   count: number;
   countAfter: number;
 };
+
+export type BuyerCandidate = CandidateBase & {
+  kind: "buyer";
+  organization: string | null;
+  title: string | null;
+  biztechOptIn: boolean;
+};
+
+export type SupplierCandidate = CandidateBase & {
+  kind: "supplier";
+  supplierType: Supplier["type"];
+  desk: number | null;
+};
+
+export type SwapCandidate = BuyerCandidate | SupplierCandidate;
 
 function combinedRankKey(c: { buyerRank: number | null; supplierRank: number | null }): [number, number] {
   const b = c.buyerRank;
@@ -507,49 +573,85 @@ function combinedRankKey(c: { buyerRank: number | null; supplierRank: number | n
 }
 
 /**
- * Buyers an admin can put in a supplier's slot (scope 2.5): active, free in
- * that slot, not already paired with the supplier, eligible. Best combined
- * rank first, blanks last, then the buyer with the fewest appointments.
+ * Who an admin can put in an open or replaced slot (scope 2.5). For a
+ * supplier's slot: active buyers free in that slot, not already meeting the
+ * supplier, eligible (`isEligible`: N/A, biztech opt-in, withdrawn). For a
+ * buyer's slot, the same rules with the sides swapped. Best combined rank
+ * first, blanks last, then the fewest appointments, then name.
  */
 export async function swapCandidates(db: Db, input: SwapCandidatesInput): Promise<ActionResult<SwapCandidate[]>> {
   const run = await findRun(db, input.runId);
   if (!run) return fail("not_found", "That run no longer exists. Reload the schedule.");
-  const roster = await loadRoster(db, run.eventId);
+  // Only the slot's own person's rankings matter: both directions of each pair with them.
+  const focusId = "supplierId" in input ? input.supplierId : input.buyerId;
+  const [roster, rows, rankingRows] = await Promise.all([
+    loadPeople(db, run.eventId),
+    db.select().from(appointments).where(eq(appointments.runId, run.id)),
+    db
+      .select()
+      .from(rankings)
+      .where(
+        and(eq(rankings.eventId, run.eventId), or(eq(rankings.rankerId, focusId), eq(rankings.targetId, focusId))),
+      ),
+  ]);
   if (!roster) return fail("not_found", "That event no longer exists.");
-  const supplier = roster.suppliers.find((s) => s.id === input.supplierId);
-  if (!supplier) return fail("not_found", "That supplier is not on this event's roster.");
-  const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));
-  const index = buildRankingIndex(toEngineRankings(roster.rankings));
+  const index = buildRankingIndex(toEngineRankings(rankingRows));
   const eligibility: EligibilityContext = { index, settings: roster.event.settings };
   const n = roster.event.settings.mutualTopN;
-
-  const busyInSlot = new Set(rows.filter((r) => r.slot === input.slot).map((r) => r.buyerId));
-  const pairedWithSupplier = new Set(rows.filter((r) => r.supplierId === supplier.id).map((r) => r.buyerId));
-  const counts = new Map<string, number>();
-  for (const r of rows) counts.set(r.buyerId, (counts.get(r.buyerId) ?? 0) + 1);
-  const engineSupplier = { id: supplier.id, type: supplier.type, withdrawn: supplier.status === "withdrawn" };
-
-  const candidates: SwapCandidate[] = [];
-  for (const p of roster.participants) {
-    if (p.status !== "active") continue;
-    if (p.id === input.excludeBuyerId) continue;
-    if (busyInSlot.has(p.id) || pairedWithSupplier.has(p.id)) continue;
-    if (!isEligible({ id: p.id, biztechOptIn: p.biztechOptIn }, engineSupplier, eligibility)) continue;
-    const buyerRank = index.buyerRank(p.id, supplier.id);
-    const supplierRank = index.supplierRank(supplier.id, p.id);
-    const count = counts.get(p.id) ?? 0;
-    candidates.push({
-      buyerId: p.id,
-      name: roster.names.get(p.id) ?? p.id,
-      organization: p.organization,
-      title: p.title,
-      biztechOptIn: p.biztechOptIn,
+  const counts = countsFor(rows);
+  const inSlot = rows.filter((r) => r.slot === input.slot);
+  const name = (id: string) => roster.names.get(id) ?? id;
+  const pair = (buyerId: string, supplierId: string, candidateId: string) => {
+    const buyerRank = index.buyerRank(buyerId, supplierId);
+    const supplierRank = index.supplierRank(supplierId, buyerId);
+    const count = counts.get(candidateId) ?? 0;
+    return {
+      buyerId,
+      supplierId,
+      name: name(candidateId),
       buyerRank,
       supplierRank,
       strength: matchStrength(buyerRank, supplierRank, n),
       count,
       countAfter: count + 1,
-    });
+    };
+  };
+
+  const candidates: SwapCandidate[] = [];
+  if ("supplierId" in input) {
+    const supplier = roster.suppliers.find((s) => s.id === input.supplierId);
+    if (!supplier) return fail("not_found", "That supplier is not on this event's roster.");
+    const busy = new Set(inSlot.map((r) => r.buyerId));
+    const paired = new Set(rows.filter((r) => r.supplierId === supplier.id).map((r) => r.buyerId));
+    const engineSupplier = { id: supplier.id, type: supplier.type, withdrawn: supplier.status === "withdrawn" };
+    for (const p of roster.participants) {
+      if (p.status !== "active" || p.id === input.excludeBuyerId || busy.has(p.id) || paired.has(p.id)) continue;
+      if (!isEligible({ id: p.id, biztechOptIn: p.biztechOptIn }, engineSupplier, eligibility)) continue;
+      candidates.push({
+        kind: "buyer",
+        ...pair(p.id, supplier.id, p.id),
+        organization: p.organization,
+        title: p.title,
+        biztechOptIn: p.biztechOptIn,
+      });
+    }
+  } else {
+    const buyer = roster.participants.find((p) => p.id === input.buyerId);
+    if (!buyer) return fail("not_found", "That buyer is not on this event's roster.");
+    if (buyer.status === "withdrawn") return fail("conflict", `${name(buyer.id)} has withdrawn.`);
+    const busy = new Set(inSlot.map((r) => r.supplierId));
+    const paired = new Set(rows.filter((r) => r.buyerId === buyer.id).map((r) => r.supplierId));
+    const engineBuyer = { id: buyer.id, biztechOptIn: buyer.biztechOptIn };
+    for (const s of roster.suppliers) {
+      if (s.status !== "active" || busy.has(s.id) || paired.has(s.id)) continue;
+      if (!isEligible(engineBuyer, { id: s.id, type: s.type, withdrawn: false }, eligibility)) continue;
+      candidates.push({
+        kind: "supplier",
+        ...pair(buyer.id, s.id, s.id),
+        supplierType: s.type,
+        desk: s.deskNumber,
+      });
+    }
   }
   candidates.sort((a, b) => {
     const [tierA, sumA] = combinedRankKey(a);
@@ -596,7 +698,13 @@ export async function undoAudit(
   const [alreadyUndone] = await db
     .select({ id: auditEvents.id })
     .from(auditEvents)
-    .where(and(eq(auditEvents.action, "appointment.undo"), eq(auditEvents.note, undoNote(row.id))))
+    .where(
+      and(
+        eq(auditEvents.eventId, run.eventId),
+        eq(auditEvents.action, "appointment.undo"),
+        eq(auditEvents.note, undoNote(row.id)),
+      ),
+    )
     .limit(1);
   if (alreadyUndone) return fail("conflict", "That change was already undone.");
 
@@ -613,7 +721,7 @@ export async function undoAudit(
         addBuyerId: before.buyerId,
       },
       input.adminId,
-      options,
+      { ...options, pinned: before.pinned },
     );
   }
   if (after) {

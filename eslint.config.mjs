@@ -38,14 +38,29 @@ const eslintConfig = defineConfig([
     ]),
   },
   {
-    // Server modules never render anything.
+    // Server modules never render anything. The one exception is `cache` from
+    // "react", which shares a read across one render (layout, page, sidebar).
     files: ["src/server/**/*.{ts,tsx}"],
-    rules: restrictImports([
-      {
-        group: ["react", "react-dom", "react-dom/*", "@/components", "@/components/*"],
-        message: "src/server must not import React or components.",
-      },
-    ]),
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react",
+              allowImportNames: ["cache"],
+              message: "src/server may import only `cache` from React.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["react/*", "react-dom", "react-dom/*", "@/components", "@/components/*"],
+              message: "src/server must not import React or components.",
+            },
+          ],
+        },
+      ],
+    },
   },
   {
     // Components receive data as props and call actions.

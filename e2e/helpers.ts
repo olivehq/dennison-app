@@ -29,6 +29,6 @@ export async function signIn(page: Page) {
 }
 
 export async function openDemoEvent(page: Page) {
-  await page.getByRole("link", { name: DEMO_EVENT }).click();
+  await page.getByRole("main").getByRole("link", { name: DEMO_EVENT, exact: true }).click();
   await expect(page.getByRole("heading", { level: 1, name: DEMO_EVENT })).toBeVisible();
 }

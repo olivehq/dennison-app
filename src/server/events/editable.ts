@@ -1,4 +1,4 @@
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { events, type EventStatus } from "@/db/schema";
 import { fail, type ActionResult } from "@/lib/errors";
@@ -51,6 +51,22 @@ export async function claimEditableEvent(tx: Db, eventId: string): Promise<void>
     .where(and(eq(events.id, eventId), notInArray(events.status, [...READ_ONLY_STATUSES])))
     .for("update");
   if (!row) throw new EventChangedError();
+}
+
+/**
+ * The compare-and-set for writes allowed on locked and sent events but not on
+ * archived ones (email campaigns, link actions). Call it first inside the
+ * transaction: it locks the event row (`FOR UPDATE`) only while the event is
+ * not archived, so a concurrent archive waits for this transaction or goes
+ * first and makes this return false. False also when the event is gone.
+ */
+export async function claimUnarchivedEvent(tx: Db, eventId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: events.id })
+    .from(events)
+    .where(and(eq(events.id, eventId), ne(events.status, "archived")))
+    .for("update");
+  return row !== undefined;
 }
 
 /** Turns an `EventChangedError` thrown by a transaction into the conflict result. */

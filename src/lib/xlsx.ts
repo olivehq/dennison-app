@@ -10,13 +10,18 @@ export type SheetRows = {
   rowNumbers: number[];
 };
 
+// C0 control characters other than tab, line feed, and carriage return (and DEL). Postgres rejects NUL in
+// text and jsonb, and the rest are invisible junk (an Excel "_x000B_" escape) that would split a name from
+// its roster match. Tab and newlines stay: they are real whitespace the importers already trim or collapse.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
 function cellToString(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value.trim();
+  if (typeof value === "string") return value.replace(CONTROL_CHARACTERS, "").trim();
   if (typeof value === "number") return String(value);
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
   if (value instanceof Date) return value.toISOString();
-  return String(value).trim();
+  return String(value).replace(CONTROL_CHARACTERS, "").trim();
 }
 
 /** Two columns with the same header would overwrite each other; the later one gets a suffix. */
@@ -50,7 +55,8 @@ function sheetToRows(sheetName: string, sheet: XLSX.WorkSheet): SheetRows | null
   grid.slice(headerIndex + 1).forEach((line, offset) => {
     const cells = headers.map((_, column) => cellToString(line[column]));
     if (cells.every((cell) => cell === "")) return;
-    const record: Record<string, string> = {};
+    // No prototype, so a "__proto__" or "constructor" header is a plain key like any other.
+    const record: Record<string, string> = Object.create(null);
     headers.forEach((header, column) => {
       record[header] = cells[column];
     });

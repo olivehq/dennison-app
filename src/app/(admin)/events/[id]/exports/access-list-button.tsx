@@ -9,7 +9,9 @@ import { Spinner } from "@/components/ui/spinner";
 
 /**
  * The access list reuses each contact's current link and issues one only for
- * contacts without (D31, D59), so it is a POST. The file is fetched and saved
+ * contacts who never had one or whose link expired (D31, D59); revoked links
+ * stay revoked. It can write, so it is a POST, with no confirm: the note on
+ * the page says what it does. The file is fetched and saved
  * here rather than by a form navigation so a refusal shows as a toast and the
  * page refreshes its "Generated" line once the file has arrived.
  */

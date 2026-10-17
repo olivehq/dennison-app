@@ -29,23 +29,24 @@ export type DeskAssignment = {
 };
 
 /**
- * D17: desks go alphabetically by supplier name. A supplier with
+ * D17: desks go alphabetically by supplier name. An active supplier with
  * `desk_override` keeps its number and that number is skipped for the rest.
- * Withdrawn suppliers get no desk unless they hold an override.
+ * Withdrawn suppliers get no desk, an override included: the desk and the
+ * override are cleared, so the number is free for an active supplier.
  */
 export function planDesks(rows: Supplier[]): DeskAssignment[] {
   const sorted = [...rows].sort((a, b) => compareNames(a.name, b.name));
   const taken = new Set<number>();
   for (const s of sorted) {
-    if (s.deskOverride && s.deskNumber !== null) taken.add(s.deskNumber);
+    if (s.status !== "withdrawn" && s.deskOverride && s.deskNumber !== null) taken.add(s.deskNumber);
   }
   let next = 1;
   return sorted.map((s) => {
-    if (s.deskOverride) {
-      return { supplierId: s.id, name: s.name, desk: s.deskNumber, override: true };
-    }
     if (s.status === "withdrawn") {
       return { supplierId: s.id, name: s.name, desk: null, override: false };
+    }
+    if (s.deskOverride) {
+      return { supplierId: s.id, name: s.name, desk: s.deskNumber, override: true };
     }
     while (taken.has(next)) next++;
     const desk = next++;
@@ -61,8 +62,11 @@ async function applyDesks(db: Db, eventId: string): Promise<{ before: DeskAssign
   const after = planDesks(rows);
   for (const plan of after) {
     const current = rows.find((s) => s.id === plan.supplierId);
-    if (current && current.deskNumber === plan.desk) continue;
-    await db.update(suppliers).set({ deskNumber: plan.desk }).where(eq(suppliers.id, plan.supplierId));
+    if (current && current.deskNumber === plan.desk && current.deskOverride === plan.override) continue;
+    await db
+      .update(suppliers)
+      .set({ deskNumber: plan.desk, deskOverride: plan.override })
+      .where(eq(suppliers.id, plan.supplierId));
   }
   return { before, after };
 }

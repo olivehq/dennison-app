@@ -64,13 +64,21 @@ export function SendUpdateButton({
   );
 }
 
-export function DuplicateAsReminderButton({ campaignId }: { campaignId: string }) {
+/** `disabledReason` is shown as the button's title, for example on an archived event. */
+export function DuplicateAsReminderButton({
+  campaignId,
+  disabledReason = null,
+}: {
+  campaignId: string;
+  disabledReason?: string | null;
+}) {
   const { pending, run } = useCreateAndOpen();
   return (
     <Button
       variant="outline"
       onClick={() => run(() => duplicateCampaignAction({ campaignId, kind: "reminder" }))}
-      disabled={pending}
+      disabled={pending || disabledReason !== null}
+      title={disabledReason ?? undefined}
     >
       {pending ? <Spinner data-icon="inline-start" /> : <CopyIcon data-icon="inline-start" />}
       Duplicate as reminder

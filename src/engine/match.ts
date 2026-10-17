@@ -32,6 +32,8 @@ type State = {
   /** Active buyers still free in each slot, indexed by slot number. */
   freeBuyersInSlot: number[];
   appointments: Appointment[];
+  /** Rows repair must not move: every kept input row of a run, or the pinned rows given to repairSchedule. */
+  fixed: Set<Appointment>;
   warnings: string[];
 };
 
@@ -41,7 +43,7 @@ type State = {
  */
 export function runMatching(input: MatchInput): MatchResult {
   const state = createState(input);
-  placePinned(state, input.pinned);
+  placeKept(state, input.pinned, () => true);
 
   // Scope 2.2 step 2: business suppliers first, hotels second.
   runPhase(state, 'business');
@@ -64,7 +66,7 @@ export function runMatching(input: MatchInput): MatchResult {
  */
 export function repairSchedule(appointments: Appointment[], input: MatchInput): MatchResult {
   const state = createState(input);
-  placePinned(state, appointments);
+  placeKept(state, appointments, (row) => row.pinned);
   repair(state);
   const sorted = sortAppointments(state.appointments);
   addCountWarnings(state);
@@ -93,33 +95,36 @@ function createState(input: MatchInput): State {
     supplierCount: new Map(suppliers.map((s) => [s.id, 0])),
     freeBuyersInSlot: Array.from({ length: slotCount + 1 }, () => buyers.length),
     appointments: [],
+    fixed: new Set(),
     warnings: [],
   };
 }
 
 /**
- * Pinned rows are placed first and never moved. Rows that name a withdrawn
- * or unknown person, pair people who are no longer eligible (an N/A or a
- * biztech opt-out after a re-import), or break a hard constraint against an
- * earlier pinned row, are dropped with a warning instead of corrupting the schedule.
+ * Kept rows are placed first, as given, with their own `pinned` flag. Rows
+ * that name a withdrawn or unknown person, pair people who are no longer
+ * eligible (an N/A or a biztech opt-out after a re-import), or break a hard
+ * constraint against an earlier kept row, are dropped with a warning instead
+ * of corrupting the schedule. `isFixed` rows are never moved by repair.
  */
-function placePinned(state: State, pinned: Appointment[]) {
-  const sorted = sortAppointments(pinned);
+function placeKept(state: State, rows: Appointment[], isFixed: (row: Appointment) => boolean) {
+  const sorted = sortAppointments(rows);
   const kept: Appointment[] = [];
   for (const row of sorted) {
-    const reason = pinnedProblem(state, row, kept);
+    const reason = keptProblem(state, row, kept);
     if (reason) {
       state.warnings.push(
-        `Dropped pinned appointment slot ${row.slot} ${row.buyerId} x ${row.supplierId}: ${reason}`,
+        `Dropped ${row.pinned ? 'pinned' : 'kept'} appointment slot ${row.slot} ${row.buyerId} x ${row.supplierId}: ${reason}`,
       );
       continue;
     }
     kept.push(row);
     book(state, row);
+    if (isFixed(row)) state.fixed.add(row);
   }
 }
 
-function pinnedProblem(state: State, row: Appointment, kept: Appointment[]): string | null {
+function keptProblem(state: State, row: Appointment, kept: Appointment[]): string | null {
   if (!state.buyerById.has(row.buyerId)) return 'buyer is withdrawn or unknown';
   if (!state.supplierById.has(row.supplierId)) return 'supplier is withdrawn or unknown';
   if (row.slot < 1 || row.slot > state.settings.slotCount) return 'slot is out of range';
@@ -130,7 +135,7 @@ function pinnedProblem(state: State, row: Appointment, kept: Appointment[]): str
       ? `${buyer.id} marked ${supplier.id} as N/A`
       : `${buyer.id} is not opted in to business meetings`;
   }
-  if (findConflicts([...kept, row]).length > 0) return 'conflicts with another pinned appointment';
+  if (findConflicts([...kept, row]).length > 0) return 'conflicts with another kept appointment';
   return null;
 }
 
@@ -348,9 +353,9 @@ function unbook(state: State, row: Appointment) {
 /**
  * Scope 2.2 step 4. For each buyer below buyerMin, take one appointment from
  * a buyer at buyerMax where the low buyer is eligible and free in that slot.
- * Donors keep at least buyerMin (buyerMax - 1 >= buyerMin is checked). Pinned
- * rows are never moved. Each move reduces the deficit, so this terminates;
- * the iteration cap is a second guard.
+ * Donors keep at least buyerMin (buyerMax - 1 >= buyerMin is checked). Fixed
+ * rows (pinned, or kept by a run) are never moved. Each move reduces the
+ * deficit, so this terminates; the iteration cap is a second guard.
  */
 function repair(state: State) {
   const { buyerMin, buyerMax } = state.settings;
@@ -393,7 +398,7 @@ function findDonor(state: State, low: Buyer): Appointment | null {
   let best: Appointment | null = null;
   let bestLoss = -1;
   for (const row of state.appointments) {
-    if (row.pinned) continue;
+    if (state.fixed.has(row)) continue;
     if ((state.buyerCount.get(row.buyerId) ?? 0) !== buyerMax) continue;
     if (lowSlots.has(row.slot)) continue;
     if (state.pairs.has(pairKey(low.id, row.supplierId))) continue;

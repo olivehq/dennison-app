@@ -48,12 +48,20 @@ export const removeAppointmentInput = z.object({
   note,
 });
 
-export const swapCandidatesInput = z.object({
-  runId: uuid,
-  supplierId: uuid,
-  slot,
-  excludeBuyerId: uuid.optional(),
-});
+/** Buyers who can take a supplier's slot, or suppliers who can take a buyer's slot. */
+export const swapCandidatesInput = z.union([
+  z.object({
+    runId: uuid,
+    supplierId: uuid,
+    slot,
+    excludeBuyerId: uuid.optional(),
+  }),
+  z.object({
+    runId: uuid,
+    buyerId: uuid,
+    slot,
+  }),
+]);
 
 /** `version` is optional for one release so callers that do not send it yet keep working (D11). */
 export const undoAuditInput = z.object({ auditEventId: uuid, version: version.optional() });
@@ -61,6 +69,13 @@ export const undoAuditInput = z.object({ auditEventId: uuid, version: version.op
 export const setPinnedInput = z.object({ appointmentId: uuid, pinned: z.boolean(), version: version.optional() });
 
 export const runMatchingInput = z.object({ keepExisting: z.boolean().default(false) });
+
+/** The active run and version the page showed, null when none was active (D11). A change since is a conflict. */
+export const activateRunInput = z.object({
+  runId: uuid,
+  expectedActiveRunId: uuid.nullable(),
+  expectedVersion: version.nullable(),
+});
 
 export const lockScheduleInput = z.object({ eventId: uuid });
 
@@ -76,5 +91,6 @@ export type SwapCandidatesInput = z.infer<typeof swapCandidatesInput>;
 export type UndoAuditInput = z.infer<typeof undoAuditInput>;
 export type SetPinnedInput = z.infer<typeof setPinnedInput>;
 export type RunMatchingInput = z.infer<typeof runMatchingInput>;
+export type ActivateRunInput = z.infer<typeof activateRunInput>;
 export type LockScheduleInput = z.infer<typeof lockScheduleInput>;
 export type UnlockScheduleInput = z.infer<typeof unlockScheduleInput>;

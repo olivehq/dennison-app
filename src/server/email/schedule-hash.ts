@@ -3,7 +3,13 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { emailMessages, type ContactType, type EmailMessageStatus } from "@/db/schema";
 import { recipientKey } from "@/lib/schemas/email";
-import { getPersonSchedule, getScheduleView, type PersonRef } from "@/server/schedule/views";
+import {
+  loadActiveSchedule,
+  loadPersonSchedule,
+  participantSlots,
+  type ParticipantSlot,
+  type PersonRef,
+} from "@/server/schedule/snapshot";
 import { listContacts } from "@/server/tokens/tokens";
 
 /**
@@ -32,6 +38,19 @@ export function hashSlots(slots: HashSlot[]): string {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
+/** The hash of what the participant page shows (D141): the same slots, counterparts, and desks. */
+function hashParticipantSlots(slots: ParticipantSlot[]): string {
+  return hashSlots(
+    slots.map((s) => ({
+      slot: s.slot,
+      start: s.start,
+      end: s.end,
+      counterpartId: s.appointment?.counterpartId ?? null,
+      desk: s.appointment?.desk ?? null,
+    })),
+  );
+}
+
 function personRef(contactType: ContactType, entityId: string): PersonRef {
   return { type: contactType === "buyer" ? "buyer" : "supplier", id: entityId };
 }
@@ -47,47 +66,25 @@ export async function scheduleHashFor(
   contactType: ContactType,
   entityId: string,
 ): Promise<string | null> {
-  const schedule = await getPersonSchedule(eventId, { ...personRef(contactType, entityId), forParticipant: true }, db);
-  if (!schedule) return null;
-  return hashSlots(
-    schedule.slots.map((s) => ({
-      slot: s.slot,
-      start: s.start,
-      end: s.end,
-      counterpartId: s.appointment?.counterpartId ?? null,
-      desk: s.appointment?.desk ?? null,
-    })),
-  );
+  const schedule = await loadPersonSchedule(db, eventId, personRef(contactType, entityId));
+  return schedule ? hashParticipantSlots(schedule.slots) : null;
 }
 
 /**
  * Current hashes for every buyer and supplier of the event, keyed by
- * "buyer:<id>" or "supplier:<id>". One read of the schedule instead of one per
- * person; the result matches `scheduleHashFor` (tested).
+ * "buyer:<id>" or "supplier:<id>". One read of the active schedule instead of
+ * one per person; the result matches `scheduleHashFor` (tested).
  */
 export async function scheduleHashesForEvent(db: Db, eventId: string): Promise<Map<string, string>> {
-  const view = await getScheduleView(eventId, db);
+  const schedule = await loadActiveSchedule(db, eventId);
   const hashes = new Map<string, string>();
-  if (!view) return hashes;
-  const deskBySupplier = new Map(view.suppliers.map((s) => [s.id, s.desk]));
-  const byBuyer = new Map<string, Map<number, { counterpartId: string; desk: number | null }>>();
-  const bySupplier = new Map<string, Map<number, { counterpartId: string; desk: number | null }>>();
-  for (const a of view.appointments) {
-    const desk = deskBySupplier.get(a.supplierId) ?? null;
-    if (!byBuyer.has(a.buyerId)) byBuyer.set(a.buyerId, new Map());
-    byBuyer.get(a.buyerId)!.set(a.slot, { counterpartId: a.supplierId, desk });
-    if (!bySupplier.has(a.supplierId)) bySupplier.set(a.supplierId, new Map());
-    bySupplier.get(a.supplierId)!.set(a.slot, { counterpartId: a.buyerId, desk });
+  if (!schedule) return hashes;
+  for (const ref of [
+    ...schedule.buyers.map((b): PersonRef => ({ type: "buyer", id: b.id })),
+    ...schedule.suppliers.map((s): PersonRef => ({ type: "supplier", id: s.id })),
+  ]) {
+    hashes.set(personKey(ref), hashParticipantSlots(participantSlots(schedule, ref)));
   }
-  const hashFor = (booked: Map<number, { counterpartId: string; desk: number | null }> | undefined) =>
-    hashSlots(
-      view.slots.map((s) => {
-        const a = booked?.get(s.slot);
-        return { slot: s.slot, start: s.start, end: s.end, counterpartId: a?.counterpartId ?? null, desk: a?.desk ?? null };
-      }),
-    );
-  for (const b of view.buyers) hashes.set(personKey({ type: "buyer", id: b.id }), hashFor(byBuyer.get(b.id)));
-  for (const s of view.suppliers) hashes.set(personKey({ type: "supplier", id: s.id }), hashFor(bySupplier.get(s.id)));
   return hashes;
 }
 

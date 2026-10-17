@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import Link from "@tiptap/extension-link";
-import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
+import type { Editor } from "@tiptap/react";
 import { cn } from "cn";
-import { BoldIcon, BracesIcon, ItalicIcon, LinkIcon, ListIcon } from "lucide-react";
+import { BracesIcon, CodeXmlIcon } from "lucide-react";
+import dynamic from "next/dynamic";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,168 +15,73 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { Toggle } from "@/components/ui/toggle";
 import { MERGE_FIELDS } from "@/server/email/merge";
 
 /**
  * The campaign body editor (scope 2.7). Tiptap, client only, loaded by the
  * campaign page alone. Merge fields go in as plain `{{field}}` text.
+ *
+ * "Edit HTML" swaps the editor for a textarea holding the source, for designed
+ * HTML (tables, inline styles) that Tiptap would flatten. The form value is
+ * the text as typed while in HTML mode; the server cleans it on save. The
+ * editor is only given the source back when the admin switches to the visual
+ * editor, so opening a campaign or typing source never rewrites it.
+ *
+ * This module is the light part: the mode switch, the toolbar frame, and the
+ * source textarea. Tiptap lives in `visual-editor.tsx`, which loads on demand,
+ * so a campaign that opens in HTML mode never downloads or starts it. The
+ * HTML compatibility check (parse5) loads when the admin switches back.
  */
 
-const SCHEDULE_LINK = "{{schedule_link}}";
+const VisualEditor = dynamic(() => import("./visual-editor").then((m) => m.VisualEditor), {
+  ssr: false,
+  loading: () => <div aria-hidden="true" className="min-h-56" />,
+});
+const FormattingTools = dynamic(() => import("./visual-editor").then((m) => m.FormattingTools), { ssr: false });
 
-const extensions = [
-  StarterKit.configure({ code: false, codeBlock: false, link: false }),
-  Link.configure({
-    openOnClick: false,
-    autolink: true,
-    defaultProtocol: "https",
-    // `{{schedule_link}}` is filled in per recipient when the email is rendered.
-    isAllowedUri: (url, ctx) => url === SCHEDULE_LINK || ctx.defaultValidate(url),
-  }),
-];
-
-function LinkButton({ editor }: { editor: Editor }) {
-  const [open, setOpen] = React.useState(false);
-  const [href, setHref] = React.useState("");
-  const inputId = React.useId();
-  const active = useEditorState({ editor, selector: ({ editor: e }) => e.isActive("link") });
-
-  const onOpenChange = (next: boolean) => {
-    if (next) setHref((editor.getAttributes("link").href as string | undefined) ?? "");
-    setOpen(next);
-  };
-  const apply = (value: string) => {
-    const url = value.trim();
-    const chain = editor.chain().focus().extendMarkRange("link");
-    if (url === "") chain.unsetLink().run();
-    else chain.setLink({ href: url }).run();
-    setOpen(false);
-  };
-
+function MergeFieldMenu({
+  disabled,
+  onInsert,
+  onCloseAutoFocus,
+}: {
+  disabled?: boolean;
+  onInsert: (text: string) => void;
+  onCloseAutoFocus: (event: Event) => void;
+}) {
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Toggle size="sm" pressed={active} aria-label="Link">
-          <LinkIcon />
-        </Toggle>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-80">
-        {/* Not a <form>: React bubbles a submit through the portal to the
-            campaign form around the editor, which would save the campaign. */}
-        <div>
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor={inputId}>Link address</FieldLabel>
-              <Input
-                id={inputId}
-                value={href}
-                onChange={(event) => setHref(event.target.value)}
-                placeholder="https://"
-                autoComplete="off"
-                autoFocus
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") return;
-                  event.preventDefault();
-                  apply(href);
-                }}
-              />
-              <FieldDescription>Select text first to turn it into a link.</FieldDescription>
-            </Field>
-            <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" onClick={() => apply(href)}>
-                Apply
-              </Button>
-              <Button type="button" size="sm" variant="outline" onClick={() => apply(SCHEDULE_LINK)}>
-                Link to their schedule
-              </Button>
-              {active ? (
-                <Button type="button" size="sm" variant="ghost" onClick={() => apply("")}>
-                  Remove link
-                </Button>
-              ) : null}
-            </div>
-          </FieldGroup>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function Toolbar({ editor, disabled }: { editor: Editor; disabled?: boolean }) {
-  const state = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      bold: e.isActive("bold"),
-      italic: e.isActive("italic"),
-      bulletList: e.isActive("bulletList"),
-    }),
-  });
-  return (
-    <div role="toolbar" aria-label="Formatting" className="flex flex-wrap items-center gap-1 border-b p-1">
-      <Toggle
-        size="sm"
-        aria-label="Bold"
-        pressed={state.bold}
-        disabled={disabled}
-        onPressedChange={() => editor.chain().focus().toggleBold().run()}
-      >
-        <BoldIcon />
-      </Toggle>
-      <Toggle
-        size="sm"
-        aria-label="Italic"
-        pressed={state.italic}
-        disabled={disabled}
-        onPressedChange={() => editor.chain().focus().toggleItalic().run()}
-      >
-        <ItalicIcon />
-      </Toggle>
-      <Toggle
-        size="sm"
-        aria-label="Bullet list"
-        pressed={state.bulletList}
-        disabled={disabled}
-        onPressedChange={() => editor.chain().focus().toggleBulletList().run()}
-      >
-        <ListIcon />
-      </Toggle>
-      <LinkButton editor={editor} />
-      <Separator orientation="vertical" className="mx-1 h-5" />
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button type="button" variant="ghost" size="sm" disabled={disabled}>
-            <BracesIcon data-icon="inline-start" />
-            Insert merge field
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72">
-          <DropdownMenuLabel>Filled in for each recipient</DropdownMenuLabel>
-          <DropdownMenuGroup>
-            {MERGE_FIELDS.map((field) => (
-              <DropdownMenuItem
-                key={field.key}
-                onSelect={() => editor.chain().focus().insertContent(`{{${field.key}}}`).run()}
-                className="flex-col items-start gap-0.5"
-              >
-                <span className="font-medium">{field.label}</span>
-                <span className="text-xs text-muted-foreground">{field.description}</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="sm" disabled={disabled}>
+          <BracesIcon data-icon="inline-start" />
+          Insert merge field
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72" onCloseAutoFocus={onCloseAutoFocus}>
+        <DropdownMenuLabel>Filled in for each recipient</DropdownMenuLabel>
+        <DropdownMenuGroup>
+          {MERGE_FIELDS.map((field) => (
+            <DropdownMenuItem
+              key={field.key}
+              onSelect={() => onInsert(`{{${field.key}}}`)}
+              className="flex-col items-start gap-0.5"
+            >
+              <span className="font-medium">{field.label}</span>
+              <span className="text-xs text-muted-foreground">{field.description}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
 type RichTextEditorProps = {
   id?: string;
   value: string;
+  /** Start in HTML mode: the saved HTML has markup the visual editor would drop. */
+  initialHtmlMode?: boolean;
   onChange: (html: string) => void;
   onBlur?: () => void;
   invalid?: boolean;
@@ -184,27 +89,87 @@ type RichTextEditorProps = {
   "aria-describedby"?: string;
 };
 
-export function RichTextEditor({ id, value, onChange, onBlur, invalid, disabled, ...aria }: RichTextEditorProps) {
-  const editor = useEditor({
-    extensions,
-    content: value,
-    editable: !disabled,
-    immediatelyRender: false,
-    onUpdate: ({ editor: e }) => onChange(e.isEmpty ? "" : e.getHTML()),
-    onBlur: () => onBlur?.(),
-    editorProps: {
-      attributes: {
-        ...(id ? { id } : {}),
-        role: "textbox",
-        "aria-multiline": "true",
-        "aria-label": "Message",
-        ...(aria["aria-describedby"] ? { "aria-describedby": aria["aria-describedby"] } : {}),
-        ...(invalid ? { "aria-invalid": "true" } : {}),
-        class:
-          "min-h-56 px-3 py-2 text-sm outline-none [&_a]:text-primary [&_a]:underline [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5",
-      },
+export function RichTextEditor({
+  id,
+  value,
+  initialHtmlMode = false,
+  onChange,
+  onBlur,
+  invalid,
+  disabled,
+  ...aria
+}: RichTextEditorProps) {
+  const [htmlMode, setHtmlMode] = React.useState(initialHtmlMode);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [editor, setEditor] = React.useState<Editor | null>(null);
+  /** The visual editor mounts on first use; a campaign that opens in HTML mode waits until the admin switches. */
+  const [visualWanted, setVisualWanted] = React.useState(!initialHtmlMode);
+  /** A switch to the visual editor that is waiting for its code to load. */
+  const pendingSwitch = React.useRef<{ adoptEditorHtml: boolean } | null>(null);
+  const sourceRef = React.useRef<HTMLTextAreaElement>(null);
+  /** Where focus goes when the merge field menu closes after an insert: the source caret, or the visual editor. */
+  const afterInsertFocus = React.useRef<number | "editor" | null>(null);
+
+  /** Hands the typed source to the editor. `adoptEditorHtml` makes the form follow what the editor kept. */
+  const showVisualEditor = React.useCallback(
+    (adoptEditorHtml: boolean) => {
+      if (!editor) {
+        pendingSwitch.current = { adoptEditorHtml };
+        setVisualWanted(true);
+        return;
+      }
+      // Not an edit: the form already holds `value`, and the adopt branch below writes the cleaned HTML itself.
+      editor.commands.setContent(value, { emitUpdate: false });
+      if (adoptEditorHtml) onChange(editor.isEmpty ? "" : editor.getHTML());
+      setHtmlMode(false);
     },
-  });
+    [editor, value, onChange],
+  );
+
+  // Finish a switch that started before the editor existed.
+  React.useEffect(() => {
+    const pending = pendingSwitch.current;
+    if (!editor || !pending) return;
+    pendingSwitch.current = null;
+    showVisualEditor(pending.adoptEditorHtml);
+  }, [editor, showVisualEditor]);
+
+  const toggleHtml = async () => {
+    if (!htmlMode) {
+      setHtmlMode(true);
+      return;
+    }
+    const { isEditorCompatibleHtml } = await import("@/lib/email/sanitize-html");
+    if (isEditorCompatibleHtml(value)) showVisualEditor(false);
+    else setConfirmOpen(true);
+  };
+
+  const insertMergeField = (text: string) => {
+    if (!htmlMode) {
+      afterInsertFocus.current = "editor";
+      editor?.chain().focus().insertContent(text).run();
+      return;
+    }
+    const source = sourceRef.current;
+    const start = source?.selectionStart ?? value.length;
+    const end = source?.selectionEnd ?? start;
+    onChange(value.slice(0, start) + text + value.slice(end));
+    afterInsertFocus.current = start + text.length;
+  };
+
+  /** Radix returns focus to the menu button on close; after an insert, put it back where the text went. */
+  const onMergeMenuCloseAutoFocus = (event: Event) => {
+    const target = afterInsertFocus.current;
+    afterInsertFocus.current = null;
+    if (target === null) return;
+    event.preventDefault();
+    if (target === "editor") {
+      editor?.commands.focus();
+      return;
+    }
+    sourceRef.current?.focus();
+    sourceRef.current?.setSelectionRange(target, target);
+  };
 
   return (
     <div
@@ -214,8 +179,63 @@ export function RichTextEditor({ id, value, onChange, onBlur, invalid, disabled,
         disabled && "opacity-60",
       )}
     >
-      {editor ? <Toolbar editor={editor} disabled={disabled} /> : <div className="h-9 border-b" aria-hidden="true" />}
-      <EditorContent editor={editor} />
+      <div role="toolbar" aria-label="Formatting" className="flex flex-wrap items-center gap-1 border-b p-1">
+        {editor && !htmlMode ? <FormattingTools editor={editor} disabled={disabled} /> : null}
+        <MergeFieldMenu
+          disabled={disabled || (!htmlMode && !editor)}
+          onInsert={insertMergeField}
+          onCloseAutoFocus={onMergeMenuCloseAutoFocus}
+        />
+        <Toggle
+          size="sm"
+          className="ml-auto"
+          aria-label="Edit HTML"
+          pressed={htmlMode}
+          disabled={disabled || (!htmlMode && !editor)}
+          onPressedChange={() => void toggleHtml()}
+        >
+          <CodeXmlIcon data-icon="inline-start" />
+          Edit HTML
+        </Toggle>
+      </div>
+      {visualWanted ? (
+        <VisualEditor
+          id={id}
+          value={value}
+          htmlMode={htmlMode}
+          onChange={onChange}
+          onBlur={onBlur}
+          onEditor={setEditor}
+          invalid={invalid}
+          disabled={disabled}
+          aria-describedby={aria["aria-describedby"]}
+        />
+      ) : null}
+      {htmlMode ? (
+        <Textarea
+          ref={sourceRef}
+          id={id}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={() => onBlur?.()}
+          disabled={disabled}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="Message HTML"
+          aria-invalid={invalid || undefined}
+          aria-describedby={aria["aria-describedby"]}
+          className="min-h-56 rounded-none border-0 bg-transparent font-mono text-xs focus-visible:ring-0"
+        />
+      ) : null}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Switch to the visual editor?"
+        description="The visual editor can't show tables, colors, or other designed layout. If you switch, that formatting is removed from the message. Stay in Edit HTML to keep it."
+        confirmLabel="Switch and remove formatting"
+        destructive
+        onConfirm={() => showVisualEditor(true)}
+      />
     </div>
   );
 }

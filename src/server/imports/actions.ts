@@ -14,7 +14,16 @@ import {
   type ImportState,
 } from "@/lib/schemas/import";
 import { requireAdmin } from "@/server/auth/session";
-import { applyImport, createImport, deleteImportRecord, saveAlias, saveAliases, type ApplySummary } from "./imports";
+import {
+  applyImport,
+  createImport,
+  deleteImportRecord,
+  ignoreImport,
+  saveAlias,
+  saveAliases,
+  stopIgnoringImport,
+  type ApplySummary,
+} from "./imports";
 import { getImport } from "./queries";
 
 const idSchema = z.uuid();
@@ -115,5 +124,33 @@ export async function deleteImport(
   const row = await getImport(parsed.data);
   const result = await deleteImportRecord(getDb(), { importId: parsed.data, adminId: actor.id });
   if (result.ok && row) revalidateEvent(row.eventId);
+  return result;
+}
+
+/** Keeps a file that isn't applied in history, out of the way of matching readiness. */
+export async function ignoreImportAction(importId: unknown): Promise<ActionResult<{ importId: string }>> {
+  const actor = await requireAdmin();
+  const parsed = idSchema.safeParse(importId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await ignoreImport(getDb(), { importId: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getImport(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
+  return result;
+}
+
+/** Undoes `ignoreImportAction` and checks the file again. */
+export async function stopIgnoringImportAction(
+  importId: unknown,
+): Promise<ActionResult<{ importId: string; state: ImportState }>> {
+  const actor = await requireAdmin();
+  const parsed = idSchema.safeParse(importId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await stopIgnoringImport(getDb(), { importId: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getImport(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
   return result;
 }

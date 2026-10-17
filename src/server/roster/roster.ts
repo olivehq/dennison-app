@@ -1,16 +1,18 @@
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
   participants,
   suppliers,
   type ContactType,
+  type Event,
   type Participant,
   type Supplier,
 } from "@/db/schema";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
+import { issueTokenForContact, tokenExpiry } from "@/server/tokens/tokens";
 import { inEditableTransaction, loadEditableEvent, Refused } from "./editable";
 
 type Actor = { adminId: string };
@@ -30,28 +32,61 @@ export type UpsertSupplierInput = Actor & {
 
 export type ByIdInput = Actor & { id: string };
 
-/** Marks every live link for this person as revoked. The tokens module issues new ones. */
-export async function revokeTokens(
-  db: Db,
-  input: { eventId: string; entityId: string; contactTypes: ContactType[] },
-): Promise<number> {
+/**
+ * After a contact's email changed (D129). Only a live link is touched: one an
+ * admin revoked, or one that expired, stays as it is. When an email is still
+ * set, the live link is revoked and a link for the new address is issued in
+ * the same transaction, so "respect revoke" (D137) can't leave the person with
+ * no link. When the email was cleared, the live link is ended by expiring it,
+ * not revoking it: nobody chose to cut this person off, so once an address is
+ * set again the next lock, access list, or send gives them a link, as after
+ * any expiry. A revoke would hold until Regenerate. Also used by supplier
+ * imports.
+ */
+export async function replaceLinksForChangedEmail(
+  tx: Db,
+  event: Pick<Event, "id" | "eventDate" | "timezone">,
+  input: { entityId: string; contacts: { contactType: ContactType; hasEmail: boolean }[] },
+): Promise<{ revoked: number; expired: number; reissued: ContactType[] }> {
   let revoked = 0;
-  for (const contactType of input.contactTypes) {
-    const rows = await db
-      .update(accessTokens)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(accessTokens.eventId, input.eventId),
-          eq(accessTokens.contactType, contactType),
-          eq(accessTokens.entityId, input.entityId),
-          isNull(accessTokens.revokedAt),
-        ),
-      )
-      .returning({ id: accessTokens.id });
-    revoked += rows.length;
+  let expired = 0;
+  const reissued: ContactType[] = [];
+  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
+  for (const { contactType, hasEmail } of input.contacts) {
+    const now = new Date();
+    const liveLink = and(
+      eq(accessTokens.eventId, event.id),
+      eq(accessTokens.contactType, contactType),
+      eq(accessTokens.entityId, input.entityId),
+      isNull(accessTokens.revokedAt),
+      gt(accessTokens.expiresAt, now),
+    );
+    if (!hasEmail) {
+      const ended = await tx.update(accessTokens).set({ expiresAt: now }).where(liveLink).returning({ id: accessTokens.id });
+      expired += ended.length;
+      continue;
+    }
+    const ended = await tx.update(accessTokens).set({ revokedAt: now }).where(liveLink).returning({ id: accessTokens.id });
+    revoked += ended.length;
+    if (ended.length === 0) continue;
+    await issueTokenForContact(tx, { eventId: event.id, contactType, entityId: input.entityId, expiresAt });
+    reissued.push(contactType);
   }
-  return revoked;
+  return { revoked, expired, reissued };
+}
+
+function linkCount(count: number): string {
+  return `${count} link${count === 1 ? "" : "s"}`;
+}
+
+function emailChangeNote(
+  prefix: string,
+  links: { revoked: number; expired: number; reissued: ContactType[] },
+): string {
+  const parts = [`${prefix}; ${linkCount(links.revoked)} revoked.`];
+  if (links.expired) parts.push(`${linkCount(links.expired)} expired because the email was removed.`);
+  if (links.reissued.length) parts.push("A new link was issued for the new address.");
+  return parts.join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +96,17 @@ export async function revokeTokens(
 async function findParticipant(db: Db, id: string): Promise<Participant | null> {
   const [row] = await db.select().from(participants).where(eq(participants.id, id)).limit(1);
   return row ?? null;
+}
+
+/**
+ * The participant as it is now, row-locked for this transaction. A save compares
+ * against this, not the read before the transaction, so a save that landed in
+ * between can't hide an email change (and its link) from this one.
+ */
+async function lockParticipant(tx: Db, id: string): Promise<Participant> {
+  const [row] = await tx.select().from(participants).where(eq(participants.id, id)).for("update");
+  if (!row) throw new Refused(fail("not_found", "That participant no longer exists."));
+  return row;
 }
 
 async function emailTaken(db: Db, eventId: string, email: string, exceptId?: string): Promise<boolean> {
@@ -113,20 +159,24 @@ export async function upsertParticipant(
       });
       return row;
     }
-    const [row] = await tx.update(participants).set(values).where(eq(participants.id, existing.id)).returning();
-    const emailChanged = existing.email !== row.email;
-    const revoked = emailChanged
-      ? await revokeTokens(tx, { eventId: input.eventId, entityId: row.id, contactTypes: ["buyer"] })
-      : 0;
+    const current = await lockParticipant(tx, existing.id);
+    const [row] = await tx.update(participants).set(values).where(eq(participants.id, current.id)).returning();
+    const emailChanged = current.email !== row.email;
+    const links = emailChanged
+      ? await replaceLinksForChangedEmail(tx, loaded.event, {
+          entityId: row.id,
+          contacts: [{ contactType: "buyer", hasEmail: Boolean(row.email) }],
+        })
+      : null;
     await recordAudit(tx, {
       eventId: input.eventId,
       adminId: input.adminId,
       action: "participant.update",
       entityType: "participant",
       entityId: row.id,
-      before: existing,
-      after: row,
-      note: emailChanged ? `Email changed; ${revoked} link${revoked === 1 ? "" : "s"} revoked.` : null,
+      before: current,
+      after: links?.reissued.length ? { ...row, linksReissued: links.reissued } : row,
+      note: links ? emailChangeNote("Email changed", links) : null,
     });
     return row;
   });
@@ -145,7 +195,8 @@ async function setParticipantStatus(
   if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
-  // Rankings and appointments stay; the schedule flags the gaps and restore reverses it.
+  // Rankings, appointments, and links stay; the schedule flags the gaps and
+  // restore reverses it. Neither withdraw nor restore touches links (D130).
   const done = await inEditableTransaction(db, existing.eventId, async (tx) => {
     // Compare-and-set on the status read, so a double click audits once.
     const [row] = await tx
@@ -211,8 +262,23 @@ async function findSupplier(db: Db, id: string): Promise<Supplier | null> {
   return row ?? null;
 }
 
+/** The supplier as it is now, row-locked for this transaction (see `lockParticipant`). */
+async function lockSupplier(tx: Db, id: string): Promise<Supplier> {
+  const [row] = await tx.select().from(suppliers).where(eq(suppliers.id, id)).for("update");
+  if (!row) throw new Refused(fail("not_found", "That supplier no longer exists."));
+  return row;
+}
+
+/**
+ * True when another supplier of the event has this name, ignoring case and
+ * surrounding spaces: imports match supplier names that way (D40), so two
+ * names that differ only in case would send a later file to the wrong row.
+ */
 async function nameTaken(db: Db, eventId: string, name: string, exceptId?: string): Promise<boolean> {
-  const conditions = [eq(suppliers.eventId, eventId), eq(suppliers.name, name)];
+  const conditions = [
+    eq(suppliers.eventId, eventId),
+    sql`lower(btrim(${suppliers.name})) = lower(btrim(${name}))`,
+  ];
   if (exceptId) conditions.push(ne(suppliers.id, exceptId));
   const [row] = await db.select({ id: suppliers.id }).from(suppliers).where(and(...conditions)).limit(1);
   return row !== undefined;
@@ -275,21 +341,25 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
     return fail("not_found", "That supplier no longer exists.");
   }
-  if (await nameTaken(db, input.eventId, input.data.name, existing?.id)) {
-    return fail("conflict", "Another supplier in this event already has that name.", {
-      name: ["Already used by another supplier."],
-    });
-  }
 
-  const desk = deskChange(existing, input.data.deskNumber);
-  const values = { ...supplierValues(input.data), ...desk };
   const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+    const current = existing ? await lockSupplier(tx, existing.id) : null;
+    // Under the event row lock, so two saves can't both see the name free.
+    if (await nameTaken(tx, input.eventId, input.data.name, current?.id)) {
+      throw new Refused(
+        fail("conflict", "Another supplier in this event already has that name.", {
+          name: ["Already used by another supplier."],
+        }),
+      );
+    }
+    const desk = deskChange(current, input.data.deskNumber);
+    const values = { ...supplierValues(input.data), ...desk };
     // Under the event row lock, so two desk saves can't both see the desk free.
     if (desk) {
-      const taken = await deskTakenBy(tx, input.eventId, desk.deskNumber, existing?.id);
+      const taken = await deskTakenBy(tx, input.eventId, desk.deskNumber, current?.id);
       if (taken) throw new Refused(deskConflict(desk.deskNumber as number, taken));
     }
-    if (!existing) {
+    if (!current) {
       const [row] = await tx.insert(suppliers).values({ eventId: input.eventId, ...values }).returning();
       await recordAudit(tx, {
         eventId: input.eventId,
@@ -301,20 +371,24 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       });
       return row;
     }
-    const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, existing.id)).returning();
-    const contactTypes = changedContacts(existing, row);
-    const revoked = contactTypes.length
-      ? await revokeTokens(tx, { eventId: input.eventId, entityId: row.id, contactTypes })
-      : 0;
+    const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, current.id)).returning();
+    const contactTypes = changedContacts(current, row);
+    const links = await replaceLinksForChangedEmail(tx, loaded.event, {
+      entityId: row.id,
+      contacts: contactTypes.map((contactType) => ({
+        contactType,
+        hasEmail: Boolean(contactType === "supplier_admin" ? row.adminContactEmail : row.attendeeContactEmail),
+      })),
+    });
     await recordAudit(tx, {
       eventId: input.eventId,
       adminId: input.adminId,
       action: "supplier.update",
       entityType: "supplier",
       entityId: row.id,
-      before: existing,
-      after: row,
-      note: contactTypes.length ? `Contact email changed; ${revoked} link${revoked === 1 ? "" : "s"} revoked.` : null,
+      before: current,
+      after: links.reissued.length ? { ...row, linksReissued: links.reissued } : row,
+      note: contactTypes.length ? emailChangeNote("Contact email changed", links) : null,
     });
     return row;
   });
@@ -358,6 +432,7 @@ async function setSupplierStatus(
       .where(and(eq(suppliers.id, existing.id), eq(suppliers.status, existing.status)))
       .returning();
     if (!row) return undefined;
+    // Links stay as they are through withdraw and restore (D130).
     await recordAudit(tx, {
       eventId: existing.eventId,
       adminId: input.adminId,
@@ -367,7 +442,7 @@ async function setSupplierStatus(
       before: desk
         ? { status: existing.status, deskNumber: existing.deskNumber, deskOverride: existing.deskOverride }
         : { status: existing.status },
-      after: desk ? { status: row.status, ...desk } : { status: row.status },
+      after: { status: row.status, ...desk },
       note: note ?? null,
     });
     return note;

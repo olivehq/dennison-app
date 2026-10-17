@@ -35,7 +35,7 @@ import { previewCampaignAction, sendCampaignAction, sendTestAction, updateCampai
 import { findUnknownFields } from "@/server/email/merge";
 import type { AudienceOptions } from "@/server/email/queries";
 import { applyActionError } from "../../_roster/form-errors";
-import { AUDIENCE_LABELS, recipients } from "../labels";
+import { AUDIENCE_LABELS, recipients, sentMessage, skippedRevokedMessage } from "../labels";
 import { EmailPreview } from "./email-preview";
 import { RecipientPicker } from "./recipient-picker";
 import { RichTextEditor } from "./rich-text-editor";
@@ -50,14 +50,27 @@ type CampaignEditorProps = {
   campaignId: string;
   initial: CampaignFieldsInput;
   options: AudienceOptions;
+  /** Open the body as HTML source: the saved HTML has markup the visual editor would drop. */
+  initialHtmlMode: boolean;
   /** Null when sending is allowed; otherwise why not. */
   sendBlockedReason: string | null;
+  /** The event is archived: nothing can be saved or sent, and `sendBlockedReason` says so. */
+  archived: boolean;
   adminEmail: string;
   /** "Test sent Nov 2, 3:10 PM", or null. */
   testSentLabel: string | null;
 };
 
-export function CampaignEditor({ campaignId, initial, options, sendBlockedReason, adminEmail, testSentLabel }: CampaignEditorProps) {
+export function CampaignEditor({
+  campaignId,
+  initial,
+  options,
+  initialHtmlMode,
+  sendBlockedReason,
+  archived,
+  adminEmail,
+  testSentLabel,
+}: CampaignEditorProps) {
   const router = useRouter();
   const {
     register,
@@ -90,7 +103,10 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
   const recipientCount = audienceCount(audience);
   const unknownFields = React.useMemo(() => findUnknownFields(`${subject ?? ""} ${htmlBody ?? ""}`), [subject, htmlBody]);
 
-  // The preview follows the editor, debounced, rendered on the server with real values.
+  // A string, so the effect below reruns only when the selection really changes.
+  const selectedKeys = audience === "selected" ? (selected ?? []).join(",") : "";
+
+  // The preview follows the editor, audience included, debounced, rendered on the server with real values.
   React.useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(async () => {
@@ -99,6 +115,8 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
         recipient: previewKey === AUTO_RECIPIENT ? undefined : previewKey,
         subject,
         htmlBody,
+        audience,
+        selectedRecipients: selectedKeys ? selectedKeys.split(",") : [],
       });
       if (cancelled) return;
       if (result.ok) {
@@ -112,7 +130,7 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [campaignId, previewKey, subject, htmlBody]);
+  }, [campaignId, previewKey, subject, htmlBody, audience, selectedKeys]);
 
   /** Saves when there are unsaved edits. Returns false and shows errors when the save fails. */
   const save = async (values: CampaignFields, force = false): Promise<boolean> => {
@@ -123,7 +141,8 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
       if (result.error.code === "conflict") router.refresh();
       return false;
     }
-    reset(getValues());
+    // Keep what was stored: the server cleans the body, and HTML mode should show the cleaned source.
+    reset({ ...getValues(), htmlBody: result.data.htmlBody });
     return true;
   };
 
@@ -144,13 +163,16 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
       router.refresh();
       return;
     }
-    toast.success(`Sent to ${recipients(result.data.sent)}`);
+    const notify = result.data.delivered ? toast.success : toast.warning;
+    notify(sentMessage(result.data.sent, result.data.delivered));
     if (result.data.failed > 0) {
       toast.error(`${recipients(result.data.failed)} could not be sent. Use "Resend to bounced" to try again.`);
     }
-    router.refresh();
+    if (result.data.skippedRevoked > 0) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
   };
 
+  // On an archived event nothing saves either; the footer line says why.
+  const archivedTitle = archived ? (sendBlockedReason ?? undefined) : undefined;
   const sendDisabledReason =
     sendBlockedReason ??
     (unknownFields.length > 0
@@ -265,6 +287,7 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
                     <RichTextEditor
                       id="campaign-body"
                       value={field.value}
+                      initialHtmlMode={initialHtmlMode}
                       onChange={field.onChange}
                       onBlur={field.onBlur}
                       invalid={!!errors.htmlBody}
@@ -272,7 +295,7 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
                     />
                     <FieldDescription id="campaign-body-help">
                       Merge fields like {"{{first_name}}"} are filled in for each person. {"{{schedule_link}}"} becomes their
-                      private link.
+                      private link. Images and links must use https.
                     </FieldDescription>
                     <FieldError errors={[errors.htmlBody]} />
                   </Field>
@@ -294,11 +317,22 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
           </CardContent>
           <CardFooter className="flex flex-col items-start gap-3 border-t pt-(--card-spacing) pb-(--card-spacing)">
             <div className="flex flex-wrap gap-2">
-              <Button type="submit" variant="outline" disabled={isSubmitting}>
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={isSubmitting || archived}
+                title={archivedTitle}
+              >
                 {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
                 Save draft
               </Button>
-              <Button type="button" variant="outline" onClick={onTest} disabled={isSubmitting}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onTest}
+                disabled={isSubmitting || archived}
+                title={archivedTitle}
+              >
                 Send test to me
               </Button>
               <Button type="button" onClick={onSend} disabled={isSubmitting || sendDisabledReason !== null}>
@@ -353,7 +387,7 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
                   <dd className="font-medium break-words">{preview.subject}</dd>
                 </dl>
                 <Separator />
-                <EmailPreview html={preview.html} className="[&_a]:pointer-events-none" />
+                <EmailPreview sanitizedHtml={preview.html} />
               </>
             ) : (
               <div className="flex flex-col gap-2" aria-label="Loading preview">
@@ -379,7 +413,6 @@ export function CampaignEditor({ campaignId, initial, options, sendBlockedReason
         campaignId={campaignId}
         defaultEmail={adminEmail}
         recipient={preview?.recipient ?? null}
-        onSent={() => router.refresh()}
       />
       <ConfirmDialog
         open={confirmOpen}
@@ -399,19 +432,27 @@ function SendTestDialog({
   campaignId,
   defaultEmail,
   recipient,
-  onSent,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   campaignId: string;
   defaultEmail: string;
   recipient: { key: string; name: string } | null;
-  onSent: () => void;
 }) {
   const [email, setEmail] = React.useState(defaultEmail);
   const [error, setErrorText] = React.useState<string | null>(null);
   const [pending, setPending] = React.useState(false);
+  const [wasOpen, setWasOpen] = React.useState(open);
   const inputId = React.useId();
+
+  // The parent opens the dialog, so start fresh whenever `open` turns true.
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setEmail(defaultEmail);
+      setErrorText(null);
+    }
+  }
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -422,25 +463,16 @@ function SendTestDialog({
         setErrorText(result.error.fieldErrors?.toEmail?.[0] ?? result.error.message);
         return;
       }
-      toast.success(`Test sent to ${result.data.toEmail}`);
+      if (result.data.delivered) toast.success(`Test sent to ${result.data.toEmail}`);
+      else toast.warning(`Test logged, not sent. This server has no email provider set up, so nothing went to ${result.data.toEmail}.`);
       onOpenChange(false);
-      onSent();
     } finally {
       setPending(false);
     }
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (next) {
-          setEmail(defaultEmail);
-          setErrorText(null);
-        }
-        onOpenChange(next);
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} noValidate className="flex flex-col gap-4">
           <DialogHeader>

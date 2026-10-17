@@ -5,7 +5,7 @@ import { isEventEditable } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { eventYear } from "./common";
-import { EXPORT_KINDS, exportAuditAction, exportFilename, type ExportKind } from "./kinds";
+import { EXPORT_KINDS, exportAuditAction, exportFilename, needsRun, type ExportKind } from "./kinds";
 
 export type LastExport = {
   at: Date;
@@ -21,7 +21,7 @@ export type ExportState = {
   /** Why the export is disabled. Null when available. */
   reason: string | null;
   last: LastExport | null;
-  /** The schedule (run or its version) moved since the last export. Never set for the access list. */
+  /** The schedule (run or its version) moved since the last export. Never set for the access list or the roster lists. */
   scheduleChanged: boolean;
 };
 
@@ -56,7 +56,7 @@ export async function exportAvailability(eventId: string, db: Db = getDb()): Pro
   const [run, rows] = await Promise.all([
     findActiveRun(db, eventId),
     db
-      .select({
+      .selectDistinctOn([auditEvents.action], {
         action: auditEvents.action,
         after: auditEvents.after,
         createdAt: auditEvents.createdAt,
@@ -70,7 +70,8 @@ export async function exportAvailability(eventId: string, db: Db = getDb()): Pro
           inArray(auditEvents.action, EXPORT_KINDS.map(exportAuditAction)),
         ),
       )
-      .orderBy(desc(auditEvents.createdAt)),
+      // DISTINCT ON keeps the first row per action: the newest, then the highest id on a tie.
+      .orderBy(auditEvents.action, desc(auditEvents.createdAt), desc(auditEvents.id)),
   ]);
 
   const locked = !isEventEditable(event);
@@ -81,9 +82,11 @@ export async function exportAvailability(eventId: string, db: Db = getDb()): Pro
     const last: LastExport | null = latest
       ? { at: latest.createdAt, byName: latest.byName, ...readRunRef(latest.after) }
       : null;
-    const reason = !run ? NO_RUN_REASON : needsLock(kind) && !locked ? NOT_LOCKED_REASON : null;
+    const reason =
+      needsRun(kind) && !run ? NO_RUN_REASON : needsLock(kind) && !locked ? NOT_LOCKED_REASON : null;
     const scheduleChanged =
       kind !== "access_list" &&
+      needsRun(kind) &&
       last !== null &&
       run !== null &&
       (last.runId !== run.id || last.runVersion !== run.version);

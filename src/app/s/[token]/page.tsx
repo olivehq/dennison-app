@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
+import { after } from "next/server";
 import { PersonSchedule, type PersonScheduleSlot } from "@/components/app/person-schedule";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
+import { getDb } from "@/db/client";
 import { formatEventDate } from "@/lib/time";
 import { loadParticipantView } from "@/server/exports/participant";
 
@@ -20,24 +22,12 @@ function Footer() {
   return <footer className="pt-2 text-center text-xs text-muted-foreground">Sent by Dennison &amp; Associates</footer>;
 }
 
-function InvalidLink() {
-  return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-[480px] flex-col justify-center gap-6 px-4 py-10">
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle className="font-display text-xl font-bold">This link is not valid</EmptyTitle>
-          <EmptyDescription>It may have expired or been replaced. Contact the AW team for a new one.</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-      <Footer />
-    </main>
-  );
-}
-
 export default async function ParticipantSchedulePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const view = await loadParticipantView(token);
-  if (!view) return <InvalidLink />;
+  // The view is recorded after the response is sent, so the write never holds up the page.
+  const view = await loadParticipantView(token, getDb(), { defer: after });
+  // One answer for an unknown, revoked, or expired link and a withdrawn person (D44): see ./not-found.tsx.
+  if (!view) notFound();
 
   const { event, person, slots } = view.schedule;
   const isSupplier = person.type === "supplier";

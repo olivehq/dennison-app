@@ -1,7 +1,7 @@
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, lt, max, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { appointments, matchRuns, type MatchRun } from "@/db/schema";
-import { buildRankingIndex, runMatching, type Appointment, type QualityStats } from "@/engine";
+import { appointments, events, matchRuns, type MatchRun } from "@/db/schema";
+import { buildRankingIndex, computeStats, runMatching, type Appointment, type QualityStats } from "@/engine";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import { compareNames } from "@/lib/names";
 import { NOT_ACTIVE_RUN_MESSAGE, VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
@@ -9,19 +9,32 @@ import { recordAudit } from "@/server/audit/audit";
 import {
   assertEventEditable,
   claimEditableEvent,
+  claimUnarchivedEvent,
   EVENT_CHANGED_MESSAGE,
   EventChangedError,
 } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
+import { cachePerRender } from "@/server/render-cache";
 import { advanceStatus } from "@/server/events/status";
 import { isUniqueViolation, nameWarning } from "./common";
-import { buildMatchInput, loadRoster, toEngineRankings, type Roster } from "./input";
+import {
+  buildMatchInput,
+  loadRoster,
+  toEngineBuyers,
+  toEngineRankings,
+  toEngineSuppliers,
+  type Roster,
+} from "./input";
 import { matchingReadiness } from "./readiness";
 
 export type StartRunInput = {
   eventId: string;
   adminId: string;
-  /** D10: pin every appointment of the active run that involves no withdrawn person. */
+  /**
+   * D10: keep every appointment of the active run that involves no withdrawn
+   * person, each with its own pinned flag, and fill the open slots. Without it
+   * the run starts from scratch: no kept rows, no pins, no parent.
+   */
   keepExisting: boolean;
 };
 
@@ -31,7 +44,8 @@ export type StartRunResult = {
   stats: QualityStats;
   warnings: string[];
   durationMs: number;
-  pinnedCount: number;
+  /** Appointments of the active run the new run kept (after the engine dropped any). 0 for a run from scratch. */
+  keptCount: number;
 };
 
 export type AppointmentView = {
@@ -66,13 +80,26 @@ export async function findRun(db: Db, runId: string): Promise<MatchRun | null> {
   return run ?? null;
 }
 
-export async function findActiveRun(db: Db, eventId: string): Promise<MatchRun | null> {
+/** The event's active run, or null. Shared per render on the default client; a transaction reads fresh. */
+export const findActiveRun = cachePerRender(async (db: Db, eventId: string): Promise<MatchRun | null> => {
   const [run] = await db
     .select()
     .from(matchRuns)
     .where(and(eq(matchRuns.eventId, eventId), eq(matchRuns.isActive, true)))
     .limit(1);
   return run ?? null;
+});
+
+/** The highest slot a run's appointments use, or null when it has none. */
+async function highestSlotOfRun(db: Db, runId: string): Promise<number | null> {
+  const [row] = await db.select({ value: max(appointments.slot) }).from(appointments).where(eq(appointments.runId, runId));
+  return row?.value ?? null;
+}
+
+/** The event's slot count as stored now. */
+async function currentSlotCount(db: Db, eventId: string): Promise<number> {
+  const [row] = await db.select({ settings: events.settings }).from(events).where(eq(events.id, eventId));
+  return row.settings.slotCount;
 }
 
 /** An event with an active run has been matched. Only `imported` moves; later statuses stay (compare-and-set). */
@@ -87,44 +114,74 @@ export const ACTIVATE_CONFLICT_MESSAGE =
 /** A run still `running` this long after it started died with its request (D13 timeout is 10 minutes too). */
 export const RUN_TIMEOUT_MINUTES = 10;
 
+/** What a timed-out run shows in the Runs table and the activity log. */
+export function timedOutMessage(minutes: number): string {
+  return `Matching didn't finish within ${minutes} minutes, so this run was marked failed. Run matching again.`;
+}
+
+/** What a run that stopped on an unexpected error shows. The error itself goes to the server log only. */
+export const RUN_ERROR_MESSAGE = "Matching stopped with an error. Run matching again; if it fails again, contact support.";
+
 /**
- * Marks runs that are still `running` after `minutes` as failed with the
- * warning "Timed out". The running row is inserted before the engine starts so
- * the page can show it; a crash or a killed function leaves it behind.
+ * Marks the event's runs that are still `running` after `minutes` as failed,
+ * with a reason in `warnings` and a failed `matching.run` audit row each. The
+ * running row is inserted before the engine starts so the page can show it; a
+ * crash or a killed function leaves it behind. Other events' runs are left
+ * alone, and an archived event is not changed at all.
+ *
+ * Runs on every matching page load, so it first checks for a stuck run
+ * without a lock. Only when there is one does it open a transaction that
+ * claims the event row while unarchived (`claimUnarchivedEvent`, the event
+ * row before the run rows, as `startRun` does), so an archive waits for it
+ * or goes first and makes it change nothing.
  */
-export async function failRunsOlderThan(db: Db, minutes: number, now: Date = new Date()): Promise<number> {
+export async function failRunsOlderThan(
+  db: Db,
+  eventId: string,
+  minutes: number,
+  now: Date = new Date(),
+): Promise<number> {
   const cutoff = new Date(now.getTime() - minutes * 60_000);
-  const rows = await db
-    .update(matchRuns)
-    .set({ status: "failed", warnings: ["Timed out"], completedAt: now })
-    .where(and(eq(matchRuns.status, "running"), lt(matchRuns.createdAt, cutoff)))
-    .returning({ id: matchRuns.id });
-  return rows.length;
+  const stuck = and(eq(matchRuns.eventId, eventId), eq(matchRuns.status, "running"), lt(matchRuns.createdAt, cutoff));
+  const [any] = await db.select({ id: matchRuns.id }).from(matchRuns).where(stuck).limit(1);
+  if (!any) return 0;
+  const message = timedOutMessage(minutes);
+  return db.transaction(async (tx) => {
+    if (!(await claimUnarchivedEvent(tx, eventId))) return 0;
+    const rows = await tx
+      .update(matchRuns)
+      .set({ status: "failed", warnings: [message], completedAt: now })
+      .where(stuck)
+      .returning({ id: matchRuns.id, createdBy: matchRuns.createdBy, parentRunId: matchRuns.parentRunId });
+    for (const row of rows) {
+      await recordAudit(tx, {
+        eventId,
+        adminId: row.createdBy,
+        action: "matching.run",
+        entityType: "match_run",
+        entityId: row.id,
+        after: { status: "failed", keepExisting: row.parentRunId !== null, parentRunId: row.parentRunId, error: message },
+      });
+    }
+    return rows.length;
+  });
 }
 
 /**
- * Appointments of the active run that a new run keeps. Every run keeps the
- * rows an admin pinned; "keep existing" (D10) keeps every row. Anything that
- * names a withdrawn buyer or supplier is dropped so its slots can be refilled.
- * Ranks are stamped again from the current rankings, so a re-import since the
- * run shows in the kept rows and the stats; the engine drops pairs that are no
- * longer eligible.
+ * Appointments of the active run that "keep existing" (D10) carries into the
+ * new run: every row except those naming a withdrawn buyer or supplier, so
+ * their slots can be refilled. Each row keeps its own pinned flag. Ranks are
+ * stamped again from the current rankings, so a re-import since the run shows
+ * in the kept rows and the stats; the engine drops pairs that are no longer
+ * eligible.
  */
-async function loadPinnedFromActiveRun(
-  db: Db,
-  roster: Roster,
-  activeRunId: string,
-  options: { keepAll: boolean },
-): Promise<Appointment[]> {
+async function loadKeptFromActiveRun(db: Db, roster: Roster, activeRunId: string): Promise<Appointment[]> {
   const withdrawn = new Set<string>([
     ...roster.participants.filter((p) => p.status === "withdrawn").map((p) => p.id),
     ...roster.suppliers.filter((s) => s.status === "withdrawn").map((s) => s.id),
   ]);
   const index = buildRankingIndex(toEngineRankings(roster.rankings));
-  const rows = await db
-    .select()
-    .from(appointments)
-    .where(options.keepAll ? eq(appointments.runId, activeRunId) : and(eq(appointments.runId, activeRunId), eq(appointments.pinned, true)));
+  const rows = await db.select().from(appointments).where(eq(appointments.runId, activeRunId));
   return rows
     .filter((r) => !withdrawn.has(r.buyerId) && !withdrawn.has(r.supplierId))
     .map((r) => ({
@@ -134,7 +191,7 @@ async function loadPinnedFromActiveRun(
       buyerRank: index.buyerRank(r.buyerId, r.supplierId),
       supplierRank: index.supplierRank(r.supplierId, r.buyerId),
       source: r.source,
-      pinned: true,
+      pinned: r.pinned,
     }));
 }
 
@@ -150,7 +207,7 @@ class RunRefused extends Error {
  * completed run of an event becomes active on its own; later runs wait for
  * `activateRun` so an admin can compare first (scope 2.2 re-run addition).
  *
- * The readiness gate, the roster, rankings, and pinned rows, and the running
+ * The readiness gate, the roster, rankings, and kept rows, and the running
  * row are read and written in one transaction that holds the event row
  * (`claimEditableEvent`), so an import apply, which takes the same row, lands
  * wholly before or wholly after the inputs. The engine runs after it commits.
@@ -161,22 +218,26 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
   const locked = assertEventEditable(event);
   if (locked) return locked;
 
-  let setup: { roster: Roster; pinned: Appointment[]; parentRunId: string | null; run: MatchRun };
+  let setup: { roster: Roster; kept: Appointment[]; parentRunId: string | null; run: MatchRun };
   try {
     setup = await db.transaction(async (tx) => {
       await claimEditableEvent(tx, input.eventId);
       const readiness = await matchingReadiness(tx, input.eventId);
       if (!readiness.ready) throw new RunRefused(fail("validation", readiness.reasons.join(" ")));
       const roster = (await loadRoster(tx, input.eventId))!;
-      const active = await findActiveRun(tx, input.eventId);
-      if (input.keepExisting && !active) {
-        throw new RunRefused(
-          fail("validation", "There is no active run to keep. Run matching without keeping existing appointments."),
-        );
+      // A plain run starts from scratch and never reads the active run.
+      let kept: Appointment[] = [];
+      let parentRunId: string | null = null;
+      if (input.keepExisting) {
+        const active = await findActiveRun(tx, input.eventId);
+        if (!active) {
+          throw new RunRefused(
+            fail("validation", "There is no active run to keep. Run matching without keeping existing appointments."),
+          );
+        }
+        kept = await loadKeptFromActiveRun(tx, roster, active.id);
+        parentRunId = active.id;
       }
-      // Every run keeps the active run's pinned rows; keep existing keeps them all.
-      const pinned = active ? await loadPinnedFromActiveRun(tx, roster, active.id, { keepAll: input.keepExisting }) : [];
-      const parentRunId = input.keepExisting && active ? active.id : null;
       const [run] = await tx
         .insert(matchRuns)
         .values({
@@ -187,20 +248,24 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
           createdBy: input.adminId,
         })
         .returning();
-      return { roster, pinned, parentRunId, run };
+      return { roster, kept, parentRunId, run };
     });
   } catch (error) {
     if (error instanceof RunRefused) return error.result;
     if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     throw error;
   }
-  const { roster, pinned, parentRunId, run } = setup;
+  const { roster, kept, parentRunId, run } = setup;
 
   try {
     const started = performance.now();
-    const result = runMatching(buildMatchInput(roster, pinned));
+    const result = runMatching(buildMatchInput(roster, kept));
     const durationMs = Math.round(performance.now() - started);
     const warnings = result.warnings.map((w) => nameWarning(w, roster.names));
+    // The engine drops kept rows that are no longer valid; count what it actually kept.
+    const keptKeys = new Set(kept.map(appointmentKey));
+    const keptRows = result.appointments.filter((a) => keptKeys.has(appointmentKey(a)));
+    const keptCount = keptRows.length;
 
     const isActive = await db.transaction(async (tx) => {
       // Lock or archive may have landed while the engine ran.
@@ -226,7 +291,10 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
         .where(eq(matchRuns.id, run.id));
       // The first completed run becomes active. Two first runs at once: the
       // unique index lets one win; the other stays a completed, inactive run.
-      const makeActive = (await findActiveRun(tx, input.eventId)) === null && (await setActiveFlag(tx, run.id));
+      // A run that no longer fits the slot count (settings saved while it ran) never activates itself.
+      const highest = Math.max(0, ...result.appointments.map((a) => a.slot));
+      const fits = highest <= (await currentSlotCount(tx, input.eventId));
+      const makeActive = fits && (await findActiveRun(tx, input.eventId)) === null && (await setActiveFlag(tx, run.id));
       if (makeActive) await markMatched(tx, input.eventId);
       await recordAudit(tx, {
         eventId: input.eventId,
@@ -238,7 +306,8 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
           status: "completed",
           keepExisting: input.keepExisting,
           parentRunId,
-          pinnedCount: pinned.length,
+          keptCount,
+          keptPinnedCount: keptRows.filter((a) => a.pinned).length,
           appointments: result.appointments.length,
           warningCount: warnings.length,
           durationMs,
@@ -254,15 +323,13 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
       stats: result.stats,
       warnings,
       durationMs,
-      pinnedCount: pinned.length,
+      keptCount,
     });
   } catch (error) {
     const changed = error instanceof EventChangedError;
-    const message = changed
-      ? "The event was locked or archived while matching ran."
-      : error instanceof Error
-        ? error.message
-        : String(error);
+    // The page shows a fixed sentence; the raw error may name internals, so it goes to the log.
+    const message = changed ? "The event was locked or archived while matching ran." : RUN_ERROR_MESSAGE;
+    if (!changed) console.error(`[matching] run ${run.id} of event ${input.eventId} failed:`, error);
     await db.transaction(async (tx) => {
       await tx
         .update(matchRuns)
@@ -278,7 +345,7 @@ export async function startRun(db: Db, input: StartRunInput): Promise<ActionResu
       });
     });
     if (changed) return fail("conflict", EVENT_CHANGED_MESSAGE);
-    return fail("internal", "Matching failed. The run is marked failed; open it to see the error.");
+    return fail("internal", "Matching failed. The Runs table below shows why.");
   }
 }
 
@@ -299,15 +366,27 @@ async function setActiveFlag(tx: Db, runId: string): Promise<boolean> {
   }
 }
 
+/** Returned when the active run or its version moved after the page showed what activating would change (D11). */
+export const ACTIVATE_STALE_MESSAGE =
+  "Someone changed or activated the schedule since this page loaded. Reload and check the counts, then activate again.";
+
 /**
  * Makes one run the schedule everyone sees and edits. Clears the flag on every
  * other run of the event, all in one transaction that first claims the event
  * as editable. The partial unique index on the active run is the authority: a
  * concurrent activation that slips past becomes a conflict, never two actives.
+ *
+ * `expected` is the active run and its version as the page read them (both
+ * null when no run was active). When sent, a different active run or a newer
+ * version is a conflict, so the counts the confirm showed are the ones applied.
  */
 export async function activateRun(
   db: Db,
-  input: { runId: string; adminId: string },
+  input: {
+    runId: string;
+    adminId: string;
+    expected?: { activeRunId: string | null; version: number | null };
+  },
 ): Promise<ActionResult<{ runId: string }>> {
   const run = await findRun(db, input.runId);
   if (!run) return fail("not_found", "That run no longer exists.");
@@ -323,6 +402,21 @@ export async function activateRun(
       await claimEditableEvent(tx, run.eventId);
       const previous = await findActiveRun(tx, run.eventId);
       if (previous?.id === run.id) return;
+      const { expected } = input;
+      if (expected && ((previous?.id ?? null) !== expected.activeRunId || (previous?.version ?? null) !== expected.version)) {
+        throw new RunRefused(fail("conflict", ACTIVATE_STALE_MESSAGE));
+      }
+      // Settings may have lost slots since the run (D98 amendment): its appointments would sit in slots that no longer exist.
+      const highest = await highestSlotOfRun(tx, run.id);
+      const slotCount = await currentSlotCount(tx, run.eventId);
+      if (highest !== null && highest > slotCount) {
+        throw new RunRefused(
+          fail(
+            "validation",
+            `This run uses slot ${highest}, but the event now has ${slotCount} slots. Run matching again with the current settings, or add the slots back in Settings.`,
+          ),
+        );
+      }
       await tx
         .update(matchRuns)
         .set({ isActive: false })
@@ -340,6 +434,7 @@ export async function activateRun(
       });
     });
   } catch (error) {
+    if (error instanceof RunRefused) return error.result;
     if (error instanceof EventChangedError) return fail("conflict", EVENT_CHANGED_MESSAGE);
     if (isUniqueViolation(error)) return fail("conflict", ACTIVATE_CONFLICT_MESSAGE);
     throw error;
@@ -430,7 +525,7 @@ export function diffAppointments(
       after: a,
     });
   }
-  countChanges.sort((x, y) => x.type.localeCompare(y.type) || compareNames(x.name, y.name));
+  countChanges.sort((x, y) => compareNames(x.name, y.name) || (x.type === y.type ? 0 : x.type === "buyer" ? -1 : 1));
 
   return { added, removed, countChanges };
 }
@@ -438,10 +533,12 @@ export function diffAppointments(
 class VersionConflict extends Error {}
 
 /**
- * Protects one appointment from the next "re-run and keep existing" (scope 2.2).
- * Bumps the run version like every other schedule save (D11, D33): the update
- * only fires while the version is still the one read here (and the one the
- * client sent, when it sent one), so a concurrent edit makes it a conflict.
+ * Marks one appointment as reviewed. A marker only: it doesn't change matching
+ * (D106 plain runs start from scratch, D107 keep existing keeps every meeting).
+ * Bumps the run version and restamps the stats like every other schedule save
+ * (D11, D33): the update only fires while the version is still the one read
+ * here (and the one the client sent, when it sent one), so a concurrent edit
+ * makes it a conflict.
  */
 export async function setPinned(
   db: Db,
@@ -464,9 +561,17 @@ export async function setPinned(
   try {
     const version = await db.transaction(async (tx) => {
       await claimEditableEvent(tx, row.eventId);
+      const roster = await loadRoster(tx, row.eventId);
+      if (!roster) throw new EventChangedError();
+      const rows = await tx.select().from(appointments).where(eq(appointments.runId, run.id));
+      const stats = computeStats(rows, {
+        settings: roster.event.settings,
+        buyers: toEngineBuyers(roster.participants),
+        suppliers: toEngineSuppliers(roster.suppliers),
+      });
       const [bumped] = await tx
         .update(matchRuns)
-        .set({ version: sql`${matchRuns.version} + 1` })
+        .set({ version: sql`${matchRuns.version} + 1`, stats })
         .where(and(eq(matchRuns.id, run.id), eq(matchRuns.version, run.version), eq(matchRuns.isActive, true)))
         .returning({ version: matchRuns.version });
       if (!bumped) throw new VersionConflict();

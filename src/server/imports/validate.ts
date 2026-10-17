@@ -8,7 +8,14 @@ import type {
   UnknownName,
 } from "@/lib/schemas/import";
 import { displayNameFor, fullNameFor } from "@/server/roster/display-name";
-import { resolveNames, type AliasRow, type GlobalAliasRow, type ResolvableEntity } from "./resolve";
+import {
+  resolveNames,
+  type AliasRow,
+  type GlobalAliasRow,
+  type ResolvableEntity,
+  type Resolution,
+  type Unresolved,
+} from "./resolve";
 import type {
   ParsedFile,
   ParsedParticipant,
@@ -70,7 +77,12 @@ export type RankingAnalysis = {
   report: ImportValidationReport;
 };
 
-type Entities = ResolvableEntity & { emails: string[]; active: boolean };
+type Entities = ResolvableEntity & {
+  emails: string[];
+  active: boolean;
+  /** Enough to tell two people with one name apart: name, organization, title, email. */
+  detail: string;
+};
 
 function participantEntities(participants: ContextParticipant[]): Entities[] {
   return participants.map((person) => {
@@ -79,13 +91,16 @@ function participantEntities(participants: ContextParticipant[]): Entities[] {
     if (person.organization && person.title) names.add(`${person.organization} - ${person.title}`);
     if (person.displayName) names.add(person.displayName);
     const label = person.organization ? `${full} (${person.organization})` : full;
+    const facts = [person.organization, person.title, person.email].filter((fact): fact is string => Boolean(fact));
     return {
       id: person.id,
       label,
       canonicalName: full,
       names: [...names].filter((name) => name !== ""),
       emails: [person.email],
+      organization: person.organization,
       active: person.status === "active",
+      detail: `${full} (${facts.join(", ")})`,
     };
   });
 }
@@ -100,6 +115,7 @@ function supplierEntities(suppliers: ContextSupplier[]): Entities[] {
       (email): email is string => email !== null,
     ),
     active: supplier.status === "active",
+    detail: supplier.name,
   }));
 }
 
@@ -125,6 +141,7 @@ function emptyReport(format: ImportFormat | null, rows: number): ImportValidatio
     rowsWithZeroRankings: [],
     rankedByNobody: [],
     rankedNobody: [],
+    rankersInFile: [],
   };
 }
 
@@ -300,7 +317,7 @@ function globalAliasesFor(context: ValidationContext, entityType: EntityType): G
 }
 
 function unknownNameEntries(
-  unresolved: { raw: string; suggestions: UnknownName["suggestions"] }[],
+  unresolved: Unresolved[],
   entityType: EntityType,
   role: UnknownName["role"],
   rowsByRaw: Map<string, number[]>,
@@ -311,8 +328,40 @@ function unknownNameEntries(
     role,
     rows: rowsByRaw.get(entry.raw) ?? [],
     suggestions: entry.suggestions,
+    ...(entry.ambiguous ? { ambiguous: true } : {}),
   }));
 }
+
+/**
+ * A saved mapping for a text several people share (a company, a common name)
+ * sends every row with that text to one person. Not silent: one warning per
+ * text, naming who it goes to and how to point a row at someone else.
+ */
+function aliasedAmbiguousWarnings(
+  resolution: Resolution,
+  rowsByRaw: Map<string, number[]>,
+  detailOf: Map<string, string>,
+  noun: string,
+): { row: number | null; message: string }[] {
+  return [...resolution.aliasedAmbiguous].map(([raw, candidates]) => {
+    const rows = rowsByRaw.get(raw) ?? [];
+    const target = resolution.resolved.get(raw)!;
+    // With several rows the message names them all, so it carries no single row for the page to prefix.
+    return {
+      row: rows.length === 1 ? rows[0] : null,
+      message: `${rows.length > 1 ? `Rows ${rows.join(", ")}: ` : ""}"${raw}" matches ${candidates.length} ${noun}s. A saved mapping sends it to ${
+        detailOf.get(target) ?? target
+      }. If a row means someone else, put their email in the file instead.`,
+    };
+  });
+}
+
+/** What a ranking file holds, for "their <kind> rankings will be cleared". */
+const RANKINGS_OF_KIND: Record<RankingKind, string> = {
+  buyer_biztech_rankings: "biztech rankings",
+  buyer_hotel_rankings: "hotel rankings",
+  supplier_rankings: "rankings of participants",
+};
 
 /**
  * Resolves every name in a ranking file against the roster and produces both
@@ -403,17 +452,31 @@ export function analyzeRankings(
       targetRows.set(raw, [...(targetRows.get(raw) ?? []), row.row]);
     }
   }
+  // Suppliers name buyers by email or company as well as by name: an email
+  // decides, then this event's alias, then a company only one buyer has.
   const targetResolution = resolveNames(
     targetRows.keys(),
     targets,
     aliasesFor(context, targetType),
     globalAliasesFor(context, targetType),
+    targetType === "buyer" ? { byEmail: true, byOrganization: true } : {},
   );
   for (const [raw, entityId] of targetResolution.inexact) {
     inexact.push({ raw, entityType: targetType, entityId, canonicalName: canonicalOf.get(entityId) ?? raw });
   }
   report.unknownNames.push(
     ...unknownNameEntries(targetResolution.unresolved, targetType, "target", targetRows),
+  );
+  const detailOf = new Map([...rankers, ...targets].map((entity) => [entity.id, entity.detail]));
+  const rankerRows = new Map<string, number[]>();
+  for (const row of rankerNames) {
+    const raw = row.rankerName.trim();
+    rankerRows.set(raw, [...(rankerRows.get(raw) ?? []), row.row]);
+  }
+  const noun = (type: EntityType) => (type === "buyer" ? "participant" : "supplier");
+  report.warnings.push(
+    ...aliasedAmbiguousWarnings(rankerResolution, rankerRows, detailOf, noun(rankerType)),
+    ...aliasedAmbiguousWarnings(targetResolution, targetRows, detailOf, noun(targetType)),
   );
 
   // Rows to write.
@@ -427,6 +490,10 @@ export function analyzeRankings(
     if (!rankerId) continue;
     if (row.choices.length === 0) {
       report.rowsWithZeroRankings.push({ row: row.row, name: labelOf.get(rankerId) ?? row.rankerName });
+      report.warnings.push({
+        row: row.row,
+        message: `${labelOf.get(rankerId) ?? row.rankerName} has no choices in this file; their ${RANKINGS_OF_KIND[kind]} will be cleared.`,
+      });
     }
     const seenTargets = new Set<string>();
     for (const choice of row.choices) {
@@ -454,33 +521,35 @@ export function analyzeRankings(
     }
   }
 
-  for (const entity of rankers) {
-    if (entity.active && !rankersWithChoices.has(entity.id)) {
-      report.rankedNobody.push({ entityId: entity.id, name: entity.label });
-    }
+  // A file may hold only some rankers (apply replaces per ranker), so these
+  // are information, worded for a partial file.
+  const activeRankers = rankers.filter((entity) => entity.active);
+  for (const entity of activeRankers) {
+    if (!rankersWithChoices.has(entity.id)) report.rankedNobody.push({ entityId: entity.id, name: entity.label });
   }
-  for (const entity of targets) {
-    if (entity.active && !rankedTargets.has(entity.id)) {
-      report.rankedByNobody.push({ entityId: entity.id, name: entity.label });
-    }
+  // Buyer files only count suppliers of the file's type: a hotel file never ranks business suppliers.
+  const activeTargets = targets.filter(
+    (entity) => entity.active && (!expectedType || supplierTypeById.get(entity.id) === expectedType),
+  );
+  for (const entity of activeTargets) {
+    if (!rankedTargets.has(entity.id)) report.rankedByNobody.push({ entityId: entity.id, name: entity.label });
   }
+  const rankerNoun = `active ${noun(rankerType)}${activeRankers.length === 1 ? "" : "s"}`;
   if (report.rankedNobody.length > 0) {
     report.warnings.push({
       row: null,
-      message: `${report.rankedNobody.length} active ${rankerType === "buyer" ? "participant" : "supplier"}${
-        report.rankedNobody.length === 1 ? "" : "s"
-      } ranked nobody in this file.`,
+      message: `This file has rankings for ${activeRankers.length - report.rankedNobody.length} of ${activeRankers.length} ${rankerNoun}. Everyone else keeps their current rankings.`,
     });
   }
   if (report.rankedByNobody.length > 0) {
+    const targetNoun = `active ${expectedType ? `${expectedType} ` : ""}${noun(targetType)}${activeTargets.length === 1 ? "" : "s"}`;
     report.warnings.push({
       row: null,
-      message: `${report.rankedByNobody.length} active ${targetType === "buyer" ? "participant" : "supplier"}${
-        report.rankedByNobody.length === 1 ? "" : "s"
-      } ${report.rankedByNobody.length === 1 ? "was" : "were"} ranked by nobody.`,
+      message: `Nobody in this file chose ${report.rankedByNobody.length} of ${activeTargets.length} ${targetNoun}. Rankings from earlier files still count.`,
     });
   }
 
+  report.rankersInFile = [...rowsByRanker.keys()];
   report.counts.rankers = rowsByRanker.size;
   report.counts.rankings = rankings.length;
   report.counts.resolvedNames = rankerResolution.resolved.size + targetResolution.resolved.size;
@@ -510,11 +579,12 @@ export function failedReport(message: string): ImportValidationReport {
 
 /** Collapses the database status and the report into the state the UI shows. */
 export function importStateFor(
-  status: "uploaded" | "validated" | "applied" | "failed",
+  status: "uploaded" | "validated" | "applied" | "failed" | "ignored",
   report: ImportValidationReport | null,
 ): ImportState {
   if (status === "failed") return "failed";
   if (status === "applied") return "applied";
+  if (status === "ignored") return "ignored";
   if (!report) return "failed";
   if (report.unknownNames.length > 0) return "needs_mapping";
   if (report.errors.length > 0) return "needs_fixes";

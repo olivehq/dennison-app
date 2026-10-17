@@ -3,7 +3,7 @@
 import * as React from "react";
 import { PlusIcon } from "lucide-react";
 import Link from "next/link";
-import { createDataTableColumnHelper, DataTable } from "@/components/app/data-table";
+import { ACTIONS_COLUMN_CLASS, createDataTableColumnHelper, DataTable, NAME_COLUMN } from "@/components/app/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,13 +12,23 @@ import {
   AppointmentCount,
   EmailChangeBadge,
   LinkBadge,
+  LinkFilterSelect,
   RosterRowActions,
+  replaceSearchParam,
   RosterStatusBadge,
   StatusFilterToggle,
   useUrlFilter,
   type RowLink,
 } from "../_roster/roster-ui";
-import type { EmailChange, Health, LinkInfo, StatusFilter, TypeFilter } from "../_roster/types";
+import {
+  matchesLinkFilter,
+  type EmailChange,
+  type Health,
+  type LinkFilter,
+  type LinkInfo,
+  type StatusFilter,
+  type TypeFilter,
+} from "../_roster/types";
 import { SupplierDialog, type SupplierFormData } from "./supplier-dialog";
 
 export type SupplierTableRow = SupplierFormData & {
@@ -74,19 +84,39 @@ type SuppliersTableProps = {
   eventId: string;
   rows: SupplierTableRow[];
   lockedReason: string | null;
+  linksBlockedReason: string | null;
   importsHref: string;
   initialStatus: StatusFilter;
   initialType: TypeFilter;
+  initialLink: LinkFilter;
+  initialQuery: string;
 };
 
-export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initialStatus, initialType }: SuppliersTableProps) {
+export function SuppliersTable({
+  eventId,
+  rows,
+  lockedReason,
+  linksBlockedReason,
+  importsHref,
+  initialStatus,
+  initialType,
+  initialLink,
+  initialQuery,
+}: SuppliersTableProps) {
   const [status, setStatus] = useUrlFilter<StatusFilter>("status", initialStatus, "active");
   const [type, setType] = useUrlFilter<TypeFilter>("type", initialType, "all");
+  const [link, setLink] = useUrlFilter<LinkFilter>("link", initialLink, "all");
   const [editing, setEditing] = React.useState<SupplierTableRow | null>(null);
 
   const visible = React.useMemo(
-    () => rows.filter((row) => (status === "all" || row.status === status) && (type === "all" || row.type === type)),
-    [rows, status, type],
+    () =>
+      rows.filter(
+        (row) =>
+          (status === "all" || row.status === status) &&
+          (type === "all" || row.type === type) &&
+          matchesLinkFilter(link, rowLinks(row).map((entry) => entry.link)),
+      ),
+    [rows, status, type, link],
   );
 
   const columns = React.useMemo(
@@ -94,7 +124,9 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
       helper.columns([
         helper.accessor("name", {
           header: "Name",
-          cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+          sortFn: "name",
+          ...NAME_COLUMN,
+          cell: ({ row }) => <span className="font-medium wrap-anywhere">{row.original.name}</span>,
         }),
         helper.accessor((row) => TYPE_LABELS[row.type], {
           id: "type",
@@ -126,8 +158,9 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
             id: "contacts",
             header: "Contacts",
             enableSorting: false,
+            meta: { className: "whitespace-normal" },
             cell: ({ row }) => (
-              <div className="flex min-w-48 flex-col gap-1 text-sm">
+              <div className="flex min-w-36 flex-col gap-1 text-sm wrap-anywhere">
                 <Contact role="Admin" name={row.original.adminContactName} email={row.original.adminContactEmail} />
                 <Contact role="Attendee" name={row.original.attendeeContactName} email={row.original.attendeeContactEmail} />
               </div>
@@ -163,6 +196,8 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
         helper.accessor((row) => row.emailChange ?? "", {
           id: "emailChange",
           header: "Changed since last email",
+          // The long header wraps instead of widening the table.
+          meta: { className: "whitespace-normal" },
           cell: ({ row }) => <EmailChangeBadge state={row.original.emailChange} />,
         }),
         helper.accessor("status", {
@@ -173,6 +208,7 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
           id: "actions",
           header: () => <span className="sr-only">Actions</span>,
           enableSorting: false,
+          meta: { className: ACTIONS_COLUMN_CLASS },
           cell: ({ row }) => {
             const item = row.original;
             return (
@@ -180,6 +216,7 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
                 name={item.name}
                 withdrawn={item.status === "withdrawn"}
                 lockedReason={lockedReason}
+                linksBlockedReason={linksBlockedReason}
                 onEdit={() => setEditing(item)}
                 withdraw={() => withdrawSupplierAction(item.id)}
                 restore={() => restoreSupplierAction(item.id)}
@@ -189,7 +226,7 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
           },
         }),
       ]),
-    [lockedReason],
+    [lockedReason, linksBlockedReason],
   );
 
   const hasRows = rows.length > 0;
@@ -200,12 +237,14 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
         data={visible}
         searchColumns={["name", "contacts"]}
         searchPlaceholder="Search by name or contact"
+        initialSearch={initialQuery}
+        onSearchChange={replaceSearchParam}
         getRowId={(row) => row.id}
         rowClassName={(row) => (row.status === "withdrawn" ? "text-muted-foreground" : undefined)}
         emptyTitle={hasRows ? "No suppliers match these filters" : "No suppliers yet"}
         emptyDescription={
           hasRows
-            ? "Change the status or type filter to see more."
+            ? "Clear the search or change the status, type, or link filter to see more."
             : "Upload the suppliers file on the Imports page, or add suppliers one at a time."
         }
         emptyAction={
@@ -229,6 +268,7 @@ export function SuppliersTable({ eventId, rows, lockedReason, importsHref, initi
             </SelectGroup>
           </SelectContent>
         </Select>
+        <LinkFilterSelect value={link} onChange={setLink} />
       </DataTable>
       <SupplierDialog
         eventId={eventId}

@@ -114,6 +114,8 @@ export const adminInvites = pgTable(
       .references(() => admins.id),
     expiresAt: timestamptz("expires_at").notNull(),
     acceptedAt: timestamptz("accepted_at"),
+    // Set by revoke. Unlike an expired invite, a revoked one cannot be resent.
+    revokedAt: timestamptz("revoked_at"),
     createdAt: createdAt(),
   },
   (table) => [index("admin_invites_email_idx").on(table.email)],
@@ -147,6 +149,8 @@ export const importStatusEnum = pgEnum("import_status", [
   "validated",
   "applied",
   "failed",
+  // Kept in history but set aside by an admin: never applied, skipped when picking the latest file of a kind.
+  "ignored",
 ]);
 export const matchRunStatusEnum = pgEnum("match_run_status", ["running", "completed", "failed"]);
 export const appointmentSourceEnum = pgEnum("appointment_source", ["engine", "manual"]);
@@ -242,7 +246,7 @@ export const suppliers = pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
-    uniqueIndex("suppliers_event_name_key").on(table.eventId, table.name),
+    uniqueIndex("suppliers_event_lower_name_key").on(table.eventId, sql`lower(${table.name})`),
     index("suppliers_event_status_idx").on(table.eventId, table.status),
   ],
 );
@@ -418,6 +422,8 @@ export const auditEvents = pgTable(
   },
   (table) => [
     index("audit_events_event_created_idx").on(table.eventId, table.createdAt),
+    // Reads that filter one event's log by action: manual-change counts, undo checks, exports, activity.
+    index("audit_events_event_action_idx").on(table.eventId, table.action),
     index("audit_events_entity_idx").on(table.entityType, table.entityId),
   ],
 );

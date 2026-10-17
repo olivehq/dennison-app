@@ -1,11 +1,21 @@
 import { eq } from "drizzle-orm";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
 import { adminInvites, admins, sessions } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { clearLoggedEmails, getLoggedEmails } from "@/lib/email/adapter";
+import { env } from "@/lib/env";
 import { listAudit } from "@/server/audit/audit";
-import { createInvite, disableAdminAccount, enableAdminAccount, hashToken, resendInvite } from "./admins";
+import { raceBeforeTransaction } from "@/server/events/test-race";
+import {
+  createInvite,
+  disableAdminAccount,
+  enableAdminAccount,
+  hashToken,
+  INVITE_TTL_MS,
+  resendInvite,
+  revokeInvite,
+} from "./admins";
 import { createAuth, getAuth, type Auth } from "./auth";
 import { getInviteByToken, listAdmins } from "./queries";
 
@@ -154,6 +164,44 @@ describe("sign up", () => {
   });
 });
 
+describe("invite delivery without an email provider", () => {
+  const mutableEnv = env as { NODE_ENV: string };
+  const originalNodeEnv = mutableEnv.NODE_ENV;
+
+  afterEach(() => {
+    mutableEnv.NODE_ENV = originalNodeEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("reports delivered: false, because the logger adapter only logs", async () => {
+    const founderId = "admin-founder@example.com";
+    const created = await createInvite(db, { email: "logged@example.com", name: "Logged", invitedBy: founderId });
+    expect(created).toMatchObject({ ok: true, data: { delivered: false } });
+    const [row] = await db.select().from(adminInvites).where(eq(adminInvites.email, "logged@example.com"));
+    const resent = await resendInvite(db, { inviteId: row.id, actorId: founderId });
+    expect(resent).toMatchObject({ ok: true, data: { delivered: false } });
+  });
+
+  it("prints the accept link to the console in development only", async () => {
+    const founderId = "admin-founder@example.com";
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { invites } = await listAdmins(db);
+    const row = invites.find((i) => i.email === "logged@example.com")!;
+
+    await resendInvite(db, { inviteId: row.id, actorId: founderId });
+    expect(log).not.toHaveBeenCalled();
+
+    for (const nodeEnv of ["production", "development"]) {
+      mutableEnv.NODE_ENV = nodeEnv;
+      log.mockClear();
+      await resendInvite(db, { inviteId: row.id, actorId: founderId });
+      const token = inviteTokenFromEmail();
+      const printed = log.mock.calls.map((call) => String(call[0]));
+      expect(printed.some((line) => line.includes(`/invite/${token}`))).toBe(nodeEnv === "development");
+    }
+  });
+});
+
 describe("sign in", () => {
   it("works for an active admin and is blocked once disabled", async () => {
     const signedIn = await auth.api.signInEmail({
@@ -205,6 +253,126 @@ describe("disable rules", () => {
     const result = await disableAdminAccount(db, { userId: "ghost", actorId: "admin-founder@example.com" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("not_found");
+  });
+});
+
+describe("revoking invites", () => {
+  const founderId = "admin-founder@example.com";
+
+  it("stops the link from working and audits once", async () => {
+    const created = await createInvite(db, { email: "revoked@example.com", name: "Revoked", invitedBy: founderId });
+    if (!created.ok) throw new Error(created.error.message);
+    const token = inviteTokenFromEmail();
+
+    expect(await revokeInvite(db, { inviteId: created.data.inviteId, actorId: founderId })).toEqual({
+      ok: true,
+      data: { inviteId: created.data.inviteId },
+    });
+    expect(await getInviteByToken(token, db)).toBeNull();
+    await expect(
+      auth.api.signUpEmail({ body: signUpBody("revoked@example.com", "Revoked", token) }),
+    ).rejects.toThrow(/invitation/i);
+
+    // A second revoke changes nothing and writes no second audit row.
+    expect((await revokeInvite(db, { inviteId: created.data.inviteId, actorId: founderId })).ok).toBe(true);
+    const audit = await listAudit({ eventId: null, filters: { action: "admin.invite_revoke" } }, db);
+    expect(audit.rows.filter((r) => r.entityId === created.data.inviteId)).toHaveLength(1);
+    expect(audit.rows[0]).toMatchObject({ adminId: founderId, before: { email: "revoked@example.com" } });
+  });
+
+  it("wins over a sign-up that validated the invite before the revoke landed", async () => {
+    const created = await createInvite(db, { email: "late@example.com", name: "Late", invitedBy: founderId });
+    if (!created.ok) throw new Error(created.error.message);
+    const token = inviteTokenFromEmail();
+    // The revoke commits after the before hook checked the invite and the user
+    // row was inserted, just before acceptance opens its transaction.
+    const revoke = () => revokeInvite(db, { inviteId: created.data.inviteId, actorId: founderId });
+    const racedAuth = createAuth(raceBeforeTransaction(db, revoke));
+
+    await expect(
+      racedAuth.api.signUpEmail({ body: signUpBody("late@example.com", "Late", token) }),
+    ).rejects.toThrow(/revoked or expired/i);
+    expect(await db.select().from(admins).where(eq(admins.email, "late@example.com"))).toHaveLength(0);
+    const [invite] = await db.select().from(adminInvites).where(eq(adminInvites.id, created.data.inviteId));
+    expect(invite.acceptedAt).toBeNull();
+    const accepts = await listAudit({ eventId: null, filters: { action: "admin.accept_invite" } }, db);
+    expect(accepts.rows.some((r) => (r.after as { email?: string } | null)?.email === "late@example.com")).toBe(false);
+  });
+
+  it("is final: resend and sign-up are refused, and a new invite to the same email works", async () => {
+    const created = await createInvite(db, { email: "final@example.com", name: "Final", invitedBy: founderId });
+    if (!created.ok) throw new Error(created.error.message);
+    const token = inviteTokenFromEmail();
+    await revokeInvite(db, { inviteId: created.data.inviteId, actorId: founderId });
+    const [revoked] = await db.select().from(adminInvites).where(eq(adminInvites.id, created.data.inviteId));
+    expect(revoked.revokedAt).not.toBeNull();
+
+    clearLoggedEmails();
+    const resent = await resendInvite(db, { inviteId: created.data.inviteId, actorId: founderId });
+    expect(resent).toMatchObject({ ok: false, error: { code: "conflict", message: "That invite was revoked. Send a new invite instead." } });
+    expect(getLoggedEmails()).toHaveLength(0);
+    const [after] = await db.select().from(adminInvites).where(eq(adminInvites.id, created.data.inviteId));
+    expect(after.tokenHash).toBe(revoked.tokenHash);
+    expect(after.expiresAt.getTime()).toBe(revoked.expiresAt.getTime());
+
+    // Even if the link were live again, the revoked flag keeps it unusable.
+    await db.update(adminInvites).set({ expiresAt: new Date(Date.now() + INVITE_TTL_MS) }).where(eq(adminInvites.id, created.data.inviteId));
+    expect(await getInviteByToken(token, db)).toBeNull();
+    await expect(
+      auth.api.signUpEmail({ body: signUpBody("final@example.com", "Final", token) }),
+    ).rejects.toThrow(/invitation/i);
+    expect(await db.select().from(admins).where(eq(admins.email, "final@example.com"))).toHaveLength(0);
+
+    const { invites } = await listAdmins(db);
+    expect(invites.find((i) => i.id === created.data.inviteId)).toMatchObject({ revoked: true });
+
+    const fresh = await createInvite(db, { email: "final@example.com", name: "Final", invitedBy: founderId });
+    expect(fresh.ok).toBe(true);
+    const freshToken = inviteTokenFromEmail();
+    expect(freshToken).not.toBe(token);
+    expect((await getInviteByToken(freshToken, db))?.email).toBe("final@example.com");
+    await auth.api.signUpEmail({ body: signUpBody("final@example.com", "Final", freshToken) });
+    expect(await db.select().from(admins).where(eq(admins.email, "final@example.com"))).toHaveLength(1);
+  });
+
+  it("refuses an accepted invite and an unknown one", async () => {
+    const created = await createInvite(db, { email: "accepted@example.com", name: "Accepted", invitedBy: founderId });
+    if (!created.ok) throw new Error(created.error.message);
+    await db.update(adminInvites).set({ acceptedAt: new Date() }).where(eq(adminInvites.id, created.data.inviteId));
+    const accepted = await revokeInvite(db, { inviteId: created.data.inviteId, actorId: founderId });
+    expect(accepted).toMatchObject({ ok: false, error: { code: "conflict" } });
+    const unknown = await revokeInvite(db, { inviteId: "00000000-0000-4000-8000-000000000000", actorId: founderId });
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("expires the pending invites of an admin who is disabled, and only theirs", async () => {
+    const inviterId = "admin-inviter@example.com";
+    await db.insert(admins).values({ id: inviterId, name: "Inviter", email: "inviter@example.com" });
+    await createInvite(db, { email: "from-inviter@example.com", name: "From Inviter", invitedBy: inviterId });
+    const theirs = inviteTokenFromEmail();
+    await createInvite(db, { email: "from-founder@example.com", name: "From Founder", invitedBy: founderId });
+    const founders = inviteTokenFromEmail();
+
+    expect((await disableAdminAccount(db, { userId: inviterId, actorId: founderId })).ok).toBe(true);
+    expect(await getInviteByToken(theirs, db)).toBeNull();
+    await expect(
+      auth.api.signUpEmail({ body: signUpBody("from-inviter@example.com", "From Inviter", theirs) }),
+    ).rejects.toThrow(/invitation/i);
+    expect(await getInviteByToken(founders, db)).not.toBeNull();
+    const audit = await listAudit({ eventId: null, filters: { action: "admin.disable" } }, db);
+    expect(audit.rows.find((r) => r.entityId === inviterId)?.after).toMatchObject({ invitesRevoked: 1 });
+  });
+});
+
+describe("listAdmins", () => {
+  it("orders admins by name with numbers by value", async () => {
+    await db.insert(admins).values([
+      { id: "admin-10", name: "Admin 10", email: "admin10@example.com" },
+      { id: "admin-2", name: "Admin 2", email: "admin2@example.com" },
+    ]);
+    const names = (await listAdmins(db)).admins.map((a) => a.name);
+    expect(names.indexOf("Admin 2")).toBeLessThan(names.indexOf("Admin 10"));
+    expect(names.indexOf("Admin 10")).toBeLessThan(names.indexOf("Founder"));
   });
 });
 

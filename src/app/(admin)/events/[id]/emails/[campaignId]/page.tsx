@@ -2,20 +2,31 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { isEmailConfigured } from "@/lib/email/adapter";
+import { isEditorCompatibleHtml, sanitizeEmailHtml } from "@/lib/email/sanitize-html";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getAudienceOptions, getCampaign } from "@/server/email/queries";
 import { getEvent } from "@/server/events/queries";
 import { eventSectionHref } from "../../event-sections";
 import { DuplicateAsReminderButton } from "../campaign-buttons";
-import { AUDIENCE_LABELS, CampaignStatusBadge, KIND_LABELS, MESSAGE_STATUS_LABELS, recipients } from "../labels";
+import {
+  AUDIENCE_LABELS,
+  CampaignStatusBadge,
+  KIND_LABELS,
+  MESSAGE_STATUS_LABELS,
+  NOT_DELIVERED_NOTICE,
+  recipients,
+} from "../labels";
 import { CampaignEditor } from "./campaign-editor";
 import { DeliveryTable, ResendBouncedButton, type DeliveryTableRow } from "./delivery-table";
 import { EmailPreview } from "./email-preview";
 
 const NOT_LOCKED = "Lock the schedule before sending so every link is final.";
+const ARCHIVED = "This event is archived.";
 
 export default async function CampaignPage({ params }: { params: Promise<{ id: string; campaignId: string }> }) {
   const { user: admin } = await requireSession();
@@ -26,7 +37,8 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   if (!detail || detail.campaign.eventId !== event.id) notFound();
   const { campaign, messages, stats } = detail;
   const canSend = event.status === "locked" || event.status === "sent";
-  const sendBlockedReason = event.status === "archived" ? "This event is archived." : canSend ? null : NOT_LOCKED;
+  const archived = event.status === "archived";
+  const sendBlockedReason = archived ? ARCHIVED : canSend ? null : NOT_LOCKED;
   const at = (date: Date) => formatTimestamp(date, event.timezone);
   const backHref = eventSectionHref(event.id, "emails");
 
@@ -47,15 +59,10 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             <>
               <ResendBouncedButton
                 campaignId={campaign.id}
-                count={
-                  campaign.status === "failed"
-                    ? // A failed send may have stopped early: queued messages and people with no message count too.
-                      stats.bounced + stats.failed + stats.queued + Math.max(0, (campaign.recipientCount ?? 0) - stats.total)
-                    : stats.bounced + stats.failed
-                }
+                count={detail.resendable}
                 disabledReason={sendBlockedReason}
               />
-              <DuplicateAsReminderButton campaignId={campaign.id} />
+              <DuplicateAsReminderButton campaignId={campaign.id} disabledReason={archived ? ARCHIVED : null} />
             </>
           )}
         </>
@@ -82,7 +89,10 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             selectedRecipients: campaign.selectedRecipients,
           }}
           options={options}
+          // Designed HTML the visual editor would flatten opens as source, so a save can't lose it.
+          initialHtmlMode={!isEditorCompatibleHtml(campaign.htmlBody)}
           sendBlockedReason={sendBlockedReason}
+          archived={archived}
           adminEmail={admin.email}
           testSentLabel={campaign.testSentAt ? `Test sent ${at(campaign.testSentAt)}.` : null}
         />
@@ -118,6 +128,14 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   return (
     <>
       {header}
+      {isEmailConfigured() ? null : (
+        <Alert>
+          <AlertTitle>These emails were logged, not delivered</AlertTitle>
+          <AlertDescription>
+            {NOT_DELIVERED_NOTICE} The statuses below show what the app recorded, not what reached an inbox.
+          </AlertDescription>
+        </Alert>
+      )}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Card className="min-w-0">
           <CardHeader>
@@ -149,7 +167,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             <CardDescription>As written, with merge fields not filled in.</CardDescription>
           </CardHeader>
           <CardContent>
-            <EmailPreview html={campaign.htmlBody} />
+            <EmailPreview sanitizedHtml={sanitizeEmailHtml(campaign.htmlBody)} />
           </CardContent>
         </Card>
       </div>

@@ -1,18 +1,20 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { z } from "zod";
 import { getDb, type Db } from "@/db/client";
-import { appointments, auditEvents, type Appointment, type Event, type Participant, type Supplier } from "@/db/schema";
+import { appointments, auditEvents, type Appointment, type Event, type Supplier } from "@/db/schema";
 import { isTopN, type QualityStats } from "@/engine";
 import { formatMinutes } from "@/lib/time";
 import { compareNames } from "@/lib/names";
 import { displayNameFor } from "@/server/roster/display-name";
-import { loadRoster, type Roster } from "@/server/matching/input";
+import { loadPeople } from "@/server/matching/input";
 import { readStats } from "@/server/matching/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { UNDO_NOTE_PREFIX } from "./undo-note";
 
 /**
- * Reads for the schedule workspace and the participant page. Everything is
- * computed from the event's active run.
+ * Reads for the schedule workspace and the exports. Everything is computed
+ * from the event's active run. What a participant sees lives in
+ * ./snapshot.ts.
  */
 
 export type MatchStrength = "mutual" | "buyer" | "supplier" | "neither" | "blank";
@@ -173,18 +175,18 @@ export async function countManualChanges(db: Db, eventId: string, runId: string)
   return onRun.filter((r) => r.action !== "appointment.undo" && inEffect(r.id)).length;
 }
 
-async function loadActiveAppointments(db: Db, eventId: string) {
-  const run = await findActiveRun(db, eventId);
-  if (!run) return { run: null, rows: [] as Appointment[] };
-  const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));
-  return { run, rows };
-}
-
 /** Everything the workspace page needs in one call. Null when the event does not exist. */
 export async function getScheduleView(eventId: string, db: Db = getDb()): Promise<ScheduleView | null> {
-  const roster = await loadRoster(db, eventId);
+  if (!z.uuid().safeParse(eventId).success) return null;
+  // Two waves: people and the active run together, then that run's appointments and its manual-change count.
+  const [roster, run] = await Promise.all([loadPeople(db, eventId), findActiveRun(db, eventId)]);
   if (!roster) return null;
-  const { run, rows } = await loadActiveAppointments(db, eventId);
+  const [rows, manualChanges] = run
+    ? await Promise.all([
+        db.select().from(appointments).where(eq(appointments.runId, run.id)),
+        countManualChanges(db, eventId, run.id),
+      ])
+    : [[] as Appointment[], 0];
   const n = roster.event.settings.mutualTopN;
   const buyerCounts = countBy(rows, (a) => a.buyerId);
   const supplierCounts = countBy(rows, (a) => a.supplierId);
@@ -250,7 +252,6 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
       supplierName: name(a.supplierId),
       withdrawnIds: [a.buyerId, a.supplierId].filter((id) => withdrawnIds.has(id)),
     }));
-  const manualChanges = run ? await countManualChanges(db, eventId, run.id) : 0;
 
   return {
     event: roster.event,
@@ -275,121 +276,5 @@ export async function getScheduleView(eventId: string, db: Db = getDb()): Promis
       withdrawn,
     },
     manualChanges,
-  };
-}
-
-export type PersonRef = { type: "buyer" | "supplier"; id: string };
-
-export type PersonSlotAppointment = {
-  id: string;
-  counterpartId: string;
-  counterpartName: string;
-  /** The supplier's desk, whichever side is viewing. */
-  desk: number | null;
-  /**
-   * The other side withdrew after this was booked. Admin view only, so staff
-   * can fix it; a participant sees the slot as OPEN instead.
-   */
-  counterpartWithdrawn?: boolean;
-  /** Absent when built for a participant; nothing on that page shows rankings. */
-  buyerRank?: number | null;
-  supplierRank?: number | null;
-  strength?: MatchStrength;
-};
-
-export type PersonScheduleSlot = {
-  slot: number;
-  start: string;
-  end: string;
-  /** Null means OPEN. */
-  appointment: PersonSlotAppointment | null;
-};
-
-export type PersonSchedule = {
-  event: { id: string; name: string; eventDate: string; timezone: string; status: Event["status"] };
-  person: {
-    id: string;
-    type: "buyer" | "supplier";
-    name: string;
-    desk: number | null;
-    organization: string | null;
-    title: string | null;
-    withdrawn: boolean;
-  };
-  slots: PersonScheduleSlot[];
-};
-
-function findPerson(roster: Roster, ref: PersonRef): Participant | Supplier | null {
-  if (ref.type === "buyer") return roster.participants.find((p) => p.id === ref.id) ?? null;
-  return roster.suppliers.find((s) => s.id === ref.id) ?? null;
-}
-
-/**
- * One person's slots with OPEN gaps explicit. Used by the detail sheet and,
- * with `forParticipant`, by `/s/[token]`, which must never see ranks.
- */
-export async function getPersonSchedule(
-  eventId: string,
-  ref: PersonRef & { forParticipant?: boolean },
-  db: Db = getDb(),
-): Promise<PersonSchedule | null> {
-  const roster = await loadRoster(db, eventId);
-  if (!roster) return null;
-  const person = findPerson(roster, ref);
-  if (!person) return null;
-  const { rows } = await loadActiveAppointments(db, eventId);
-  const supplierById = new Map(roster.suppliers.map((s) => [s.id, s]));
-  const mine = rows.filter((a) => (ref.type === "buyer" ? a.buyerId : a.supplierId) === ref.id);
-  const bySlot = new Map(mine.map((a) => [a.slot, a]));
-  const n = roster.event.settings.mutualTopN;
-
-  const statusById = new Map<string, string>([
-    ...roster.participants.map((p): [string, string] => [p.id, p.status]),
-    ...roster.suppliers.map((x): [string, string] => [x.id, x.status]),
-  ]);
-
-  const slots: PersonScheduleSlot[] = slotsFor(roster.event).map((s) => {
-    const a = bySlot.get(s.slot);
-    if (!a) return { slot: s.slot, start: s.start, end: s.end, appointment: null };
-    const counterpartId = ref.type === "buyer" ? a.supplierId : a.buyerId;
-    const counterpartWithdrawn = statusById.get(counterpartId) === "withdrawn";
-    // Nobody will be at that meeting, so the participant sees a free slot.
-    if (counterpartWithdrawn && ref.forParticipant) return { slot: s.slot, start: s.start, end: s.end, appointment: null };
-    const appointment: PersonSlotAppointment = {
-      id: a.id,
-      counterpartId,
-      counterpartName: roster.names.get(counterpartId) ?? "Unknown",
-      desk: supplierById.get(a.supplierId)?.deskNumber ?? null,
-    };
-    if (!ref.forParticipant) {
-      appointment.counterpartWithdrawn = counterpartWithdrawn;
-      appointment.buyerRank = a.buyerRank;
-      appointment.supplierRank = a.supplierRank;
-      appointment.strength = matchStrength(a.buyerRank, a.supplierRank, n);
-    }
-    return { slot: s.slot, start: s.start, end: s.end, appointment };
-  });
-
-  const isBuyer = ref.type === "buyer";
-  const buyer = isBuyer ? (person as Participant) : null;
-  const supplier = isBuyer ? null : (person as Supplier);
-  return {
-    event: {
-      id: roster.event.id,
-      name: roster.event.name,
-      eventDate: roster.event.eventDate,
-      timezone: roster.event.timezone,
-      status: roster.event.status,
-    },
-    person: {
-      id: person.id,
-      type: ref.type,
-      name: roster.names.get(person.id) ?? "",
-      desk: supplier?.deskNumber ?? null,
-      organization: buyer?.organization ?? null,
-      title: buyer?.title ?? null,
-      withdrawn: person.status === "withdrawn",
-    },
-    slots,
   };
 }

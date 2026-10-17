@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -37,12 +36,21 @@ function percent(score: number): string {
   return `${Math.round(score * 100)}% match`;
 }
 
-/** Suggestions first, labelled with their score, then everyone else on the roster. */
+/**
+ * Suggestions first, then everyone else on the roster. Suggestions take the
+ * roster label (name, organization, title, email) so two people with one
+ * name can be told apart. Equal candidates for an ambiguous name get no score.
+ */
 function groupsFor(name: UnknownName, entities: EntityOption[]): OptionGroup[] {
-  const suggested = name.suggestions.map((s) => ({ value: s.entityId, label: s.name, hint: percent(s.score) }));
+  const labels = new Map(entities.map((entity) => [entity.value, entity.label]));
+  const suggested = name.suggestions.map((s) => ({
+    value: s.entityId,
+    label: labels.get(s.entityId) ?? s.name,
+    hint: name.ambiguous ? undefined : percent(s.score),
+  }));
   const suggestedIds = new Set(suggested.map((s) => s.value));
   const groups: OptionGroup[] = [];
-  if (suggested.length > 0) groups.push({ value: "Suggested", items: suggested });
+  if (suggested.length > 0) groups.push({ value: name.ambiguous ? "Matches" : "Suggested", items: suggested });
   groups.push({ value: `All ${ENTITY_NOUN[name.entityType].many}`, items: entities.filter((e) => !suggestedIds.has(e.value)) });
   return groups;
 }
@@ -72,7 +80,6 @@ function MappingRow({
   entities: EntityOption[];
   disabled: boolean;
 }) {
-  const router = useRouter();
   const [selected, setSelected] = React.useState<EntityOption | null>(null);
   const [pending, startTransition] = React.useTransition();
   const groups = React.useMemo(() => groupsFor(name, entities), [name, entities]);
@@ -89,13 +96,22 @@ function MappingRow({
       }
       toast.success(`Mapped “${name.raw}” to ${selected.label}.`);
       reportState(importId, result.data.imports);
-      router.refresh();
     });
   };
 
   return (
     <TableRow>
-      <TableCell className="font-medium whitespace-normal">{name.raw}</TableCell>
+      <TableCell className="whitespace-normal">
+        <span className="flex flex-col gap-0.5">
+          <span className="font-medium">{name.raw}</span>
+          {name.ambiguous ? (
+            <span className="max-w-64 text-xs text-muted-foreground">
+              Matches {plural(name.suggestions.length, noun)}. Your choice applies to every row with this text. If rows
+              mean different people, put each buyer&apos;s email in the file instead.
+            </span>
+          ) : null}
+        </span>
+      </TableCell>
       <TableCell className="text-muted-foreground">
         {name.role === "ranker" ? `Ranker, a ${noun}` : `Choice, a ${noun}`}
       </TableCell>
@@ -154,8 +170,8 @@ type NameMappingTableProps = {
 };
 
 export function NameMappingTable({ eventId, importId, names, entities, lockedReason }: NameMappingTableProps) {
-  const router = useRouter();
-  const withSuggestion = names.filter((name) => name.suggestions.length > 0);
+  // An ambiguous name's candidates are equal, so the first one is no suggestion. Those are mapped one at a time.
+  const withSuggestion = names.filter((name) => name.suggestions.length > 0 && !name.ambiguous);
   const locked = lockedReason !== null;
 
   const saveAllSuggested = async () => {
@@ -173,7 +189,6 @@ export function NameMappingTable({ eventId, importId, names, entities, lockedRea
     }
     toast.success(`Mapped ${plural(withSuggestion.length, "name")} to their top suggestion.`);
     reportState(importId, result.data.imports);
-    router.refresh();
   };
 
   return (
@@ -213,7 +228,7 @@ export function NameMappingTable({ eventId, importId, names, entities, lockedRea
             <TableRow className="hover:bg-transparent">
               <TableHead>Name in the file</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead>Rows</TableHead>
+              <TableHead>Sheet rows</TableHead>
               <TableHead>Maps to</TableHead>
               <TableHead>
                 <span className="sr-only">Save</span>

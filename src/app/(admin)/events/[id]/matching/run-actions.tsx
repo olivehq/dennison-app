@@ -37,17 +37,16 @@ export function RunMatchingButtons({
       router.refresh();
       return;
     }
-    const { stats, isActive, pinnedCount, warnings } = result.data;
+    const { stats, isActive, keptCount, warnings } = result.data;
     toast.success(isActive ? "Matching finished. This run is now the schedule." : "Matching finished. Compare it, then activate it.", {
       description: [
         headline(stats),
-        keepExisting ? `${pinnedCount} existing appointments kept.` : null,
+        keepExisting ? `${keptCount} existing ${keptCount === 1 ? "appointment" : "appointments"} kept.` : null,
         warnings.length ? `${warnings.length} ${warnings.length === 1 ? "warning" : "warnings"}.` : null,
       ]
         .filter(Boolean)
         .join(" "),
     });
-    router.refresh();
   };
 
   return (
@@ -56,8 +55,8 @@ export function RunMatchingButtons({
         title="Run matching?"
         description={
           hasActiveRun
-            ? "This builds a fresh schedule from the current rankings and stores it as a new run. The schedule everyone sees stays as it is until you activate the new run, so you can compare first."
-            : "This builds the first schedule from the current rankings. It becomes the schedule straight away."
+            ? "This builds a new schedule from scratch from the current rankings and settings. Pins and edits in the current schedule are not carried over. The schedule everyone sees stays as it is until you activate the new run, so you can compare first."
+            : "This builds a schedule from scratch from the current rankings and settings. There is no active schedule, so it becomes the schedule straight away."
         }
         confirmLabel="Run matching"
         onConfirm={() => run(false)}
@@ -70,7 +69,7 @@ export function RunMatchingButtons({
       />
       <ConfirmDialog
         title="Re-run and keep existing appointments?"
-        description="Every appointment in the active schedule is pinned and kept exactly where it is, except those with a withdrawn buyer or supplier. The engine only fills the gaps, for example after a withdrawal or a late ranking. Manual edits survive. The result is a new run you can compare before activating."
+        description="This keeps the appointments in the active schedule where they are and fills every open slot, whether the slot opened through a removal, a replacement, or a withdrawal. Pinned appointments stay pinned. It only adds meetings, except that appointments with a withdrawn buyer or supplier are left out. The result is a new run you can compare before activating."
         confirmLabel="Re-run and keep existing"
         onConfirm={() => run(true)}
         trigger={
@@ -89,11 +88,16 @@ export function ActivateRunButton({
   runId,
   disabled,
   preview,
+  expectedActiveRunId,
+  expectedVersion,
 }: {
   runId: string;
   disabled: boolean;
   /** Counts against the active run; null when no run is active yet. */
   preview: { added: number; removed: number; countChanges: number } | null;
+  /** The active run and version the counts were read from; null when none. A change since is a conflict. */
+  expectedActiveRunId: string | null;
+  expectedVersion: number | null;
 }) {
   const router = useRouter();
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -113,14 +117,13 @@ export function ActivateRunButton({
         .join(" ")}
       confirmLabel="Activate this run"
       onConfirm={async () => {
-        const result = await activateRunAction(runId);
+        const result = await activateRunAction({ runId, expectedActiveRunId, expectedVersion });
         if (!result.ok) {
           toast.error(result.error.message);
           router.refresh();
           return;
         }
         toast.success("Run activated", { description: "The schedule now shows this run." });
-        router.refresh();
       }}
       trigger={
         <Button size="sm" variant="outline" disabled={disabled}>

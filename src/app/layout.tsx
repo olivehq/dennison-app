@@ -34,7 +34,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`${atkinson.variable} ${schibsted.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col">
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange nonce={nonce}>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange nonce={nonce}>
           <TooltipProvider>{children}</TooltipProvider>
           <Toaster />
         </ThemeProvider>

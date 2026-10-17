@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import type { AudienceOption } from "@/server/email/queries";
 import { recipients } from "../labels";
+import { pickedKeys, pickerReducer } from "./recipient-picker-state";
 
 const CONTACT_LABELS = { buyer: "Buyer", supplier_admin: "Supplier admin", supplier_attendee: "Supplier attendee" } as const;
 
@@ -30,21 +31,14 @@ type RecipientPickerProps = {
 
 /** "Selected people": a checkbox table of every contact who can be emailed. */
 export function RecipientPicker({ open, onOpenChange, contacts, value, onChange }: RecipientPickerProps) {
-  const [picked, setPicked] = React.useState<Set<string>>(() => new Set(value));
+  const [{ open: syncedOpen, picked }, dispatch] = React.useReducer(pickerReducer, null, () => ({
+    open,
+    picked: new Set(value),
+  }));
+  // The parent opens the dialog itself, so reset to the saved choice whenever `open` turns true.
+  if (syncedOpen !== open) dispatch({ type: "sync", open, value });
 
-  const handleOpenChange = (next: boolean) => {
-    if (next) setPicked(new Set(value));
-    onOpenChange(next);
-  };
-
-  const toggle = React.useCallback((key: string, checked: boolean) => {
-    setPicked((current) => {
-      const next = new Set(current);
-      if (checked) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-  }, []);
+  const toggle = React.useCallback((key: string, checked: boolean) => dispatch({ type: "toggle", key, checked }), []);
 
   const pickedCount = contacts.filter((c) => picked.has(c.key)).length;
   const allPicked = contacts.length > 0 && pickedCount === contacts.length;
@@ -60,7 +54,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
             <Checkbox
               aria-label="Select everyone"
               checked={allPicked ? true : somePicked ? "indeterminate" : false}
-              onCheckedChange={(checked) => setPicked(checked === true ? new Set(contacts.map((c) => c.key)) : new Set())}
+              onCheckedChange={(checked) => dispatch({ type: "replace", keys: checked === true ? contacts.map((c) => c.key) : [] })}
             />
           ),
           cell: ({ row }) => (
@@ -73,6 +67,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
         }),
         helper.accessor("name", {
           header: "Name",
+          sortFn: "name",
           cell: ({ row }) => <span className="block max-w-sm font-medium whitespace-normal">{row.original.name}</span>,
         }),
         helper.accessor("email", { header: "Email" }),
@@ -86,7 +81,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
   );
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Choose recipients</DialogTitle>
@@ -107,14 +102,14 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
           />
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
             type="button"
             onClick={() => {
-              onChange(contacts.filter((c) => picked.has(c.key)).map((c) => c.key));
-              handleOpenChange(false);
+              onChange(pickedKeys(contacts, picked));
+              onOpenChange(false);
             }}
           >
             Use {recipients(pickedCount)}

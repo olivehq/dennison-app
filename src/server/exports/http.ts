@@ -5,7 +5,7 @@ import { getEvent } from "@/server/events/queries";
 import { getActiveRun } from "@/server/matching/queries";
 import { isEventEditable } from "@/server/events/editable";
 import { eventYear } from "./common";
-import { EXPORT_CONTENT_TYPES, exportFilename, type ExportKind } from "./kinds";
+import { EXPORT_CONTENT_TYPES, exportFilename, needsRun, type ExportKind } from "./kinds";
 import { needsLock } from "./queries";
 
 /**
@@ -17,7 +17,8 @@ import { needsLock } from "./queries";
 export type ExportContext = {
   adminId: string;
   event: Event;
-  run: Pick<MatchRun, "id" | "version">;
+  /** Null for exports that need no run (`needsRun`). */
+  run: Pick<MatchRun, "id" | "version"> | null;
   year: string;
 };
 
@@ -28,7 +29,7 @@ export function plainResponse(status: number, message: string): Response {
   });
 }
 
-/** Session (401), event (404), active run (409), and lock for the access list (409), in that order. */
+/** Session (401), event (404), active run (409, unless the export needs none), and lock for the access list (409), in that order. */
 export async function loadExportContext(
   eventId: string,
   kind: ExportKind,
@@ -40,8 +41,8 @@ export async function loadExportContext(
   }
   const event = await getEvent(eventId);
   if (!event) return { ok: false, response: plainResponse(404, "That event does not exist.") };
-  const run = await getActiveRun(event.id);
-  if (!run) {
+  const run = needsRun(kind) ? await getActiveRun(event.id) : null;
+  if (needsRun(kind) && !run) {
     return {
       ok: false,
       response: plainResponse(409, "There is no active schedule yet. Run matching and activate a run first."),
@@ -55,7 +56,7 @@ export async function loadExportContext(
   }
   return {
     ok: true,
-    context: { adminId: session.user.id, event, run: { id: run.id, version: run.version }, year: eventYear(event.eventDate) },
+    context: { adminId: session.user.id, event, run: run ? { id: run.id, version: run.version } : null, year: eventYear(event.eventDate) },
   };
 }
 

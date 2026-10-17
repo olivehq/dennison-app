@@ -3,7 +3,6 @@
 import * as React from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { PlusIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,8 +21,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { adminInviteSchema, type AdminInviteInput } from "@/lib/schemas/auth";
 import { inviteAdmin } from "@/server/auth/actions";
 
+export const NO_PROVIDER_NOTE = "This server has no email provider set up. In development, the link is in the server console.";
+
 export function InviteAdminDialog() {
-  const router = useRouter();
   const [open, setOpen] = React.useState(false);
   const {
     register,
@@ -51,9 +51,9 @@ export function InviteAdminDialog() {
       if (Object.keys(fieldErrors).length === 0) toast.error(result.error.message);
       return;
     }
-    toast.success(`Invite sent to ${values.email}.`);
+    if (result.data.delivered) toast.success(`Invite sent to ${values.email}.`);
+    else toast.warning(`Invite logged, not sent. ${NO_PROVIDER_NOTE}`);
     onOpenChange(false);
-    router.refresh();
   };
 
   return (

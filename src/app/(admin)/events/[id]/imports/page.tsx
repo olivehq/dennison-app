@@ -1,92 +1,80 @@
-import { ArrowRightIcon, CheckCircle2Icon, CircleDashedIcon, CircleAlertIcon, LockIcon } from "lucide-react";
+import { ArrowRightIcon, CheckCircle2Icon, LockIcon, TriangleAlertIcon } from "lucide-react";
+import { cn } from "cn";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { isRankingKind, type ImportKind } from "@/lib/schemas/import";
+import type { ImportKind } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
-import {
-  getImportStatusByKind,
-  importKinds,
-  listImports,
-  readinessForMatching,
-  type ImportSummary,
-  type MatchingReadiness,
-} from "@/server/imports/queries";
+import { getImportStatusByKind, listImports, type ImportSummary } from "@/server/imports/queries";
+import { getMatchingGate } from "@/server/matching/readiness";
 import { lockReason } from "../_roster/lock-reason";
 import { eventSectionHref } from "../event-sections";
-import { ImportHistoryTable, type HistoryRow } from "./import-history-table";
-import { ImportStateBadge, importHref, KIND_LABELS, plural } from "./import-labels";
-import { UploadCard, type LatestImport } from "./upload-card";
+import { importHref, KIND_LABELS } from "./import-labels";
+import { ImportsTabs } from "./imports-tabs";
+import { readinessPanelModel, type ReadinessPanelModel } from "./readiness-panel";
+import { UploadCard } from "./upload-card";
+import { uploadCardState } from "./upload-card-state";
 
-function facts(summary: ImportSummary): string[] {
-  const counts = summary.counts;
-  if (!counts || summary.state === "failed") return [];
-  const out = [plural(counts.rows, "row")];
-  if (isRankingKind(summary.kind)) out.push(plural(counts.rankings, "ranking"));
-  if (counts.unknownNames > 0) out.push(plural(counts.unknownNames, "unknown name"));
-  if (counts.errors > 0) out.push(plural(counts.errors, "error"));
-  if (counts.warnings > 0) out.push(plural(counts.warnings, "warning"));
-  return out;
-}
+const STEPS: { title: string; description: string; kinds: ImportKind[] }[] = [
+  {
+    title: "Step 1. Roster files",
+    description: "Who is coming. Apply these first so the rankings can find everyone.",
+    kinds: ["participants", "suppliers"],
+  },
+  {
+    title: "Step 2. Ranking files",
+    description: "Who wants to meet whom, from the three eShow exports.",
+    kinds: ["buyer_biztech_rankings", "buyer_hotel_rankings", "supplier_rankings"],
+  },
+];
 
-function ReadinessPanel({ eventId, readiness }: { eventId: string; readiness: MatchingReadiness }) {
-  const pendingByKind = new Map(readiness.pending.map((entry) => [entry.kind, entry]));
+function ReadinessLine({ eventId, panel }: { eventId: string; panel: ReadinessPanelModel }) {
+  const Icon = panel.ready ? CheckCircle2Icon : TriangleAlertIcon;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{readiness.ready ? "Ready for matching" : "Before matching"}</CardTitle>
-        <CardDescription>
-          {readiness.ready
-            ? "All five files are applied. You can run matching now and re-run it after any change."
-            : "Matching needs all five files applied. Upload what's missing and apply each one."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {importKinds.map((kind: ImportKind) => {
-            const pending = pendingByKind.get(kind);
-            const applied = readiness.applied.includes(kind);
-            return (
-              <li key={kind} className="flex items-center gap-2 text-sm">
-                {applied ? (
-                  <CheckCircle2Icon className="size-4 shrink-0 text-primary" aria-hidden="true" />
-                ) : pending ? (
-                  <CircleAlertIcon className="size-4 shrink-0 text-destructive" aria-hidden="true" />
-                ) : (
-                  <CircleDashedIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                )}
-                <span className="min-w-0">{KIND_LABELS[kind]}</span>
-                {applied ? (
-                  <span className="text-muted-foreground">applied</span>
-                ) : pending ? (
-                  <Link href={importHref(eventId, pending.importId)} className="flex items-center gap-1.5">
-                    <ImportStateBadge state={pending.state} />
-                    <span className="sr-only">Review</span>
-                  </Link>
-                ) : (
-                  <span className="text-muted-foreground">not uploaded</span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </CardContent>
-      {readiness.ready ? (
-        <CardFooter>
-          <Button asChild>
-            <Link href={eventSectionHref(eventId, "matching")}>
-              Go to matching
-              <ArrowRightIcon data-icon="inline-end" />
-            </Link>
-          </Button>
-        </CardFooter>
+    <section
+      aria-label="Matching readiness"
+      className={cn(
+        "flex flex-col gap-3 rounded-lg border px-4 py-3 text-sm sm:flex-row sm:items-start",
+        panel.ready ? "border-hotel/30 bg-hotel-tint/55" : "border-warning/50 bg-warning/15",
+      )}
+    >
+      <div className="flex min-w-0 flex-1 gap-2.5">
+        <Icon className={cn("mt-0.5 size-4 shrink-0", panel.ready ? "text-hotel-ink" : "text-warning-foreground")} aria-hidden="true" />
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="font-medium">{panel.title}</p>
+          {panel.ready ? (
+            <p className="text-muted-foreground">You can run matching now and re-run it after any change.</p>
+          ) : panel.reasons.length === 1 ? (
+            <p>{panel.reasons[0]}</p>
+          ) : (
+            <ul className="flex list-disc flex-col gap-0.5 pl-4">
+              {panel.reasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+      {panel.ready ? (
+        <Button variant="outline" size="sm" className="self-start" asChild>
+          <Link href={eventSectionHref(eventId, "matching")}>
+            Go to matching
+            <ArrowRightIcon data-icon="inline-end" />
+          </Link>
+        </Button>
+      ) : panel.review ? (
+        <Button variant="outline" size="sm" className="self-start" asChild>
+          <Link href={importHref(eventId, panel.review.importId)}>
+            Review the {KIND_LABELS[panel.review.kind].toLowerCase()} file
+            <ArrowRightIcon data-icon="inline-end" />
+          </Link>
+        </Button>
       ) : null}
-    </Card>
+    </section>
   );
 }
 
@@ -96,61 +84,63 @@ export default async function ImportsPage({ params }: { params: Promise<{ id: st
   const event = await getEvent(id);
   if (!event) notFound();
 
-  const [byKind, readiness, history] = await Promise.all([
+  const [byKind, gate, history] = await Promise.all([
     getImportStatusByKind(event.id),
-    readinessForMatching(event.id),
+    getMatchingGate(event.id),
     listImports(event.id),
   ]);
   const locked = lockReason(event, "upload or apply files");
 
-  const latest = (kind: ImportKind): LatestImport | null => {
-    const summary = byKind[kind];
-    if (!summary) return null;
-    return {
-      id: summary.id,
-      fileName: summary.fileName,
-      state: summary.state,
-      facts: facts(summary),
-      uploadedLabel: `${formatTimestamp(summary.createdAt, event.timezone)}${summary.createdByName ? ` by ${summary.createdByName}` : ""}`,
-    };
-  };
+  const uploadedLabel = (summary: ImportSummary) =>
+    `${formatTimestamp(summary.createdAt, event.timezone)}${summary.createdByName ? ` by ${summary.createdByName}` : ""}`;
 
-  const rows: HistoryRow[] = history.map((item) => ({
-    id: item.id,
-    fileName: item.fileName,
-    kind: item.kind,
-    state: item.state,
-    rows: item.rowCount,
-    uploadedBy: item.createdByName ?? "Unknown",
-    uploadedAt: item.createdAt.getTime(),
-    uploadedLabel: formatTimestamp(item.createdAt, event.timezone),
-  }));
+  const card = (kind: ImportKind) => {
+    const latest = byKind[kind];
+    // Only when every file of the kind is ignored; history is newest first.
+    const ignored = latest ? null : (history.find((item) => item.kind === kind && item.state === "ignored") ?? null);
+    const shown = latest ?? ignored;
+    return (
+      <UploadCard
+        key={kind}
+        eventId={event.id}
+        kind={kind}
+        latest={shown ? { id: shown.id, fileName: shown.fileName, uploadedLabel: uploadedLabel(shown) } : null}
+        state={uploadCardState(kind, latest, ignored)}
+        lockedReason={locked}
+      />
+    );
+  };
 
   return (
     <>
       <PageHeader
         title="Imports"
-        description="Upload the roster files and the three eShow ranking files. Each file is checked first; nothing changes until you apply it."
+        description="Each file is checked first. Nothing changes until you apply it."
       />
-      {locked ? (
-        <Alert>
-          <LockIcon />
-          <AlertTitle>Read-only</AlertTitle>
-          <AlertDescription>{locked}</AlertDescription>
-        </Alert>
-      ) : null}
-      <ReadinessPanel eventId={event.id} readiness={readiness} />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {importKinds.map((kind) => (
-          <UploadCard key={kind} eventId={event.id} kind={kind} latest={latest(kind)} lockedReason={locked} />
+      <div className="flex flex-col gap-5">
+        <ImportsTabs eventId={event.id} active="upload" historyCount={history.length} />
+        {locked ? (
+          <Alert>
+            <LockIcon />
+            <AlertTitle>Read-only</AlertTitle>
+            <AlertDescription>{locked}</AlertDescription>
+          </Alert>
+        ) : null}
+        <ReadinessLine eventId={event.id} panel={readinessPanelModel(gate, byKind)} />
+        {STEPS.map((step) => (
+          <section key={step.title} aria-labelledby={`step-${step.kinds[0]}`} className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id={`step-${step.kinds[0]}`} className="font-display text-base font-bold">
+                {step.title}
+              </h2>
+              <p className="text-sm text-muted-foreground">{step.description}</p>
+            </div>
+            <div className={cn("grid gap-3 sm:grid-cols-2", step.kinds.length === 3 && "lg:grid-cols-3")}>
+              {step.kinds.map(card)}
+            </div>
+          </section>
         ))}
       </div>
-      <section className="flex flex-col gap-3" aria-labelledby="import-history">
-        <h2 id="import-history" className="font-display text-lg font-bold">
-          History
-        </h2>
-        <ImportHistoryTable eventId={event.id} rows={rows} lockedReason={locked} />
-      </section>
     </>
   );
 }

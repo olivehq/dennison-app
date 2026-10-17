@@ -27,10 +27,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { ActionResult } from "@/lib/errors";
 import { regenerateTokenAction, revokeTokenAction } from "@/server/tokens/actions";
-import type { EmailChange, Health, LinkInfo, StatusFilter } from "./types";
+import { queryWithParam, type EmailChange, type Health, type LinkFilter, type LinkInfo, type StatusFilter } from "./types";
 
 // ---------------------------------------------------------------------------
 // Cells
@@ -63,7 +64,7 @@ export function EmailChangeBadge({ state }: { state: EmailChange }) {
       </Badge>
     );
   }
-  if (state === "current") return <span className="text-sm text-muted-foreground">Up to date</span>;
+  if (state === "current") return <span className="text-sm whitespace-nowrap text-muted-foreground">Up to date</span>;
   return <span className="sr-only">Not emailed yet</span>;
 }
 
@@ -97,21 +98,28 @@ export function AppointmentCount({ count, health, hint }: { count: number; healt
 // Filters
 // ---------------------------------------------------------------------------
 
-/** Keeps a filter in the URL without a navigation, so a refresh or a shared link shows the same view. */
+/** Writes one URL parameter without a navigation, so a refresh or a shared link shows the same view. */
+export function replaceUrlParam(key: string, value: string, fallback: string): void {
+  const query = queryWithParam(window.location.search, key, value, fallback);
+  window.history.replaceState(null, "", `${window.location.pathname}${query}`);
+}
+
+/** A filter kept in the URL with `replaceUrlParam`. */
 export function useUrlFilter<T extends string>(key: string, initial: T, fallback: T): [T, (value: T) => void] {
   const [value, setValue] = React.useState<T>(initial);
   const update = React.useCallback(
     (next: T) => {
       setValue(next);
-      const params = new URLSearchParams(window.location.search);
-      if (next === fallback) params.delete(key);
-      else params.set(key, next);
-      const query = params.toString();
-      window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+      replaceUrlParam(key, next, fallback);
     },
     [key, fallback],
   );
   return [value, update];
+}
+
+/** Mirrors the roster search box to `?q=` while typing. */
+export function replaceSearchParam(value: string): void {
+  replaceUrlParam("q", value, "");
 }
 
 export function StatusFilterToggle({ value, onChange }: { value: StatusFilter; onChange: (value: StatusFilter) => void }) {
@@ -131,11 +139,33 @@ export function StatusFilterToggle({ value, onChange }: { value: StatusFilter; o
   );
 }
 
+export function LinkFilterSelect({ value, onChange }: { value: LinkFilter; onChange: (value: LinkFilter) => void }) {
+  return (
+    <Select value={value} onValueChange={(next) => onChange(next as LinkFilter)}>
+      <SelectTrigger size="sm" aria-label="Link status" className="w-36">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          <SelectItem value="all">Any link</SelectItem>
+          <SelectItem value="active">Link active</SelectItem>
+          <SelectItem value="revoked">Revoked</SelectItem>
+          <SelectItem value="expired">Expired</SelectItem>
+          <SelectItem value="none">No link</SelectItem>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
-/** Runs an action, toasts the outcome, and refreshes the page on success. Returns whether it worked. */
+/**
+ * Runs an action and toasts the outcome. The actions revalidate on success, so the page
+ * updates without a refresh; a locked event refreshes to show the new state.
+ */
 export function useRunAction() {
   const router = useRouter();
   return React.useCallback(
@@ -147,7 +177,6 @@ export function useRunAction() {
         return result;
       }
       toast.success(typeof success === "string" ? success : success(result.data));
-      router.refresh();
       return result;
     },
     [router],
@@ -222,8 +251,10 @@ type PendingDialog =
 type RowActionsProps = {
   name: string;
   withdrawn: boolean;
-  /** Null when edits are allowed; otherwise why they are not. Links can still be managed. */
+  /** Null when edits are allowed; otherwise why they are not. */
   lockedReason: string | null;
+  /** Null when links can be regenerated and revoked (also on locked events); otherwise why not. */
+  linksBlockedReason: string | null;
   onEdit: () => void;
   withdraw: () => Promise<ActionResult<unknown>>;
   restore: () => Promise<ActionResult<unknown>>;
@@ -231,12 +262,25 @@ type RowActionsProps = {
 };
 
 /** The row menu shared by participants and suppliers: edit, withdraw or restore, and link management. */
-export function RosterRowActions({ name, withdrawn, lockedReason, onEdit, withdraw, restore, links }: RowActionsProps) {
+export function RosterRowActions({
+  name,
+  withdrawn,
+  lockedReason,
+  linksBlockedReason,
+  onEdit,
+  withdraw,
+  restore,
+  links,
+}: RowActionsProps) {
   const run = useRunAction();
   const [pending, setPending] = React.useState<PendingDialog | null>(null);
   const [newLink, setNewLink] = React.useState<string | null>(null);
   const locked = lockedReason !== null;
+  const linksBlocked = linksBlockedReason !== null;
   const issued = links.filter((entry): entry is RowLink & { link: NonNullable<LinkInfo> } => entry.link !== null);
+  // A withdrawn person can't get a new link (restore them first); revoking still works.
+  const regenerable = withdrawn ? [] : issued;
+  const revocable = issued.filter((entry) => entry.link.state === "active");
 
   const close = (open: boolean) => {
     if (!open) setPending(null);
@@ -318,29 +362,32 @@ export function RosterRowActions({ name, withdrawn, lockedReason, onEdit, withdr
               </DropdownMenuItem>
             )}
           </DropdownMenuGroup>
-          {issued.length > 0 ? (
+          {regenerable.length + revocable.length > 0 ? (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                {issued.map((entry) => (
+                {linksBlocked ? (
+                  <DropdownMenuLabel className="max-w-64 font-normal text-muted-foreground">{linksBlockedReason}</DropdownMenuLabel>
+                ) : null}
+                {regenerable.map((entry) => (
                   <DropdownMenuItem
                     key={`regenerate-${entry.link.tokenId}`}
+                    disabled={linksBlocked}
                     onSelect={() => setPending({ kind: "regenerate", tokenId: entry.link.tokenId, label: entry.label })}
                   >
                     Regenerate {entry.label}
                   </DropdownMenuItem>
                 ))}
-                {issued
-                  .filter((entry) => entry.link.state === "active")
-                  .map((entry) => (
-                    <DropdownMenuItem
-                      key={`revoke-${entry.link.tokenId}`}
-                      variant="destructive"
-                      onSelect={() => setPending({ kind: "revoke", tokenId: entry.link.tokenId, label: entry.label })}
-                    >
-                      Revoke {entry.label}
-                    </DropdownMenuItem>
-                  ))}
+                {revocable.map((entry) => (
+                  <DropdownMenuItem
+                    key={`revoke-${entry.link.tokenId}`}
+                    disabled={linksBlocked}
+                    variant="destructive"
+                    onSelect={() => setPending({ kind: "revoke", tokenId: entry.link.tokenId, label: entry.label })}
+                  >
+                    Revoke {entry.label}
+                  </DropdownMenuItem>
+                ))}
               </DropdownMenuGroup>
             </>
           ) : null}

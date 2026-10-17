@@ -1,7 +1,8 @@
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type Db } from "@/db/client";
-import { appointments, events, matchRuns, participants, suppliers, type Event } from "@/db/schema";
+import { appointments, auditEvents, events, matchRuns, participants, suppliers, type Event } from "@/db/schema";
+import { cachePerRender } from "@/server/render-cache";
 
 const uuidSchema = z.uuid();
 
@@ -10,8 +11,12 @@ export type EventListItem = Event & {
   supplierCount: number;
 };
 
-/** Every event, newest show date first, with active roster counts. */
-export async function listEvents(db: Db = getDb()): Promise<EventListItem[]> {
+/** Every event, newest show date first, with active roster counts. Shared per render. */
+export function listEvents(db: Db = getDb()): Promise<EventListItem[]> {
+  return listEventsCached(db);
+}
+
+const listEventsCached = cachePerRender(async (db: Db): Promise<EventListItem[]> => {
   const participantCount = db
     .select({ value: count() })
     .from(participants)
@@ -35,13 +40,51 @@ export async function listEvents(db: Db = getDb()): Promise<EventListItem[]> {
     participantCount: row.participantCount,
     supplierCount: row.supplierCount,
   }));
+});
+
+export type EventSummary = Pick<Event, "id" | "name" | "eventDate" | "timezone" | "status">;
+
+/** Every event without counts or settings, for the sidebar's switcher and recent list. Shared per render. */
+export function listEventSummaries(db: Db = getDb()): Promise<EventSummary[]> {
+  return listEventSummariesCached(db);
 }
 
-/** The event, or null when the id is unknown or not a uuid. */
-export async function getEvent(id: string, db: Db = getDb()): Promise<Event | null> {
+const listEventSummariesCached = cachePerRender(
+  (db: Db): Promise<EventSummary[]> =>
+    db
+      .select({
+        id: events.id,
+        name: events.name,
+        eventDate: events.eventDate,
+        timezone: events.timezone,
+        status: events.status,
+      })
+      .from(events)
+      .orderBy(desc(events.eventDate), desc(events.createdAt)),
+);
+
+/** The event, or null when the id is unknown or not a uuid. Shared per render. */
+export function getEvent(id: string, db: Db = getDb()): Promise<Event | null> {
+  return getEventCached(db, id);
+}
+
+const getEventCached = cachePerRender(async (db: Db, id: string): Promise<Event | null> => {
   if (!uuidSchema.safeParse(id).success) return null;
   const [event] = await db.select().from(events).where(eq(events.id, id)).limit(1);
   return event ?? null;
+});
+
+/**
+ * Whether the retention job has deleted this event's participant data. An
+ * admin can archive an event by hand, so archived alone doesn't mean deleted.
+ */
+export async function wasParticipantDataDeleted(eventId: string, db: Db = getDb()): Promise<boolean> {
+  const [row] = await db
+    .select({ id: auditEvents.id })
+    .from(auditEvents)
+    .where(and(eq(auditEvents.eventId, eventId), eq(auditEvents.action, "event.retention_delete")))
+    .limit(1);
+  return row !== undefined;
 }
 
 export class EventNotFoundError extends Error {

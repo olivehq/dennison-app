@@ -17,6 +17,7 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { lockScheduleAction, unlockScheduleAction } from "@/server/schedule/actions";
+import { lockCountWarning } from "./schedule-model";
 
 type LockOutcome = { desks: number; links: number };
 
@@ -28,6 +29,8 @@ export function LockDialog({
   appointments,
   buyersBelowMin,
   buyerMin,
+  suppliersBelowTarget,
+  supplierTarget,
   withdrawn,
 }: {
   open: boolean;
@@ -36,6 +39,8 @@ export function LockDialog({
   appointments: number;
   buyersBelowMin: number;
   buyerMin: number;
+  suppliersBelowTarget: number;
+  supplierTarget: number;
   /** Appointments naming someone who withdrew. Lock refuses while there are any. */
   withdrawn: number;
 }) {
@@ -63,7 +68,6 @@ export function LockDialog({
         desks: result.data.desks.filter((d) => d.desk !== null).length,
         links: result.data.tokensIssued,
       });
-      router.refresh();
     } finally {
       setPending(false);
     }
@@ -94,15 +98,14 @@ export function LockDialog({
                 <div className="flex flex-col gap-2">
                   <p>Locking freezes all {appointments} appointments so they can be exported and emailed. It will:</p>
                   <ul className="flex list-disc flex-col gap-1 pl-5">
-                    <li>Assign desk numbers alphabetically by supplier name. Desk overrides are kept.</li>
+                    <li>
+                      Assign desk numbers alphabetically by supplier name. Desk overrides are kept. Withdrawn suppliers get no
+                      desk.
+                    </li>
                     <li>Issue a private schedule link for every buyer and supplier.</li>
                     <li>Turn off editing and re-running until someone unlocks it.</li>
                   </ul>
-                  <p>
-                    {buyersBelowMin
-                      ? `${buyersBelowMin === 1 ? "1 buyer is" : `${buyersBelowMin} buyers are`} still below ${buyerMin} meetings.`
-                      : "Every buyer is within target."}
-                  </p>
+                  <p>{lockCountWarning({ buyersBelowMin, buyerMin, suppliersBelowTarget, supplierTarget })}</p>
                   {withdrawn ? (
                     <p className="font-semibold text-destructive">
                       {withdrawn === 1
@@ -137,7 +140,6 @@ export function UnlockDialog({
   onOpenChange: (open: boolean) => void;
   eventId: string;
 }) {
-  const router = useRouter();
   const reasonId = React.useId();
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
@@ -168,7 +170,6 @@ export function UnlockDialog({
         return;
       }
       toast.success("Schedule unlocked", { description: "Editing and re-running are available again." });
-      router.refresh();
       setPending(false);
       close(false);
     } finally {

@@ -4,6 +4,7 @@ import {
   accessTokens,
   appointments,
   auditEvents,
+  emailCampaigns,
   emailMessages,
   events,
   imports,
@@ -17,6 +18,8 @@ import {
 import { deleteFile } from "@/lib/storage";
 import { endOfDayInTimezone } from "@/lib/time";
 import { recordAudit } from "@/server/audit/audit";
+import { wasParticipantDataDeleted } from "./queries";
+import { hasSendInProgress } from "./status";
 
 /**
  * Data retention (SOW 4, scope section 8): participant data is deleted 90
@@ -59,6 +62,34 @@ export type RetentionResult = {
   fileErrors: string[];
 };
 
+/**
+ * A campaign still `sending` this long after its claim died with its request.
+ * A send runs inside one server request, and the platform stops a request
+ * after minutes, not hours, so nothing real is still sending after 6 hours. The margin is wide because failing a live send would
+ * let retention delete messages it is still writing, while the cost of
+ * waiting is only a later deletion, and retention runs once a day anyway.
+ */
+export const STALE_SEND_HOURS = 6;
+
+/** The reason a stale send's `email.send` audit row gives. */
+export const STALE_SEND_REASON = `The send stopped without finishing and was still marked sending after ${STALE_SEND_HOURS} hours, so the retention job marked it failed.`;
+
+/**
+ * Moves the event's campaigns that have been `sending` for more than
+ * `STALE_SEND_HOURS` (by `updatedAt`, which the claim sets and nothing else
+ * changes mid-send) to `failed`. Call it with the event row locked. Returns
+ * the ids it failed.
+ */
+async function failStaleSends(tx: Db, eventId: string, now: Date): Promise<string[]> {
+  const cutoff = new Date(now.getTime() - STALE_SEND_HOURS * 60 * 60 * 1000);
+  const rows = await tx
+    .update(emailCampaigns)
+    .set({ status: "failed" })
+    .where(and(eq(emailCampaigns.eventId, eventId), eq(emailCampaigns.status, "sending"), lt(emailCampaigns.updatedAt, cutoff)))
+    .returning({ id: emailCampaigns.id });
+  return rows.map((r) => r.id);
+}
+
 function isDue(event: Event, now: Date): boolean {
   return event.settings.retainData !== true && retentionDeadline(event) <= now;
 }
@@ -70,8 +101,11 @@ function isEmpty(counts: RetentionCounts): boolean {
 /**
  * Deletes participant data of every event past its retention deadline and
  * archives it. One transaction and one audit row per event; stored import
- * files are deleted after the rows commit. Events already archived with
- * nothing left to delete are skipped, so the daily run is quiet.
+ * files are deleted after the rows commit. An archived event with nothing left
+ * to delete gets the audit row once (so the settings card can say the data is
+ * gone) and is skipped after that, so the daily run is quiet. An event with a
+ * campaign mid-send is skipped too and picked up by a later run; a send stuck
+ * for more than `STALE_SEND_HOURS` is marked failed first.
  */
 export async function deleteExpiredParticipantData(db: Db, now: Date = new Date()): Promise<RetentionResult[]> {
   // Cheap prefilter on the date column; the exact per-timezone check is isDue.
@@ -87,6 +121,17 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
       const [event] = await tx.select().from(events).where(eq(events.id, candidate.id)).for("update");
       if (!event || !isDue(event, now)) {
         console.info(`[retention] event ${candidate.id}: skipped, it no longer qualifies (retainData set, date changed, or deleted).`);
+        return null;
+      }
+      // A campaign mid-send still writes messages for this event. The daily
+      // cron tries again once the send has finished. One stuck for hours
+      // died with its request and would block deletion forever.
+      const staleSends = await failStaleSends(tx, event.id, now);
+      for (const id of staleSends) {
+        console.warn(`[retention] event ${event.id}: campaign ${id} was stuck sending, marked it failed.`);
+      }
+      if (await hasSendInProgress(tx, event.id)) {
+        console.warn(`[retention] event ${event.id}: skipped, an email send is in progress. The next run retries.`);
         return null;
       }
       const files = await tx.select({ key: imports.fileKey }).from(imports).where(eq(imports.eventId, event.id));
@@ -139,7 +184,27 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
             .returning({ id: auditEvents.id }),
         ),
       };
-      if (event.status === "archived" && isEmpty(counts)) return null;
+      if (
+        event.status === "archived" &&
+        isEmpty(counts) &&
+        staleSends.length === 0 &&
+        (await wasParticipantDataDeleted(event.id, tx))
+      ) {
+        return null;
+      }
+
+      // After the redaction above, so these rows keep their reason.
+      for (const id of staleSends) {
+        await recordAudit(tx, {
+          eventId: event.id,
+          adminId: null,
+          action: "email.send",
+          entityType: "email_campaign",
+          entityId: id,
+          before: { status: "sending" },
+          after: { status: "failed", failureReason: STALE_SEND_REASON },
+        });
+      }
 
       await tx.update(events).set({ status: "archived" }).where(eq(events.id, event.id));
       await recordAudit(tx, {

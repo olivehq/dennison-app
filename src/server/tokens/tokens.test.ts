@@ -6,9 +6,12 @@ import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
 import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { raceBeforeTransaction } from "@/server/events/test-race";
+import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
-import { issueAccessList, listTokens } from "./queries";
+import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
+import { issueAccessList, listTokens, readContactLinks } from "./queries";
 import {
+  contactKey,
   issueTokenForContact,
   issueTokensForEvent,
   linkFor,
@@ -165,20 +168,31 @@ describe("issue and verify", () => {
     expect(decryptToken(row.tokenCiphertext!)).toBe(issued[0].token);
   });
 
-  it("issueAccessList reuses live links and replaces only unusable ones (D31, D59)", async () => {
+  it("issueAccessList reuses live links, replaces unreadable ones, and leaves revoked ones revoked (D31, D59)", async () => {
+    // An admin revokes one link on purpose.
+    const revokedContact = issued[4];
+    expect((await revokeToken(db, revokedContact.tokenId, seeded.adminId)).ok).toBe(true);
     const before = (await listTokens(seeded.eventId, db)).filter((t) => t.status === "active");
     const result = await issueAccessList(db, seeded.eventId);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data).toHaveLength(21);
-    for (const row of result.data) {
-      expect(row.link.startsWith(`${env.APP_URL}/s/`)).toBe(true);
+    expect(result.data.rows).toHaveLength(21);
+    // Only the unreadable legacy link was replaced.
+    expect(result.data.linksIssued).toBe(1);
+    for (const row of result.data.rows) {
       expect(row.email).toContain("@");
-      expect(await verifyToken(db, row.link.split("/s/")[1])).not.toBeNull();
+      if (row.contactType === revokedContact.contactType && row.email === revokedContact.email) {
+        // Revoked on purpose: no new link.
+        expect(row.link).toMatchObject({ status: "revoked", url: null });
+        continue;
+      }
+      expect(row.link?.status).toBe("active");
+      expect(row.link?.url?.startsWith(`${env.APP_URL}/s/`)).toBe(true);
+      expect(await verifyToken(db, row.link!.url!.split("/s/")[1])).not.toBeNull();
     }
     // A link issued at lock is handed out again, not rotated.
     const kept = issued[3];
-    expect(result.data.map((r) => r.link)).toContain(linkFor(kept.token));
+    expect(result.data.rows.map((r) => r.link?.url)).toContain(linkFor(kept.token));
     expect(await verifyToken(db, kept.token)).not.toBeNull();
 
     // The token inserted without ciphertext (pepper test) can't be printed, so it is replaced.
@@ -186,11 +200,79 @@ describe("issue and verify", () => {
     const legacy = before.filter((t) => !after.some((a) => a.id === t.id && a.status === "active"));
     expect(legacy).toHaveLength(1);
     expect(legacy[0].entityId).toBe(seeded.buyers[1].id);
-    expect(after.filter((t) => t.status === "active")).toHaveLength(21);
+    expect(after.filter((t) => t.status === "active")).toHaveLength(20);
 
     // A second call changes nothing.
     const again = await issueAccessList(db, seeded.eventId);
-    expect(again.ok && again.data.map((r) => r.link).sort()).toEqual(result.data.map((r) => r.link).sort());
+    expect(again.ok && again.data).toEqual({ rows: result.data.rows, linksIssued: 0 });
+  });
+
+  it("readContactLinks keeps the newest token per contact and prefers a live one at an equal time", async () => {
+    const fresh = await seedEvent(db);
+    const buyer = fresh.buyers[0].id;
+    const at = new Date("2026-10-01T10:00:00Z");
+    const row = (name: string, extra: Partial<typeof accessTokens.$inferInsert>) => ({
+      eventId: fresh.eventId,
+      contactType: "buyer" as const,
+      entityId: buyer,
+      tokenHash: hashToken(name),
+      expiresAt: new Date(Date.now() + 86_400_000),
+      createdAt: at,
+      ...extra,
+    });
+    const [retired] = await db.insert(accessTokens).values(row("retired", { revokedAt: at })).returning();
+    const [live] = await db.insert(accessTokens).values(row("live", {})).returning();
+    await db.insert(accessTokens).values(row("older", { createdAt: new Date(at.getTime() - 1000), revokedAt: at }));
+
+    const links = await readContactLinks(db, fresh.eventId, { withUrls: false });
+    const link = links.get(contactKey({ contactType: "buyer", entityId: buyer }));
+    expect(link).toEqual({ tokenId: live.id, status: "active", url: null });
+    expect(link?.tokenId).not.toBe(retired.id);
+    expect(links.size).toBe(1);
+  });
+
+  it("issueAccessList issues nothing on an archived event and shows each link as stored", async () => {
+    const fresh = await seedEvent(db);
+    const lockTime = await issueTokensForEvent(db, fresh.eventId);
+    if (!lockTime.ok) throw new Error(lockTime.error.message);
+    const [kept, revoked, expired] = lockTime.data.filter((t) => t.contactType === "buyer");
+    expect((await revokeToken(db, revoked.tokenId, fresh.adminId)).ok).toBe(true);
+    await db.update(accessTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(accessTokens.id, expired.tokenId));
+    // A contact who never had a link: their token row is gone.
+    const never = lockTime.data.find((t) => t.contactType === "supplier_admin")!;
+    await db.delete(accessTokens).where(eq(accessTokens.id, never.tokenId));
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, fresh.eventId));
+    const count = async () => (await db.select().from(accessTokens).where(eq(accessTokens.eventId, fresh.eventId))).length;
+    const tokens = await count();
+
+    const result = await issueAccessList(db, fresh.eventId);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.data.linksIssued).toBe(0);
+    const row = (t: IssuedToken) => result.data.rows.find((r) => r.email === t.email && r.contactType === t.contactType)!;
+    expect(row(kept).link).toMatchObject({ status: "active", url: linkFor(kept.token) });
+    expect(row(revoked).link).toMatchObject({ status: "revoked", url: null });
+    expect(row(expired).link).toMatchObject({ status: "expired", url: null });
+    expect(row(never).link).toBeUndefined();
+    expect(await count()).toBe(tokens);
+  });
+
+  it("issueAccessList issues for never-issued and expired links when the event is not archived", async () => {
+    const fresh = await seedEvent(db);
+    const lockTime = await issueTokensForEvent(db, fresh.eventId);
+    if (!lockTime.ok) throw new Error(lockTime.error.message);
+    const [expired, never] = lockTime.data.filter((t) => t.contactType === "buyer");
+    await db.update(accessTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(accessTokens.id, expired.tokenId));
+    await db.delete(accessTokens).where(eq(accessTokens.id, never.tokenId));
+
+    const result = await issueAccessList(db, fresh.eventId);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.data.linksIssued).toBe(2);
+    for (const contact of [expired, never]) {
+      const link = result.data.rows.find((r) => r.email === contact.email)!.link;
+      expect(link?.status).toBe("active");
+      expect(link?.url).not.toBe(linkFor(contact.token));
+      expect(await verifyToken(db, link!.url!.split("/s/")[1])).toMatchObject({ entityId: contact.entityId });
+    }
   });
 
   it("linksForContacts without issueMissing writes nothing", async () => {
@@ -200,7 +282,7 @@ describe("issue and verify", () => {
     const none = await linksForContacts(db, fresh.eventId, [{ contactType: "buyer", entityId: fresh.buyers[0].id }], {
       issueMissing: false,
     });
-    expect(none.ok && none.data.size).toBe(0);
+    expect(none.ok && none.data.links.size).toBe(0);
     expect(await count()).toBe(total);
   });
 });
@@ -322,5 +404,32 @@ describe("regenerate and revoke rules", () => {
     expect(archived).toEqual({ ok: false, error: { code: "locked", message: "This event is archived and can't be changed." } });
     expect((await db.select().from(accessTokens).where(eq(accessTokens.id, supplier.tokenId)))[0].revokedAt).toBeNull();
     expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, supplier.tokenId))).toHaveLength(0);
+  });
+});
+
+describe("locking again after an unlock", () => {
+  it("gives no new link to a contact whose newest link was revoked, but replaces an expired one (D137)", async () => {
+    const fresh = await seedEvent(db);
+    const run = await startRun(db, { eventId: fresh.eventId, adminId: fresh.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const first = await lockSchedule(db, { eventId: fresh.eventId, adminId: fresh.adminId });
+    if (!first.ok) throw new Error(first.error.message);
+    const [revokedBuyer, expiredBuyer] = fresh.buyers;
+    const tokensOf = (entityId: string) => db.select().from(accessTokens).where(eq(accessTokens.entityId, entityId));
+    const [revokedToken] = await tokensOf(revokedBuyer.id);
+    const [expiredToken] = await tokensOf(expiredBuyer.id);
+    expect((await revokeToken(db, revokedToken.id, fresh.adminId)).ok).toBe(true);
+    await db.update(accessTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(accessTokens.id, expiredToken.id));
+
+    const unlocked = await unlockSchedule(db, { eventId: fresh.eventId, adminId: fresh.adminId, reason: "Fix a desk" });
+    if (!unlocked.ok) throw new Error(unlocked.error.message);
+    const again = await lockSchedule(db, { eventId: fresh.eventId, adminId: fresh.adminId });
+    if (!again.ok) throw new Error(again.error.message);
+
+    expect(again.data.tokensIssued).toBe(1);
+    expect((await tokensOf(revokedBuyer.id)).map((t) => t.id)).toEqual([revokedToken.id]);
+    const replaced = (await tokensOf(expiredBuyer.id)).filter((t) => t.revokedAt === null);
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0].id).not.toBe(expiredToken.id);
   });
 });

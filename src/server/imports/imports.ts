@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   imports,
@@ -25,8 +25,8 @@ import { claimEditableEvent, EventChangedError, eventChangedResult } from "@/ser
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { fullNameFor } from "@/server/roster/display-name";
-import { inEditableTransaction, loadEditableEvent } from "@/server/roster/editable";
-import { revokeTokens } from "@/server/roster/roster";
+import { inEditableTransaction, loadEditableEvent, Refused } from "@/server/roster/editable";
+import { replaceLinksForChangedEmail } from "@/server/roster/roster";
 import {
   isStructuralFailure,
   parseImportFile,
@@ -34,6 +34,8 @@ import {
   type ParsedParticipant,
   type ParsedSupplier,
 } from "./parsers";
+import { rankingsOfKindFor } from "./queries";
+import { emailIn, normaliseName } from "./resolve";
 import {
   analyzeRankings,
   failedReport,
@@ -57,6 +59,9 @@ export type ApplySummary = {
   kind: ImportKind;
   created: number;
   updated: number;
+  /** Ranking kinds: the people with a row in the file, the only ones whose rankings changed. */
+  rankers: number;
+  /** Rankings of those people that earlier files of this kind wrote, replaced by this file. */
   rankingsDeleted: number;
   rankingsWritten: number;
   optedIn: number;
@@ -74,7 +79,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 function contentTypeFor(filename: string): string {
   const extension = filename.split(".").pop()?.toLowerCase() ?? "";
-  return CONTENT_TYPES[extension] ?? "application/octet-stream";
+  return Object.hasOwn(CONTENT_TYPES, extension) ? CONTENT_TYPES[extension] : "application/octet-stream";
 }
 
 export async function loadContext(db: Db, eventId: string): Promise<ValidationContext> {
@@ -143,35 +148,51 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
   const key = importFileKey(input.eventId, importId, input.filename);
   await putFile({ key, body: input.buffer, contentType: contentTypeFor(input.filename) });
 
-  const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer);
-  const state = importStateFor(evaluation.status, evaluation.report);
-  const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
-    await tx.insert(imports).values({
-      id: importId,
-      eventId: input.eventId,
-      kind: input.kind,
-      fileKey: key,
-      fileName: input.filename,
-      status: evaluation.status,
-      validation: evaluation.report,
-      rowCount: evaluation.status === "failed" ? null : evaluation.report.counts.rows,
-      createdBy: input.adminId,
+  // Until the row commits, nothing points at the file: every way out but
+  // success deletes it, so no failure leaves a file no import tracks.
+  try {
+    const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer);
+    const state = importStateFor(evaluation.status, evaluation.report);
+    const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+      await tx.insert(imports).values({
+        id: importId,
+        eventId: input.eventId,
+        kind: input.kind,
+        fileKey: key,
+        fileName: input.filename,
+        status: evaluation.status,
+        validation: evaluation.report,
+        rowCount: evaluation.status === "failed" ? null : evaluation.report.counts.rows,
+        createdBy: input.adminId,
+      });
+      await recordAudit(tx, {
+        eventId: input.eventId,
+        adminId: input.adminId,
+        action: "import.create",
+        entityType: "import",
+        entityId: importId,
+        after: { kind: input.kind, fileName: input.filename, state, counts: evaluation.report.counts },
+      });
     });
-    await recordAudit(tx, {
-      eventId: input.eventId,
-      adminId: input.adminId,
-      action: "import.create",
-      entityType: "import",
-      entityId: importId,
-      after: { kind: input.kind, fileName: input.filename, state, counts: evaluation.report.counts },
-    });
-  });
-  if (!saved.ok) {
+    if (saved.ok) return ok({ importId, state, report: evaluation.report });
     // Locked or archived while the file was parsed: the row was never written, so the file goes too.
-    await deleteFile(key).catch(() => undefined);
+    await deleteStoredFile(importId, key);
     return saved;
+  } catch (error) {
+    await deleteStoredFile(importId, key);
+    throw error;
   }
-  return ok({ importId, state, report: evaluation.report });
+}
+
+/** Deletes an import's stored file. A failure is logged with the key, never thrown: the database is already right. */
+async function deleteStoredFile(importId: string, key: string): Promise<void> {
+  try {
+    await deleteFile(key);
+  } catch (error) {
+    console.warn(
+      `[imports] import ${importId}: the stored file ${key} was not deleted: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function findImport(db: Db, importId: string): Promise<Import | null> {
@@ -184,28 +205,55 @@ async function readStoredFile(row: Import): Promise<Buffer | null> {
   return stored?.body ?? null;
 }
 
+/** Parses and validates the stored file against the current roster and aliases. */
+async function evaluateStored(db: Db, row: Import): Promise<Evaluation> {
+  const buffer = await readStoredFile(row);
+  return buffer
+    ? evaluate(db, row.eventId, row.kind, buffer)
+    : { status: "failed", report: failedReport("The uploaded file is no longer in storage. Upload it again.") };
+}
+
+function evaluationColumns(evaluation: Evaluation) {
+  return {
+    status: evaluation.status,
+    validation: evaluation.report,
+    rowCount: evaluation.status === "failed" ? null : evaluation.report.counts.rows,
+  };
+}
+
+/**
+ * Checks the stored file against the roster and aliases as they are now and
+ * writes the result, both under the event row lock (D85): the check runs after
+ * the lock is held, so a slower check can never overwrite a newer one (two
+ * admins mapping names at once). The write is a compare-and-set on the status
+ * read. `statusToo` false keeps the status and row count. Null, with nothing
+ * written, when the import was applied, ignored, or deleted meanwhile, or the
+ * event was locked or archived since.
+ */
+async function writeFreshReport(db: Db, row: Import, options: { statusToo: boolean }): Promise<Evaluation | null> {
+  const written = await inEditableTransaction(db, row.eventId, async (tx) => {
+    const evaluation = await evaluateStored(tx, row);
+    const columns = options.statusToo ? evaluationColumns(evaluation) : { validation: evaluation.report };
+    const updated = await tx
+      .update(imports)
+      .set(columns)
+      .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
+      .returning({ id: imports.id });
+    return updated.length > 0 ? evaluation : null;
+  });
+  return written.ok ? written.data : null;
+}
+
 /**
  * Re-parses the stored file against the current roster and aliases and updates
- * the report. A compare-and-set on the status read: an import applied or
- * deleted meanwhile is left alone and the result is null.
+ * the report. An import applied, ignored, or deleted meanwhile, or an event
+ * locked or archived meanwhile, is skipped: the report stays and the result is
+ * null. Applied and ignored imports are never re-validated.
  */
 export async function revalidateImport(db: Db, row: Import): Promise<ImportState | null> {
-  if (row.status === "applied") return "applied";
-  const buffer = await readStoredFile(row);
-  const evaluation: Evaluation = buffer
-    ? await evaluate(db, row.eventId, row.kind, buffer)
-    : { status: "failed", report: failedReport("The uploaded file is no longer in storage. Upload it again.") };
-  const updated = await db
-    .update(imports)
-    .set({
-      status: evaluation.status,
-      validation: evaluation.report,
-      rowCount: evaluation.status === "failed" ? null : evaluation.report.counts.rows,
-    })
-    .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
-    .returning({ id: imports.id });
-  if (updated.length === 0) return null;
-  return importStateFor(evaluation.status, evaluation.report);
+  if (row.status === "applied" || row.status === "ignored") return row.status;
+  const evaluation = await writeFreshReport(db, row, { statusToo: true });
+  return evaluation ? importStateFor(evaluation.status, evaluation.report) : null;
 }
 
 async function revalidatePending(db: Db, eventId: string): Promise<{ importId: string; kind: ImportKind; state: ImportState }[]> {
@@ -247,6 +295,27 @@ async function entityCanonicalName(db: Db, eventId: string, entityType: EntityTy
   return row?.name ?? null;
 }
 
+/** Organizations of this event's participants, lower-cased and normalised, as the resolver matches them. */
+async function rosterOrganizations(db: Db, eventId: string): Promise<Set<string>> {
+  const rows = await db.select({ organization: participants.organization }).from(participants).where(eq(participants.eventId, eventId));
+  const keys = new Set<string>();
+  for (const { organization } of rows) {
+    if (!organization) continue;
+    keys.add(organization.trim().toLowerCase());
+    keys.add(normaliseName(organization));
+  }
+  return keys;
+}
+
+/**
+ * A company name or an email is not a person's name. The event alias keeps the
+ * mapping, but a cross-year copy could send the same text to a different person
+ * next year without a warning, so none is written.
+ */
+function isCompanyOrEmailText(raw: string, organizations: Set<string>): boolean {
+  return emailIn(raw) !== null || organizations.has(raw.toLowerCase()) || organizations.has(normaliseName(raw));
+}
+
 /**
  * Maps raw names to entities (source manual) in one transaction, then
  * re-validates every pending import of the event once. All or nothing: one
@@ -271,6 +340,7 @@ export async function saveAliases(
   }
 
   const saved = await inEditableTransaction(db, input.eventId, async (tx) => {
+    const organizations = await rosterOrganizations(tx, input.eventId);
     const ids: string[] = [];
     for (const [i, alias] of aliases.entries()) {
       const [row] = await tx
@@ -281,13 +351,15 @@ export async function saveAliases(
           set: { entityId: alias.entityId, source: "manual" },
         })
         .returning();
-      await upsertGlobalAlias(tx, {
-        rawText: alias.raw,
-        entityType: alias.entityType,
-        entityId: alias.entityId,
-        canonicalName: canonicalNames[i],
-        source: "manual",
-      });
+      if (!isCompanyOrEmailText(alias.raw, organizations)) {
+        await upsertGlobalAlias(tx, {
+          rawText: alias.raw,
+          entityType: alias.entityType,
+          entityId: alias.entityId,
+          canonicalName: canonicalNames[i],
+          source: "manual",
+        });
+      }
       await recordAudit(tx, {
         eventId: input.eventId,
         adminId: input.adminId,
@@ -358,7 +430,12 @@ async function applyParticipants(db: Db, eventId: string, rows: ParsedParticipan
 }
 
 /** Name is the identity, compared case-insensitively. A changed contact email revokes that link. */
-async function applySuppliers(db: Db, eventId: string, rows: ParsedSupplier[]): Promise<Counts> {
+async function applySuppliers(
+  db: Db,
+  event: Pick<Event, "id" | "eventDate" | "timezone">,
+  rows: ParsedSupplier[],
+): Promise<Counts> {
+  const eventId = event.id;
   const existing = await db.select().from(suppliers).where(eq(suppliers.eventId, eventId));
   const byName = new Map(existing.map((row) => [row.name.toLowerCase(), row]));
   const counts: Counts = { created: 0, updated: 0 };
@@ -377,10 +454,14 @@ async function applySuppliers(db: Db, eventId: string, rows: ParsedSupplier[]): 
       continue;
     }
     await db.update(suppliers).set(values).where(eq(suppliers.id, current.id));
-    const changed: ("supplier_admin" | "supplier_attendee")[] = [];
-    if (current.adminContactEmail !== row.adminContactEmail) changed.push("supplier_admin");
-    if (current.attendeeContactEmail !== row.attendeeContactEmail) changed.push("supplier_attendee");
-    if (changed.length) await revokeTokens(db, { eventId, entityId: current.id, contactTypes: changed });
+    const changed: { contactType: "supplier_admin" | "supplier_attendee"; hasEmail: boolean }[] = [];
+    if (current.adminContactEmail !== row.adminContactEmail) {
+      changed.push({ contactType: "supplier_admin", hasEmail: Boolean(row.adminContactEmail) });
+    }
+    if (current.attendeeContactEmail !== row.attendeeContactEmail) {
+      changed.push({ contactType: "supplier_attendee", hasEmail: Boolean(row.attendeeContactEmail) });
+    }
+    if (changed.length) await replaceLinksForChangedEmail(db, event, { entityId: current.id, contacts: changed });
     counts.updated += 1;
   }
   return counts;
@@ -394,19 +475,21 @@ async function applyRankings(
   importId: string,
   kind: RankingKind,
   analysis: RankingAnalysis,
-): Promise<Pick<ApplySummary, "rankingsDeleted" | "rankingsWritten" | "optedIn" | "optedOut">> {
-  // Replace: everything written by earlier imports of this kind goes away first.
-  // The caller holds the event row lock, so another apply of this kind has
-  // either committed (and is in this list) or waits for this one.
-  const previous = await db
-    .select({ id: imports.id })
-    .from(imports)
-    .where(and(eq(imports.eventId, event.id), eq(imports.kind, kind), eq(imports.status, "applied"), ne(imports.id, importId)));
-  const importIds = [importId, ...previous.map((row) => row.id)];
-  const deleted = await db
-    .delete(rankings)
-    .where(and(eq(rankings.eventId, event.id), inArray(rankings.importId, importIds)))
-    .returning({ id: rankings.id });
+): Promise<Pick<ApplySummary, "rankers" | "rankingsDeleted" | "rankingsWritten" | "optedIn" | "optedOut">> {
+  // Replace per ranker: only the people with a row in this file lose the
+  // rankings earlier files of this kind wrote for them; everyone else keeps
+  // theirs. Rankings with no import (the seed) are left alone unless this
+  // file ranks the same pair, which the upsert below takes over. The caller
+  // holds the event row lock, so another apply of this kind has either
+  // committed (and counts as applied here) or waits for this one.
+  const rankerIds = analysis.report.rankersInFile;
+  const deleted =
+    rankerIds.length === 0
+      ? []
+      : await db
+          .delete(rankings)
+          .where(rankingsOfKindFor(event.id, kind, rankerIds))
+          .returning({ id: rankings.id });
 
   const values = analysis.rankings.map((row) => ({
     eventId: event.id,
@@ -430,27 +513,29 @@ async function applyRankings(
 
   let optedIn = 0;
   let optedOut = 0;
-  // D1: the biztech file is the opt-in signal. Anyone with a choice is in, every other active participant is out.
+  // D1, per ranker: of the participants in the file, anyone with a choice is
+  // in and every other active one is out. People not in the file keep their flag.
   if (kind === "buyer_biztech_rankings" && event.settings.biztechOptInRule === "from_biztech_file") {
-    const ids = [...analysis.rankersWithChoices];
-    if (ids.length > 0) {
+    const inIds = [...analysis.rankersWithChoices];
+    const outIds = rankerIds.filter((id) => !analysis.rankersWithChoices.has(id));
+    if (inIds.length > 0) {
       const rows = await db
         .update(participants)
         .set({ biztechOptIn: true })
-        .where(and(eq(participants.eventId, event.id), inArray(participants.id, ids)))
+        .where(and(eq(participants.eventId, event.id), inArray(participants.id, inIds)))
         .returning({ id: participants.id });
       optedIn = rows.length;
     }
-    const outConditions = [eq(participants.eventId, event.id), eq(participants.status, "active")];
-    if (ids.length > 0) outConditions.push(notInArray(participants.id, ids));
-    const rows = await db
-      .update(participants)
-      .set({ biztechOptIn: false })
-      .where(and(...outConditions))
-      .returning({ id: participants.id });
-    optedOut = rows.length;
+    if (outIds.length > 0) {
+      const rows = await db
+        .update(participants)
+        .set({ biztechOptIn: false })
+        .where(and(eq(participants.eventId, event.id), eq(participants.status, "active"), inArray(participants.id, outIds)))
+        .returning({ id: participants.id });
+      optedOut = rows.length;
+    }
   }
-  return { rankingsDeleted: deleted.length, rankingsWritten: values.length, optedIn, optedOut };
+  return { rankers: rankerIds.length, rankingsDeleted: deleted.length, rankingsWritten: values.length, optedIn, optedOut };
 }
 
 /**
@@ -489,6 +574,7 @@ export async function applyImport(
   const loaded = await loadEditableEvent(db, row.eventId);
   if (!loaded.ok) return loaded.error;
   if (row.status === "applied") return fail("conflict", "This import was already applied.");
+  if (row.status === "ignored") return fail("conflict", "This file is ignored. Stop ignoring it before you apply it.");
 
   const buffer = await readStoredFile(row);
   if (!buffer) return fail("not_found", "The uploaded file is no longer in storage. Upload it again.");
@@ -500,7 +586,8 @@ export async function applyImport(
   const report = analysis ? analysis.report : validateParsed(row.kind, parsed, context);
   const state = importStateFor("validated", report);
   if (state !== "ready") {
-    await db.update(imports).set({ validation: report }).where(eq(imports.id, row.id));
+    // Show the current problems on the import page, unless it moved meanwhile.
+    await writeFreshReport(db, row, { statusToo: false });
     return fail(
       "validation",
       state === "needs_mapping"
@@ -521,6 +608,7 @@ export async function applyImport(
         kind: row.kind,
         created: 0,
         updated: 0,
+        rankers: 0,
         rankingsDeleted: 0,
         rankingsWritten: 0,
         optedIn: 0,
@@ -531,7 +619,7 @@ export async function applyImport(
       if (parsed.kind === "participants") {
         Object.assign(result, await applyParticipants(tx, event.id, parsed.rows));
       } else if (parsed.kind === "suppliers") {
-        Object.assign(result, await applySuppliers(tx, event.id, parsed.rows));
+        Object.assign(result, await applySuppliers(tx, event, parsed.rows));
       } else if (analysis && isRankingKind(row.kind)) {
         Object.assign(result, await applyRankings(tx, event, row.id, row.kind, analysis));
         result.aliasesSaved = await saveAutoAliases(tx, event.id, analysis.inexact);
@@ -559,7 +647,7 @@ export async function applyImport(
     });
   } catch (error) {
     if (error instanceof ImportStatusChanged) {
-      return fail("conflict", "This import was applied or changed by someone else. Reload the page.");
+      return fail("conflict", STATUS_CHANGED_MESSAGE);
     }
     if (error instanceof EventChangedError) return eventChangedResult(error)!;
     throw error;
@@ -572,7 +660,14 @@ export async function applyImport(
 /** Thrown inside the apply transaction to roll it back when the import's status moved underneath it. */
 class ImportStatusChanged extends Error {}
 
-/** Removes the import and the rankings it wrote, then its stored file. */
+const STATUS_CHANGED_MESSAGE = "This import was applied or changed by someone else. Reload the page.";
+
+/**
+ * Removes the import and the rankings it wrote, then its stored file. With
+ * replace per ranker, those are the rankings of the people in this file that
+ * a later file hasn't replaced. Rankings it replaced when it was applied are
+ * gone; deleting it doesn't bring them back.
+ */
 export async function deleteImportRecord(
   db: Db,
   input: { importId: string; adminId: string },
@@ -598,10 +693,82 @@ export async function deleteImportRecord(
   if (!done.ok) return done;
   const rankingsDeleted = done.data;
   // After the commit, so a failed delete never leaves a row pointing at no file.
-  try {
-    await deleteFile(row.fileKey);
-  } catch (error) {
-    console.warn(`[imports] import ${row.id}: the stored file was not deleted: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  await deleteStoredFile(row.id, row.fileKey);
   return ok({ importId: row.id, rankingsDeleted });
+}
+
+/**
+ * Sets a file that isn't applied aside: it stays in history but is never
+ * applied, never re-validated, and is skipped when readiness and the upload
+ * cards pick the latest file of its kind, so the file before it counts again.
+ */
+export async function ignoreImport(
+  db: Db,
+  input: { importId: string; adminId: string },
+): Promise<ActionResult<{ importId: string }>> {
+  const row = await findImport(db, input.importId);
+  if (!row) return fail("not_found", "That import no longer exists.");
+  const loaded = await loadEditableEvent(db, row.eventId);
+  if (!loaded.ok) return loaded.error;
+  if (row.status === "applied") {
+    return fail("conflict", "This file is applied, so it can't be ignored. Upload a new file of this kind instead.");
+  }
+  if (row.status === "ignored") return fail("conflict", "This file is already ignored.");
+
+  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
+    // Compare-and-set on the status read: an apply that got here first wins.
+    const marked = await tx
+      .update(imports)
+      .set({ status: "ignored" })
+      .where(and(eq(imports.id, row.id), eq(imports.status, row.status)))
+      .returning({ id: imports.id });
+    if (marked.length === 0) throw new Refused(fail("conflict", STATUS_CHANGED_MESSAGE));
+    await recordAudit(tx, {
+      eventId: row.eventId,
+      adminId: input.adminId,
+      action: "import.ignore",
+      entityType: "import",
+      entityId: row.id,
+      before: { kind: row.kind, fileName: row.fileName, status: row.status },
+      after: { kind: row.kind, fileName: row.fileName, status: "ignored" },
+    });
+  });
+  if (!done.ok) return done;
+  return ok({ importId: row.id });
+}
+
+/** Undoes `ignoreImport`: checks the file again against the current roster and aliases. */
+export async function stopIgnoringImport(
+  db: Db,
+  input: { importId: string; adminId: string },
+): Promise<ActionResult<{ importId: string; state: ImportState }>> {
+  const row = await findImport(db, input.importId);
+  if (!row) return fail("not_found", "That import no longer exists.");
+  const loaded = await loadEditableEvent(db, row.eventId);
+  if (!loaded.ok) return loaded.error;
+  if (row.status !== "ignored") return fail("conflict", "This file isn't ignored.");
+
+  const done = await inEditableTransaction(db, row.eventId, async (tx) => {
+    // Ignored files were never re-validated, so check it now, after the lock is held.
+    const evaluation = await evaluateStored(tx, row);
+    const state = importStateFor(evaluation.status, evaluation.report);
+    const marked = await tx
+      .update(imports)
+      .set(evaluationColumns(evaluation))
+      .where(and(eq(imports.id, row.id), eq(imports.status, "ignored")))
+      .returning({ id: imports.id });
+    if (marked.length === 0) throw new Refused(fail("conflict", STATUS_CHANGED_MESSAGE));
+    await recordAudit(tx, {
+      eventId: row.eventId,
+      adminId: input.adminId,
+      action: "import.unignore",
+      entityType: "import",
+      entityId: row.id,
+      before: { kind: row.kind, fileName: row.fileName, status: "ignored" },
+      after: { kind: row.kind, fileName: row.fileName, status: evaluation.status, state },
+    });
+    return state;
+  });
+  if (!done.ok) return done;
+  return ok({ importId: row.id, state: done.data });
 }

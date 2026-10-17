@@ -70,7 +70,7 @@ scripts/            seed.ts and other one-off tools
 - Copy: sentence case, plain verbs, the same word for the same action everywhere (Lock, Unlock, Withdraw, Send). Buttons say what happens. Errors say what went wrong and what to do.
 - Dependencies: do not add one without a reason written in the commit body. Check shadcn first for anything UI-shaped.
 - Secrets live in `.env.local` and Vercel. Never log them, never commit them. `.env.example` lists every variable with a comment.
-- Content-Security-Policy: `src/proxy.ts` sends a nonce-based policy built in `src/lib/csp.ts` (docs/ARCHITECTURE.md, "Security and operations"). Only `'self'` scripts, fonts, images (plus `data:` and `blob:`), and fetches work; inline styles are allowed; no `eval` in production. A new third-party origin goes into `buildCsp`, not around it. After a UI change, check the browser console for "Content Security Policy" errors; `pnpm e2e` fails on them.
+- Content-Security-Policy: `src/proxy.ts` sends a nonce-based policy built in `src/lib/csp.ts` (docs/ARCHITECTURE.md, "Security and operations"). Only `'self'` scripts, fonts, and fetches work; images may come from `'self'`, `data:`, `blob:`, and any `https:` origin (D124); inline styles are allowed; no `eval` in production. A new third-party origin goes into `buildCsp`, not around it. After a UI change, check the browser console for "Content Security Policy" errors; `pnpm e2e` fails on them.
 - Names shown in a list or numbered by position sort with `compareNames` from `src/lib/names.ts`, never `localeCompare` or SQL `ORDER BY name` (D66).
 
 ## Definition of done

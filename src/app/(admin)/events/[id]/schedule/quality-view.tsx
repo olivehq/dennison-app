@@ -53,6 +53,7 @@ export function QualityView({
   const below = model.buyers.filter((b) => healthOf(b, targets) === "under").sort((a, b) => a.count - b.count);
   const above = model.buyers.filter((b) => healthOf(b, targets) === "over").sort((a, b) => b.count - a.count);
   const offSuppliers = model.suppliers.filter((s) => healthOf(s, targets) !== "ok");
+  const activeSuppliers = model.suppliers.filter((s) => !s.withdrawn).length;
 
   if (!stats) {
     return (
@@ -243,7 +244,7 @@ export function QualityView({
               empty={
                 offSuppliers.length
                   ? "None match your search."
-                  : `All ${model.suppliers.length} suppliers have exactly ${targets.supplierTarget}.`
+                  : `All ${activeSuppliers} suppliers have exactly ${targets.supplierTarget}.`
               }
               why={(p) => (p.kind === "supplier" ? `${TYPE_LABEL[p.type]}, desk ${p.desk ?? "not set"}` : "")}
               targets={targets}

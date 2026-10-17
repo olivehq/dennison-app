@@ -32,6 +32,8 @@ export type RunSummary = {
   parentRunId: string | null;
   version: number;
   durationMs: number | null;
+  /** Engine warnings for a completed run; the reason it failed for a failed one. */
+  warnings: string[];
   warningCount: number;
   createdAt: Date;
   completedAt: Date | null;
@@ -57,7 +59,7 @@ export function summarizeStats(stats: QualityStats | null): RunStatsSummary | nu
  * table. Runs stuck in `running` past the timeout are marked failed first.
  */
 export async function listRuns(eventId: string, db: Db = getDb()): Promise<RunSummary[]> {
-  await failRunsOlderThan(db, RUN_TIMEOUT_MINUTES);
+  await failRunsOlderThan(db, eventId, RUN_TIMEOUT_MINUTES);
   const rows = await db
     .select({ run: matchRuns, createdByName: admins.name })
     .from(matchRuns)
@@ -71,6 +73,7 @@ export async function listRuns(eventId: string, db: Db = getDb()): Promise<RunSu
     parentRunId: run.parentRunId,
     version: run.version,
     durationMs: run.durationMs,
+    warnings: run.warnings,
     warningCount: run.warnings.length,
     createdAt: run.createdAt,
     completedAt: run.completedAt,
@@ -176,15 +179,30 @@ export async function compareRunForPage(
 
 export type ActivationPreview = { added: number; removed: number; countChanges: number };
 
+export type ActivationPreviews = {
+  /**
+   * The active run the counts were diffed against, as read before its
+   * appointments. The Activate button sends it back (`activateRun`'s
+   * `expected`), so an edit or activation since the counts were read is a
+   * conflict. Null when no run is active.
+   */
+  active: { id: string; version: number } | null;
+  /** Counts per completed, inactive run. Empty when no run is active. */
+  byRun: Map<string, ActivationPreview>;
+};
+
 /**
  * For each completed run that is not active, what activating it would change
  * against the active run, in counts. Shown in the "Activate this run" dialog.
- * One query for every appointment of the event. Empty when no run is active.
+ * One query for every appointment of the event.
  */
-export async function activationPreviews(eventId: string, db: Db = getDb()): Promise<Map<string, ActivationPreview>> {
-  const previews = new Map<string, ActivationPreview>();
+export async function activationPreviews(eventId: string, db: Db = getDb()): Promise<ActivationPreviews> {
+  const byRun = new Map<string, ActivationPreview>();
+  // Read before the appointments: an edit landing in between bumps the version
+  // past this one, so the activation is refused rather than applying counts
+  // the dialog didn't show.
   const active = await findActiveRun(db, eventId);
-  if (!active) return previews;
+  if (!active) return { active: null, byRun };
   const [runs, rows] = await Promise.all([
     db
       .select({ id: matchRuns.id })
@@ -192,18 +210,18 @@ export async function activationPreviews(eventId: string, db: Db = getDb()): Pro
       .where(and(eq(matchRuns.eventId, eventId), eq(matchRuns.status, "completed"), eq(matchRuns.isActive, false))),
     db.select().from(appointments).where(eq(appointments.eventId, eventId)),
   ]);
-  const byRun = new Map<string, (typeof rows)[number][]>();
+  const rowsByRun = new Map<string, (typeof rows)[number][]>();
   for (const row of rows) {
-    const list = byRun.get(row.runId);
+    const list = rowsByRun.get(row.runId);
     if (list) list.push(row);
-    else byRun.set(row.runId, [row]);
+    else rowsByRun.set(row.runId, [row]);
   }
-  const activeRows = byRun.get(active.id) ?? [];
+  const activeRows = rowsByRun.get(active.id) ?? [];
   const noNames = new Map<string, string>();
   const noSuppliers = new Set<string>();
   for (const run of runs) {
-    const diff = diffAppointments(byRun.get(run.id) ?? [], activeRows, noNames, noSuppliers);
-    previews.set(run.id, { added: diff.added.length, removed: diff.removed.length, countChanges: diff.countChanges.length });
+    const diff = diffAppointments(rowsByRun.get(run.id) ?? [], activeRows, noNames, noSuppliers);
+    byRun.set(run.id, { added: diff.added.length, removed: diff.removed.length, countChanges: diff.countChanges.length });
   }
-  return previews;
+  return { active: { id: active.id, version: active.version }, byRun };
 }

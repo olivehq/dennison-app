@@ -39,7 +39,7 @@ describe("seedDemo", () => {
   it("feeds the exports: 504 master rows and 121 schedule files", async () => {
     const view = (await getScheduleView(first.eventId, db))!;
     expect(masterScheduleCsv(view).slice(BOM.length).trimEnd().split("\n")).toHaveLength(505);
-    const entries = scheduleZipEntries(view);
+    const entries = scheduleZipEntries(view, new Map());
     expect(entries).toHaveLength(121);
     expect(new Set(entries.map((e) => e.path)).size).toBe(121);
   });

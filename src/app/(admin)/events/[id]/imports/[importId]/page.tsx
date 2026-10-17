@@ -19,11 +19,12 @@ import { isRankingKind, type EntityType, type ImportValidationReport } from "@/l
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
-import { getImport, listImports } from "@/server/imports/queries";
+import { countRankingsToReplace, getImport, listImports } from "@/server/imports/queries";
 import { fullNameFor, listParticipants, listSuppliers } from "@/server/roster/queries";
 import { lockReason } from "../../_roster/lock-reason";
 import { eventSectionHref } from "../../event-sections";
 import { ImportStateBadge, KIND_LABELS, plural } from "../import-labels";
+import { importsHistoryHref } from "../imports-tabs";
 import { ApplyPanel } from "./apply-panel";
 import { NameMappingTable, type EntityOption } from "./name-mapping-table";
 import { ReportSection } from "./report-section";
@@ -94,19 +95,19 @@ function ReportSections({ report, ranking }: { report: ImportValidationReport; r
     },
     {
       title: "Rows with zero rankings",
-      hint: "These people chose nobody in this file, so they get no rankings from it.",
+      hint: "These people chose nobody in this file. Applying it clears their rankings of this kind.",
       icon: <CircleOffIcon />,
       items: report.rowsWithZeroRankings.map((r) => `Row ${r.row}: ${r.name}`),
     },
     {
       title: "Ranked by nobody",
-      hint: "Nobody in this file chose them. The engine can still place them, but only on unranked pairs.",
+      hint: "Nobody in this file chose them. Choices from earlier files still count, and the engine can place them on unranked pairs.",
       icon: <InfoIcon />,
       items: report.rankedByNobody.map((e) => e.name),
     },
     {
       title: "Ranked nobody",
-      hint: "Active people on the roster who aren't in this file or chose nobody.",
+      hint: "Active people on the roster who aren't in this file or chose nobody. People not in this file keep their current rankings.",
       icon: <FileWarningIcon />,
       items: report.rankedNobody.map((e) => e.name),
     },
@@ -130,9 +131,15 @@ function ReportSections({ report, ranking }: { report: ImportValidationReport; r
   );
 }
 
-export default async function ImportDetailPage({ params }: { params: Promise<{ id: string; importId: string }> }) {
+export default async function ImportDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string; importId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   await requireSession();
-  const { id, importId } = await params;
+  const [{ id, importId }, query] = await Promise.all([params, searchParams]);
   const event = await getEvent(id);
   if (!event) notFound();
   const detail = /^[0-9a-f-]{36}$/i.test(importId) ? await getImport(importId) : null;
@@ -141,32 +148,43 @@ export default async function ImportDetailPage({ params }: { params: Promise<{ i
   const report = detail.report;
   const ranking = isRankingKind(detail.kind);
   const locked = lockReason(event, "map names or apply files");
-  const needsMapping = detail.state !== "applied" && (report?.unknownNames.length ?? 0) > 0;
+  const needsMapping =
+    detail.state !== "applied" && detail.state !== "ignored" && (report?.unknownNames.length ?? 0) > 0;
+  // What an apply replaces, for the confirmation. Reports from before replace-per-ranker have no ranker list.
+  const rankersKnown = report !== null && report.rankersInFile.length === report.counts.rankers;
 
-  const [history, participants, suppliers] = await Promise.all([
+  const [history, participants, suppliers, replacing] = await Promise.all([
     listImports(event.id),
     needsMapping ? listParticipants(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
     needsMapping ? listSuppliers(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
+    detail.state === "ready" && rankersKnown && isRankingKind(detail.kind)
+      ? countRankingsToReplace(event.id, detail.kind, report.rankersInFile)
+      : Promise.resolve(null),
   ]);
-  const newerExists = history.some((item) => item.kind === detail.kind && item.createdAt > detail.createdAt);
+  const newerExists = history.some(
+    (item) => item.kind === detail.kind && item.state !== "ignored" && item.createdAt > detail.createdAt,
+  );
   const withdrawnHint = (status: string) => (status === "withdrawn" ? "withdrawn" : undefined);
   const entities: Record<EntityType, EntityOption[]> = {
+    // Name, organization, title, and email, so two people with one name can be told apart.
     buyer: participants.map((p) => ({
       value: p.id,
-      label: p.organization ? `${fullNameFor(p)} (${p.organization})` : fullNameFor(p),
+      label: `${fullNameFor(p)} (${[p.organization, p.title, p.email].filter(Boolean).join(", ")})`,
       hint: withdrawnHint(p.status),
     })),
     supplier: suppliers.map((s) => ({ value: s.id, label: s.name, hint: withdrawnHint(s.status) })),
   };
   const importsHref = eventSectionHref(event.id, "imports");
+  // Opened from the History tab: go back there; otherwise back to Upload.
+  const fromHistory = query.from === "history";
   const uploaded = `${formatTimestamp(detail.createdAt, event.timezone)}${detail.createdByName ? ` by ${detail.createdByName}` : ""}`;
 
   return (
     <>
       <Button variant="ghost" size="sm" className="self-start" asChild>
-        <Link href={importsHref}>
+        <Link href={fromHistory ? importsHistoryHref(event.id) : importsHref}>
           <ArrowLeftIcon data-icon="inline-start" />
-          Imports
+          {fromHistory ? "Import history" : "Imports"}
         </Link>
       </Button>
       <PageHeader
@@ -198,10 +216,13 @@ export default async function ImportDetailPage({ params }: { params: Promise<{ i
 
       <ApplyPanel
         importId={detail.id}
+        fileName={detail.fileName}
         kind={detail.kind}
         state={detail.state}
         rows={report?.counts.rows ?? 0}
         rankings={report?.counts.rankings ?? 0}
+        rankers={report?.counts.rankers ?? 0}
+        replacing={replacing}
         biztechFromFile={event.settings.biztechOptInRule === "from_biztech_file"}
         eventIsDraft={event.status === "draft"}
         newerExists={newerExists}

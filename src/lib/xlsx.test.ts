@@ -79,4 +79,15 @@ describe("xlsx", () => {
     const buffer = Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Uint8Array);
     expect(() => readSheetRows(buffer)).toThrow(/more than 10,000 rows/);
   });
+
+  it("strips NUL and other control characters from cells, so every value can be stored", () => {
+    const buffer = writeSheet(
+      ["Na\u0000me", "Note"],
+      [["Ann\u0000 Lee\u000B", "line one\nline\ttwo\u0007"], ["\u0000", "\u0001"]],
+    );
+    const [sheet] = readSheetRows(buffer);
+    expect(sheet.headers).toEqual(["Name", "Note"]);
+    expect(sheet.rows).toEqual([{ Name: "Ann Lee", Note: "line one\nline\ttwo" }]);
+    for (const value of [...sheet.headers, ...Object.values(sheet.rows[0])]) expect(value).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/);
+  });
 });

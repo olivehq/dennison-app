@@ -36,7 +36,6 @@ export function ArchiveEventButton({ eventId, eventName }: { eventId: string; ev
             return;
           }
           toast.success("Event archived.");
-          router.refresh();
         }}
       />
     </div>

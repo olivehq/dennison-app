@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getDb } from "@/db/client";
 import { fromZod, type ActionResult } from "@/lib/errors";
-import { runMatchingInput, setPinnedInput } from "@/lib/schemas/schedule";
+import { activateRunInput, runMatchingInput, setPinnedInput } from "@/lib/schemas/schedule";
 import { requireAdmin } from "@/server/auth/session";
 import { activateRun, findRun, setPinned, startRun, type StartRunResult } from "./runs";
 
@@ -14,7 +14,7 @@ function eventPath(eventId: string): string {
   return `/events/${eventId}`;
 }
 
-/** Runs the engine for an event. `keepExisting` pins the active run's appointments (D10). */
+/** Runs the engine for an event. `keepExisting` keeps the active run's appointments (D10, D107). */
 export async function runMatchingAction(
   eventId: unknown,
   options: unknown,
@@ -33,14 +33,19 @@ export async function runMatchingAction(
   return result;
 }
 
-export async function activateRunAction(runId: unknown): Promise<ActionResult<{ runId: string }>> {
+export async function activateRunAction(input: unknown): Promise<ActionResult<{ runId: string }>> {
   const admin = await requireAdmin();
-  const parsed = uuid.safeParse(runId);
+  const parsed = activateRunInput.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const db = getDb();
-  const result = await activateRun(db, { runId: parsed.data, adminId: admin.id });
+  const { runId, expectedActiveRunId, expectedVersion } = parsed.data;
+  const result = await activateRun(db, {
+    runId,
+    adminId: admin.id,
+    expected: { activeRunId: expectedActiveRunId, version: expectedVersion },
+  });
   if (result.ok) {
-    const run = await findRun(db, parsed.data);
+    const run = await findRun(db, runId);
     if (run) revalidatePath(eventPath(run.eventId), "layout");
   }
   return result;
@@ -53,6 +58,6 @@ export async function setPinnedAction(
   const parsed = setPinnedInput.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await setPinned(getDb(), { ...parsed.data, adminId: admin.id });
-  if (result.ok) revalidatePath("/events/[id]/schedule", "page");
+  if (result.ok) revalidatePath("/(admin)/events/[id]/schedule", "page");
   return result;
 }

@@ -1,17 +1,31 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, eq, isNull } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
-import { admins, auditEvents, events, imports, nameAliases, participants, rankings, suppliers } from "@/db/schema";
+import { accessTokens, admins, auditEvents, events, imports, nameAliases, participants, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
-import { getFile, useMemoryStorageForTests } from "@/lib/storage";
+import { deleteFile, getFile, importFileKey, useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
-import { applyImport, createImport, deleteImportRecord, revalidateImport, saveAlias, saveAliases } from "./imports";
-import { getImport, getImportStatusByKind, listImports, readinessForMatching } from "./queries";
+import { issueTokenForContact, verifyToken } from "@/server/tokens/tokens";
+import { applyImport, createImport, deleteImportRecord, ignoreImport, revalidateImport, saveAlias, saveAliases, stopIgnoringImport } from "./imports";
+import { matchingReadiness } from "@/server/matching/readiness";
+import { getImport, getImportStatusByKind, listImports } from "./queries";
+
+// Real ids by default; a test can fix the next one to know an upload's storage key.
+// Real storage by default; a test can make the next delete fail.
+vi.mock("@/lib/storage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/storage")>();
+  return { ...actual, deleteFile: vi.fn(actual.deleteFile) };
+});
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
+});
 
 let db: Db;
 let eventId: string;
@@ -200,6 +214,30 @@ describe("suppliers import", () => {
     expect(reapplied.summary).toMatchObject({ created: 0, updated: 1 });
     expect(await db.select().from(suppliers).where(eq(suppliers.eventId, eventId))).toHaveLength(25);
   });
+
+  it("a changed contact email revokes the old link and issues one for the new address (D128)", async () => {
+    const name = "Email Change Test Inn";
+    const first = await expectOk(await upload("suppliers", writeSheet(supplierHeaders, [[name, "hotel", "Pat", "pat@inn.test", "", ""]])));
+    await expectOk(await applyImport(db, { importId: first.importId, adminId }));
+    const [slo] = await db
+      .select()
+      .from(suppliers)
+      .where(and(eq(suppliers.eventId, eventId), eq(suppliers.name, name)));
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const old = await issueTokenForContact(db, { eventId, contactType: "supplier_admin", entityId: slo.id, expiresAt });
+
+    const file = writeSheet(supplierHeaders, [[name, "hotel", "Pat", "pat.new@inn.test", "", ""]]);
+    const outcome = await expectOk(await upload("suppliers", file));
+    await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
+
+    expect(await verifyToken(db, old.token)).toBeNull();
+    const live = await db
+      .select()
+      .from(accessTokens)
+      .where(and(eq(accessTokens.entityId, slo.id), eq(accessTokens.contactType, "supplier_admin"), isNull(accessTokens.revokedAt)));
+    expect(live).toHaveLength(1);
+    expect(live[0].id).not.toBe(old.tokenId);
+  });
 });
 
 describe("buyer hotel rankings from the eShow sample", () => {
@@ -257,16 +295,27 @@ describe("buyer hotel rankings from the eShow sample", () => {
     expect(rows[13].targetId).toBe(arrowhead.id);
   });
 
-  it("re-import replaces the previous rankings of the same kind", async () => {
+  it("re-import replaces only the rankings of the people in the new file", async () => {
+    // A one-row file for someone new adds their rankings and leaves everyone else's alone.
+    const annOnly = await expectOk(await upload("buyer_hotel_rankings", listSheet([{ name: "Ann Lee", choices: ["The Ameswell Hotel"] }])));
+    expect(annOnly.state).toBe("ready");
+    expect(annOnly.report.warnings.map((w) => w.message)).toContain(
+      "This file has rankings for 1 of 4 active participants. Everyone else keeps their current rankings.",
+    );
+    const first = await expectOk(await applyImport(db, { importId: annOnly.importId, adminId }));
+    expect(first.summary).toMatchObject({ rankers: 1, rankingsDeleted: 0, rankingsWritten: 1 });
+    expect(await rankingsFor(importId)).toHaveLength(25);
+
+    // A one-row file for someone already ranked replaces only their rankings.
     const outcome = await expectOk(
-      await upload("buyer_hotel_rankings", listSheet([{ name: "TestFirst1 TestLast1", choices: ["Visit SLO CAL", "See Monterey"] }, { name: "Ann Lee", choices: ["The Ameswell Hotel"] }])),
+      await upload("buyer_hotel_rankings", listSheet([{ name: "TestFirst1 TestLast1", choices: ["Visit SLO CAL", "See Monterey"] }])),
     );
     expect(outcome.state).toBe("ready");
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
-    expect(applied.summary).toMatchObject({ rankingsDeleted: 25, rankingsWritten: 3 });
+    expect(applied.summary).toMatchObject({ rankers: 1, rankingsDeleted: 25, rankingsWritten: 2 });
     expect(await rankingsFor(importId)).toHaveLength(0);
-    const rows = await rankingsFor(outcome.importId);
-    expect(rows.map((r) => r.rank)).toEqual([1, 1, 2]);
+    expect((await rankingsFor(outcome.importId)).map((r) => r.rank)).toEqual([1, 2]);
+    expect(await rankingsFor(annOnly.importId)).toHaveLength(1);
     const hotelRankings = await db
       .select()
       .from(rankings)
@@ -276,7 +325,7 @@ describe("buyer hotel rankings from the eShow sample", () => {
 });
 
 describe("biztech rankings set opt-in (D1)", () => {
-  it("opts in rankers with a choice and out every other active participant", async () => {
+  it("opts in rankers with a choice and out the other participants in the file; people not in the file keep their flag", async () => {
     await db.update(participants).set({ biztechOptIn: true }).where(eq(participants.email, "bob@example.com"));
     const outcome = await expectOk(
       await upload(
@@ -291,16 +340,21 @@ describe("biztech rankings set opt-in (D1)", () => {
     expect(outcome.state).toBe("needs_mapping");
     expect(outcome.report.unknownNames.map((u) => u.raw)).toEqual(["eshow"]);
     expect(outcome.report.rowsWithZeroRankings).toEqual([{ row: 3, name: "Bob Ray (HelmsBriscoe)" }]);
+    expect(outcome.report.warnings).toContainEqual({
+      row: 3,
+      message: "Bob Ray (HelmsBriscoe) has no choices in this file; their biztech rankings will be cleared.",
+    });
 
     const [expo] = await db.select().from(suppliers).where(eq(suppliers.name, "Expo Convention Contractors"));
     await expectOk(await saveAlias(db, { eventId, raw: "eshow", entityType: "supplier", entityId: expo.id, adminId }));
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
-    expect(applied.summary).toMatchObject({ rankingsWritten: 3, optedIn: 2, optedOut: 2 });
+    expect(applied.summary).toMatchObject({ rankers: 3, rankingsWritten: 3, optedIn: 2, optedOut: 1 });
 
     expect((await participantByEmail("ann@example.com")).biztechOptIn).toBe(true);
     expect((await participantByEmail("eve@example.com")).biztechOptIn).toBe(true);
     expect((await participantByEmail("bob@example.com")).biztechOptIn).toBe(false);
-    expect((await participantByEmail("test1@example.com")).biztechOptIn).toBe(false);
+    // Not in the file: opted in by the participants file and still opted in.
+    expect((await participantByEmail("test1@example.com")).biztechOptIn).toBe(true);
     // Withdrawn people are left alone.
     expect((await participantByEmail("dee@example.com")).biztechOptIn).toBe(true);
   });
@@ -309,14 +363,21 @@ describe("biztech rankings set opt-in (D1)", () => {
     await db.update(events).set({ settings: { ...defaultEventSettings, biztechOptInRule: "all_opted_in" } }).where(eq(events.id, eventId));
     const outcome = await expectOk(await upload("buyer_biztech_rankings", listSheet([{ name: "Bob Ray", choices: ["SEAS Productions"] }])));
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
-    expect(applied.summary).toMatchObject({ optedIn: 0, optedOut: 0, rankingsDeleted: 3, rankingsWritten: 1 });
+    // Bob chose nobody in the earlier file, so nothing of his is replaced; Ann's and Eve's rankings stay.
+    expect(applied.summary).toMatchObject({ optedIn: 0, optedOut: 0, rankingsDeleted: 0, rankingsWritten: 1 });
     expect((await participantByEmail("bob@example.com")).biztechOptIn).toBe(false);
+    const biztech = await db
+      .select()
+      .from(rankings)
+      .innerJoin(imports, eq(rankings.importId, imports.id))
+      .where(and(eq(rankings.eventId, eventId), eq(imports.kind, "buyer_biztech_rankings")));
+    expect(biztech).toHaveLength(4);
     await db.update(events).set({ settings: defaultEventSettings }).where(eq(events.id, eventId));
   });
 });
 
 describe("supplier rankings in the 2025 matrix format (D18)", () => {
-  it("resolves Organization - Title buyer names, writes N/A as a rejection, and skips blanks (D2)", async () => {
+  it("resolves Organization - Title and company names, writes N/A as a rejection, and skips blanks (D2)", async () => {
     const outcome = await expectOk(
       await upload(
         "supplier_rankings",
@@ -330,12 +391,11 @@ describe("supplier rankings in the 2025 matrix format (D18)", () => {
       ),
     );
     expect(outcome.report.format).toBe("matrix");
-    expect(outcome.state).toBe("needs_mapping");
-    expect(outcome.report.unknownNames.map((u) => u.raw)).toEqual(["Fox Travel"]);
-    expect(outcome.report.unknownNames[0]).toMatchObject({ entityType: "buyer", role: "target", rows: [2] });
+    // "Fox Travel" is Dee Fox's company and nobody else's, so it resolves without a mapping.
+    expect(outcome.state).toBe("ready");
+    expect(outcome.report.unknownNames).toEqual([]);
 
     const dee = await participantByEmail("dee@example.com");
-    await expectOk(await saveAlias(db, { eventId, raw: "Fox Travel", entityType: "buyer", entityId: dee.id, adminId }));
     const applied = await expectOk(await applyImport(db, { importId: outcome.importId, adminId }));
     expect(applied.summary).toMatchObject({ rankingsWritten: 4 });
 
@@ -361,17 +421,16 @@ describe("queries and readiness", () => {
     expect(byKind.suppliers?.state).toBe("applied");
     expect(byKind.supplier_rankings?.state).toBe("applied");
 
-    const readiness = await readinessForMatching(eventId, db);
+    const readiness = await matchingReadiness(db, eventId);
     expect(readiness.ready).toBe(false);
-    expect(readiness.missing).toEqual([]);
-    expect(readiness.pending).toEqual([{ kind: "participants", importId: byKind.participants?.id, state: "failed" }]);
+    expect(readiness.reasons).toEqual(["The latest participants upload failed validation. Fix or delete it."]);
 
     await deleteImportRecord(db, { importId: byKind.participants!.id, adminId });
     const [junk] = (await listImports(eventId, db)).filter((i) => i.kind === "participants" && i.state === "failed");
     await deleteImportRecord(db, { importId: junk.id, adminId });
     const [dupes] = (await listImports(eventId, db)).filter((i) => i.kind === "participants" && i.state === "needs_fixes");
     await deleteImportRecord(db, { importId: dupes.id, adminId });
-    expect((await readinessForMatching(eventId, db)).ready).toBe(true);
+    expect(await matchingReadiness(db, eventId)).toMatchObject({ ready: true, reasons: [] });
   });
 
   it("deleting an applied ranking import removes its rankings and its stored file", async () => {
@@ -383,7 +442,7 @@ describe("queries and readiness", () => {
     expect(result.rankingsDeleted).toBe(4);
     expect(await getImport(target.id, db)).toBeNull();
     expect(await getFile(fileKey)).toBeNull();
-    expect((await readinessForMatching(eventId, db)).missing).toEqual(["supplier_rankings"]);
+    expect((await getImportStatusByKind(eventId, db)).supplier_rankings).toBeNull();
   });
 });
 
@@ -571,5 +630,116 @@ describe("applies and revalidation under the event row lock (D85)", () => {
     await expectOk(await applyImport(db, { importId: pending.importId, adminId }));
     expect(await revalidateImport(db, stale)).toBeNull();
     expect((await getImport(pending.importId, db))?.status).toBe("applied");
+  });
+
+  describe("a check that finishes after another admin mapped a name", () => {
+    let gamma: string;
+
+    beforeAll(async () => {
+      const [supplier] = await db.insert(suppliers).values({ eventId: raceEvent, name: "Hotel Gamma", type: "hotel" }).returning();
+      gamma = supplier.id;
+    });
+
+    const mapName = (raw: string) => () => saveAlias(db, { eventId: raceEvent, raw, entityType: "supplier", entityId: gamma, adminId });
+
+    it("never overwrites the newer report on a revalidation", async () => {
+      const pending = await expectOk(await hotelFile(["Grand Place"]));
+      expect(pending.state).toBe("needs_mapping");
+      const [stale] = await db.select().from(imports).where(eq(imports.id, pending.importId));
+      // The other admin's mapping lands after this one read the import and before it writes.
+      const state = await revalidateImport(raceBeforeTransaction(db, mapName("Grand Place")), stale);
+      expect(state).toBe("ready");
+      expect((await getImport(pending.importId, db))?.state).toBe("ready");
+    });
+
+    it("never overwrites the newer report when an ignored file is checked again", async () => {
+      const pending = await expectOk(await hotelFile(["Gran Plaza"]));
+      await expectOk(await ignoreImport(db, { importId: pending.importId, adminId }));
+      const result = await stopIgnoringImport(raceBeforeTransaction(db, mapName("Gran Plaza")), { importId: pending.importId, adminId });
+      expect(await expectOk(result)).toMatchObject({ state: "ready" });
+      expect((await getImport(pending.importId, db))?.state).toBe("ready");
+    });
+  });
+
+  it("revalidation after the event is archived leaves the report as it was", async () => {
+    const pending = await expectOk(await hotelFile(["Hotel Four"]));
+    expect(pending.state).toBe("needs_mapping");
+    const [stale] = await db.select().from(imports).where(eq(imports.id, pending.importId));
+    // Would make the file ready, if revalidation still wrote.
+    await db.insert(suppliers).values({ eventId: raceEvent, name: "Hotel Four", type: "hotel" });
+    await db.update(events).set({ status: "archived" }).where(eq(events.id, raceEvent));
+    expect(await revalidateImport(db, stale)).toBeNull();
+    const [after] = await db.select().from(imports).where(eq(imports.id, pending.importId));
+    expect(after.validation).toEqual(stale.validation);
+    expect((await getImport(pending.importId, db))?.state).toBe("needs_mapping");
+    await db.update(events).set({ status: "imported" }).where(eq(events.id, raceEvent));
+    expect(await revalidateImport(db, stale)).toBe("ready");
+  });
+
+  it("an apply refused as invalid leaves the report of an apply that won the race alone", async () => {
+    const pending = await expectOk(await hotelFile(["Hotel Three"]));
+    expect(pending.state).toBe("needs_mapping");
+    // After the refused apply checked the file: the supplier arrives and another admin applies it.
+    const otherApply = async () => {
+      await db.insert(suppliers).values({ eventId: raceEvent, name: "Hotel Three", type: "hotel" });
+      await expectOk(await applyImport(db, { importId: pending.importId, adminId }));
+    };
+    const refused = await applyImport(raceBeforeTransaction(db, otherApply), { importId: pending.importId, adminId });
+    expect(refused).toMatchObject({ ok: false, error: { code: "validation" } });
+    const applied = await getImport(pending.importId, db);
+    expect(applied).toMatchObject({ status: "applied", state: "applied" });
+    expect(applied?.report?.counts.unknownNames).toBe(0);
+  });
+});
+
+describe("a failed upload leaves no stored file", () => {
+  const sheet = () => writeSheet(supplierHeaders, [["Cleanup Inn", "hotel", "", "", "", ""]]);
+
+  async function uploadWithKnownKey(target: Db) {
+    const importId = "00000000-0000-4000-8000-00000000c1ea";
+    vi.mocked(randomUUID).mockReturnValueOnce(importId);
+    const key = importFileKey(eventId, importId, "cleanup.xlsx");
+    const result = createImport(target, { eventId, kind: "suppliers", filename: "cleanup.xlsx", buffer: sheet(), adminId });
+    return { importId, key, result };
+  }
+
+  it("when the event is locked while the file is parsed", async () => {
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, eventId));
+    const { importId, key, result } = await uploadWithKnownKey(raceBeforeTransaction(db, lock));
+    expect(await result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(await getFile(key)).toBeNull();
+    expect(await getImport(importId, db)).toBeNull();
+    await db.update(events).set({ status: "draft" }).where(eq(events.id, eventId));
+  });
+
+  it("when the event is locked and the stored file can't be deleted, the key is logged and the conflict still returns", async () => {
+    const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, eventId));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const realDelete = vi.mocked(deleteFile).getMockImplementation()!;
+    vi.mocked(deleteFile).mockRejectedValueOnce(new Error("storage is down"));
+    try {
+      const { importId, key, result } = await uploadWithKnownKey(raceBeforeTransaction(db, lock));
+      expect(await result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+      expect(await getImport(importId, db)).toBeNull();
+      // The failed delete is neither thrown nor lost: the log names the import and the key to clean up by hand.
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toContain(importId);
+      expect(message).toContain(key);
+      expect(message).toContain("storage is down");
+      expect(await getFile(key)).not.toBeNull();
+      await realDelete(key);
+    } finally {
+      warn.mockRestore();
+      await db.update(events).set({ status: "draft" }).where(eq(events.id, eventId));
+    }
+  });
+
+  it("when saving the import throws", async () => {
+    const broken = () => Promise.reject(new Error("connection lost"));
+    const { importId, key, result } = await uploadWithKnownKey(raceBeforeTransaction(db, broken));
+    await expect(result).rejects.toThrow("connection lost");
+    expect(await getFile(key)).toBeNull();
+    expect(await getImport(importId, db)).toBeNull();
   });
 });

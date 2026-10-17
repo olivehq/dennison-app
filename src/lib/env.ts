@@ -37,8 +37,9 @@ type ParsedEnv = z.infer<typeof envSchema>;
 
 /**
  * What a production deployment is missing. Production needs a real database,
- * its public URL, Blob storage, and both secrets; RESEND_API_KEY stays
- * optional (previews may not send mail, and `sendCampaign` refuses instead).
+ * its public URL, Blob storage, both secrets, and CRON_SECRET (without it the
+ * retention cron answers 503 and data is never deleted, D69); RESEND_API_KEY
+ * stays optional (previews may not send mail, and `sendCampaign` refuses instead).
  */
 export function productionEnvProblems(values: ParsedEnv): string[] {
   const problems: string[] = [];
@@ -49,6 +50,9 @@ export function productionEnvProblems(values: ParsedEnv): string[] {
   if (!values.BLOB_READ_WRITE_TOKEN) problems.push("BLOB_READ_WRITE_TOKEN must be set in production.");
   if (!values.BETTER_AUTH_SECRET) problems.push("BETTER_AUTH_SECRET must be set in production.");
   if (!values.TOKEN_PEPPER) problems.push("TOKEN_PEPPER must be set in production.");
+  if (!values.CRON_SECRET) {
+    problems.push("CRON_SECRET must be set in production, or the retention cron can't run.");
+  }
   return problems;
 }
 

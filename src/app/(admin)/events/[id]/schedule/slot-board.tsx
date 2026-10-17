@@ -25,7 +25,10 @@ type SlotBoardProps = {
   model: ScheduleModel;
   slots: ScheduleSlot[];
   slot: number;
+  /** The slot under the show clock, marked with a dot. */
   liveSlot: number | null;
+  /** The clock shows the real time on the show day, so the clock's slot is happening now. */
+  live: boolean;
   onPick: (slot: number) => void;
   query: string;
   flagged: boolean;
@@ -35,7 +38,7 @@ type SlotBoardProps = {
 };
 
 /** By slot: who sits at each desk in one slot, and who is free. */
-export function SlotBoard({ model, slots, slot, liveSlot, onPick, query, flagged, targets, topN, onSelect }: SlotBoardProps) {
+export function SlotBoard({ model, slots, slot, liveSlot, live, onPick, query, flagged, targets, topN, onSelect }: SlotBoardProps) {
   const current = slots.find((s) => s.slot === slot) ?? slots[0];
   const rows = model.suppliers
     .map((s) => ({ supplier: s, appointment: appointmentsOf(model, s.id).get(current.slot) }))
@@ -72,7 +75,7 @@ export function SlotBoard({ model, slots, slot, liveSlot, onPick, query, flagged
             <ToggleGroupItem
               key={s.slot}
               value={String(s.slot)}
-              aria-label={`Slot ${s.slot}, ${s.start} to ${s.end}${liveSlot === s.slot ? ", happening now" : ""}`}
+              aria-label={`Slot ${s.slot}, ${s.start} to ${s.end}${live && liveSlot === s.slot ? ", happening now" : ""}`}
               className="relative h-auto flex-col items-start gap-1 px-3 py-1.5 text-left data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
             >
               <span className="font-display text-[15px] leading-none font-bold">Slot {s.slot}</span>

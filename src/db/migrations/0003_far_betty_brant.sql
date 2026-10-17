@@ -1,0 +1,1 @@
+ALTER TYPE "public"."import_status" ADD VALUE 'ignored';

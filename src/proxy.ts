@@ -2,6 +2,7 @@ import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse, type NextRequest } from "next/server";
 import { buildCsp, createNonce } from "@/lib/csp";
 import { clientAddress, SlidingWindowLimiter } from "@/lib/rate-limit";
+import { NEXT_PATH_HEADER } from "@/server/auth/login-redirect";
 
 const PUBLIC_PATHS = ["/login", "/forgot-password", "/reset-password"];
 const PUBLIC_PREFIXES = ["/invite/", "/s/", "/api/"];
@@ -29,7 +30,8 @@ function isPublic(pathname: string): boolean {
  * 2. Every response gets a nonce-based Content-Security-Policy; Next.js reads
  *    the nonce from the request header and puts it on its own scripts.
  * 3. Optimistic auth: no session cookie sends you to /login. Pages still
- *    verify the session against the database.
+ *    verify the session against the database, and read the path from
+ *    `NEXT_PATH_HEADER` to send an expired session to /login with `next`.
  */
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -59,7 +61,7 @@ export function proxy(request: NextRequest) {
 
   if (!isPublic(pathname) && !getSessionCookie(request)) {
     const loginUrl = new URL("/login", request.url);
-    if (pathname !== "/") loginUrl.searchParams.set("next", pathname);
+    if (pathname !== "/") loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
     const redirect = NextResponse.redirect(loginUrl);
     redirect.headers.set("Content-Security-Policy", csp);
     return redirect;
@@ -67,6 +69,7 @@ export function proxy(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set(NEXT_PATH_HEADER, pathname + request.nextUrl.search);
   requestHeaders.set("Content-Security-Policy", csp);
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("Content-Security-Policy", csp);

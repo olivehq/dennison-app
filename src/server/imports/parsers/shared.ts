@@ -38,6 +38,21 @@ export function parseYesNo(value: string): boolean | null | undefined {
   return undefined;
 }
 
+/**
+ * The highest rank a file may hold. eShow exports stop at CHOICE #40 and a
+ * matrix ranks at most every entity on the roster (a few hundred), so 10,000
+ * is far above any real file and far below what `rankings.rank` (a 32-bit
+ * integer) can store.
+ */
+export const MAX_RANK = 10_000;
+
+/** Plain digits from 1 to `MAX_RANK` ("3", not "3.5", "1e3", or "0x10") as a number, else null. */
+export function parseRank(text: string): number | null {
+  if (!/^\d+$/.test(text)) return null;
+  const rank = Number(text);
+  return rank >= 1 && rank <= MAX_RANK ? rank : null;
+}
+
 export function missingColumnsMessage(columns: TemplateColumn[]): string {
   const names = columns.map((column) => `"${column.header}"`).join(", ");
   return `Missing required column${columns.length > 1 ? "s" : ""}: ${names}.`;

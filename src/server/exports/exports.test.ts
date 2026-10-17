@@ -1,13 +1,13 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { auditEvents, matchRuns, participants } from "@/db/schema";
+import { accessTokens, auditEvents, matchRuns, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule } from "@/server/schedule/lock";
 import { getScheduleView } from "@/server/schedule/views";
-import { verifyToken } from "@/server/tokens/tokens";
+import { revokeToken, verifyToken } from "@/server/tokens/tokens";
 import { accessCsv } from "./access";
 import { recordExport } from "./actions";
 import { BOM } from "./common";
@@ -32,7 +32,10 @@ describe("exports against a real run", () => {
   it("offers nothing before a run is active", async () => {
     const availability = await exportAvailability(seeded.eventId, db);
     expect(availability?.activeRun).toBeNull();
-    expect(Object.values(availability!.exports).every((e) => !e.available && e.reason)).toBe(true);
+    // The roster lists describe people, not the schedule, so they need no run.
+    const scheduleExports = Object.values(availability!.exports).filter((e) => !e.kind.endsWith("_full"));
+    expect(scheduleExports).toHaveLength(4);
+    expect(scheduleExports.every((e) => !e.available && e.reason)).toBe(true);
     expect(await exportAvailability("00000000-0000-4000-8000-000000000000", db)).toBeNull();
   });
 
@@ -77,14 +80,14 @@ describe("exports against a real run", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const lines = result.data.csv.slice(BOM.length).trimEnd().split("\n");
-    expect(lines[0]).toBe("Name,Email,Contact type,Link");
+    expect(lines[0]).toBe("Name,Email,Type,Company,Title,Contact type,Link");
     // 12 buyers + 6 supplier admins + 3 attendees
     expect(lines).toHaveLength(22);
     expect(result.data.count).toBe(21);
     const after = await db.select().from(auditEvents).where(eq(auditEvents.action, "export.access_list"));
     expect(after).toHaveLength(before.length + 1);
 
-    const buyerLine = lines.find((l) => l.includes(",Buyer,"))!;
+    const buyerLine = lines.find((l) => l.includes(",Buyer,Org 0,Title 0,,"))!;
     const buyerToken = tokenFromLink(buyerLine.split(",").at(-1)!);
     const buyerView = await loadParticipantView(buyerToken, db);
     expect(buyerView?.contactType).toBe("buyer");
@@ -92,10 +95,24 @@ describe("exports against a real run", () => {
     const json = JSON.stringify(buyerView);
     expect(json).not.toMatch(/Rank|strength/);
 
-    const supplierLine = lines.find((l) => l.includes(",Supplier admin,"))!;
+    const supplierLine = lines.find((l) => l.includes(",Supplier,") && l.includes(",Admin,"))!;
     const supplierView = await loadParticipantView(tokenFromLink(supplierLine.split(",").at(-1)!), db);
     expect(supplierView?.schedule.person.type).toBe("supplier");
     expect(supplierView?.schedule.person.desk).not.toBeNull();
+
+    // Supplier contacts carry the supplier's name as company, no title, and Admin or Attendee.
+    const attendeeLine = lines.find((l) => l.startsWith("Hyatt Regency Monterey attendee,"))!;
+    expect(attendeeLine.split(",").slice(0, 6)).toEqual([
+      "Hyatt Regency Monterey attendee",
+      "attendee0@supplier.example.com",
+      "Supplier",
+      "Hyatt Regency Monterey",
+      "",
+      "Attendee",
+    ]);
+    expect(lines.filter((l) => l.includes(",Supplier,") && l.includes(",Admin,"))).toHaveLength(6);
+    expect(lines.filter((l) => l.includes(",Supplier,") && l.includes(",Attendee,"))).toHaveLength(3);
+    expect(lines.filter((l) => l.includes(",Buyer,"))).toHaveLength(12);
 
     // A second access list hands out the same links (D31, D59).
     const again = await accessCsv(seeded.eventId, seeded.adminId, db);
@@ -115,6 +132,58 @@ describe("exports against a real run", () => {
     const verified = await verifyToken(db, token);
     await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, verified!.entityId));
     expect(await loadParticipantView(token, db)).toBeNull();
+  });
+});
+
+describe("access CSV and revoked links", () => {
+  it("prints Link revoked for a revoked link and issues it no new one", async () => {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!locked.ok) throw new Error(locked.error.message);
+    const buyer = other.buyers[0];
+    const [token] = await db.select().from(accessTokens).where(eq(accessTokens.entityId, buyer.id));
+    expect((await revokeToken(db, token.id, other.adminId)).ok).toBe(true);
+
+    const result = await accessCsv(other.eventId, other.adminId, db);
+    if (!result.ok) throw new Error(result.error.message);
+    const line = result.data.csv.split("\n").find((l) => l.includes(buyer.email!))!;
+    expect(line.trimEnd().endsWith(",Link revoked")).toBe(true);
+    expect(await db.select().from(accessTokens).where(eq(accessTokens.entityId, buyer.id))).toHaveLength(1);
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "export.access_list"), eq(auditEvents.eventId, other.eventId)));
+    expect(audit.after).toMatchObject({ contacts: 21, withoutLink: 1, linksIssued: 0 });
+  });
+
+  it("writes the audit row in the same transaction as the links it issues", async () => {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!locked.ok) throw new Error(locked.error.message);
+    // A contact with no link, so the access list has one to issue.
+    const buyer = other.buyers[0];
+    await db.delete(accessTokens).where(eq(accessTokens.entityId, buyer.id));
+    const buyerTokens = () => db.select().from(accessTokens).where(eq(accessTokens.entityId, buyer.id));
+    const accessAudits = () =>
+      db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.action, "export.access_list"), eq(auditEvents.eventId, other.eventId)));
+
+    // An unknown admin id fails the audit insert (foreign key), which must take the new link with it.
+    await expect(accessCsv(other.eventId, "no-such-admin", db)).rejects.toThrow();
+    expect(await buyerTokens()).toHaveLength(0);
+    expect(await accessAudits()).toHaveLength(0);
+
+    const result = await accessCsv(other.eventId, other.adminId, db);
+    expect(result.ok).toBe(true);
+    expect(await buyerTokens()).toHaveLength(1);
+    const [audit] = await accessAudits();
+    expect(audit.after).toMatchObject({ contacts: 21, withoutLink: 0, linksIssued: 1 });
   });
 });
 

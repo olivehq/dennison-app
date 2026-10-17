@@ -2,6 +2,13 @@
  * The Content-Security-Policy `src/proxy.ts` sends with every page, following
  * the Next.js nonce guide. Styles allow 'unsafe-inline' because Tailwind v4,
  * Radix, and sonner set inline style attributes; scripts need the nonce.
+ *
+ * Images may come from any https origin so the campaign preview and editor
+ * can show the images an admin links in an email. The policy is one string for
+ * every page (a soft navigation keeps the first page's policy, so a per-path
+ * rule would break after login). Scripts, connects, frames, and forms are
+ * unaffected: an injected `<img>` can only make a GET request, and the
+ * participant page sends no referrer.
  */
 export function buildCsp(input: { nonce: string; isDev: boolean; sentryDsn?: string }): string {
   const connect = ["'self'"];
@@ -12,7 +19,7 @@ export function buildCsp(input: { nonce: string; isDev: boolean; sentryDsn?: str
     // React's dev overlay rebuilds server stacks with eval; production never needs it.
     ["script-src", "'self'", `'nonce-${input.nonce}'`, "'strict-dynamic'", ...(input.isDev ? ["'unsafe-eval'"] : [])],
     ["style-src", "'self'", "'unsafe-inline'"],
-    ["img-src", "'self'", "data:", "blob:"],
+    ["img-src", "'self'", "data:", "blob:", "https:"],
     ["font-src", "'self'"],
     ["connect-src", ...connect],
     ["object-src", "'none'"],

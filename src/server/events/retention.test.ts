@@ -1,5 +1,6 @@
 import { eq, isNull } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { and } from "drizzle-orm";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
@@ -20,8 +21,15 @@ import { listAudit, recordAudit } from "@/server/audit/audit";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule } from "@/server/schedule/lock";
-import { setRetainData } from "./events";
-import { deleteExpiredParticipantData, retentionDeadline, retentionDeleteDate } from "./retention";
+import { archiveEvent, setRetainData } from "./events";
+import { wasParticipantDataDeleted } from "./queries";
+import {
+  deleteExpiredParticipantData,
+  retentionDeadline,
+  retentionDeleteDate,
+  STALE_SEND_HOURS,
+  STALE_SEND_REASON,
+} from "./retention";
 import { raceBeforeTransaction } from "./test-race";
 
 let db: Db;
@@ -133,6 +141,7 @@ describe("deleteExpiredParticipantData", () => {
     expect(before.participants).toBe(12);
     expect(before.accessTokens).toBe(21);
 
+    expect(await wasParticipantDataDeleted(due.eventId, db)).toBe(false);
     // One minute before the deadline nothing happens.
     expect(await deleteExpiredParticipantData(db, new Date("2027-02-09T07:59:00Z"))).toEqual([]);
 
@@ -169,6 +178,8 @@ describe("deleteExpiredParticipantData", () => {
     expect(globals).toEqual(expect.arrayContaining([supplierGlobal.id, keptGlobal.id]));
     const [archived] = await db.select().from(events).where(eq(events.id, due.eventId));
     expect(archived.status).toBe("archived");
+    expect(await wasParticipantDataDeleted(due.eventId, db)).toBe(true);
+    expect(await wasParticipantDataDeleted(kept.eventId, db)).toBe(false);
 
     const log = await listAudit({ eventId: due.eventId }, db);
     expect(log.rows[0]).toMatchObject({ action: "event.retention_delete", adminId: null });
@@ -203,5 +214,85 @@ describe("deleteExpiredParticipantData", () => {
     expect((await db.select().from(events).where(eq(events.id, event.eventId)))[0].status).toBe("locked");
     expect(await getFile(event.fileKey)).not.toBeNull();
     expect((await listAudit({ eventId: event.eventId, filters: { action: "event.retention_delete" } }, db)).total).toBe(0);
+  });
+
+  it("skips an event while one of its campaigns is sending and deletes it on a later run", async () => {
+    const event = await fullEvent();
+    const before = await countFor(event.eventId);
+    const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, event.eventId));
+    // Claimed an hour before the run: a send that may still be going.
+    await db
+      .update(emailCampaigns)
+      .set({ status: "sending", updatedAt: new Date("2027-02-10T08:00:00Z") })
+      .where(eq(emailCampaigns.id, campaign.id));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skipped = await deleteExpiredParticipantData(db, new Date("2027-02-10T09:00:00Z"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`event ${event.eventId}: skipped, an email send is in progress`));
+    warn.mockRestore();
+    expect(skipped.map((r) => r.eventId)).not.toContain(event.eventId);
+    expect((await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id)))[0].status).toBe("sending");
+    expect(await countFor(event.eventId)).toEqual(before);
+    expect((await db.select().from(events).where(eq(events.id, event.eventId)))[0].status).toBe("locked");
+
+    // The send finished; the next daily run deletes as usual.
+    await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
+    const later = await deleteExpiredParticipantData(db, new Date("2027-02-11T09:00:00Z"));
+    expect(later.map((r) => r.eventId)).toContain(event.eventId);
+    expect((await countFor(event.eventId)).participants).toBe(0);
+  });
+});
+
+describe("stale sends and empty archived events", () => {
+  it(`marks a campaign sending for more than ${STALE_SEND_HOURS} hours failed, with a reason, and deletes the event`, async () => {
+    const event = await fullEvent();
+    const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, event.eventId));
+    const now = new Date("2027-02-10T09:00:00Z");
+    await db
+      .update(emailCampaigns)
+      .set({ status: "sending", updatedAt: new Date(now.getTime() - (STALE_SEND_HOURS + 1) * 60 * 60 * 1000) })
+      .where(eq(emailCampaigns.id, campaign.id));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const results = await deleteExpiredParticipantData(db, now);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`campaign ${campaign.id} was stuck sending`));
+    warn.mockRestore();
+    expect(results.map((r) => r.eventId)).toContain(event.eventId);
+    expect((await countFor(event.eventId)).participants).toBe(0);
+    expect((await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id)))[0].status).toBe("failed");
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, campaign.id)));
+    expect(audit).toMatchObject({ adminId: null, after: { status: "failed", failureReason: STALE_SEND_REASON } });
+  });
+
+  it("records the deletion once for an overdue archived event that has nothing to delete", async () => {
+    // Archived by hand with no participant data at all (as if never imported).
+    const event = await seedEvent(db, { status: "archived" });
+    await db.delete(rankings).where(eq(rankings.eventId, event.eventId));
+    await db.delete(participants).where(eq(participants.eventId, event.eventId));
+    await db.delete(suppliers).where(eq(suppliers.eventId, event.eventId));
+    expect(await wasParticipantDataDeleted(event.eventId, db)).toBe(false);
+
+    const first = await deleteExpiredParticipantData(db, new Date("2027-02-10T09:00:00Z"));
+    expect(first.find((r) => r.eventId === event.eventId)?.deleted.participants).toBe(0);
+    // The settings card now says the data is gone instead of "at the next daily cleanup".
+    expect(await wasParticipantDataDeleted(event.eventId, db)).toBe(true);
+
+    const second = await deleteExpiredParticipantData(db, new Date("2027-02-11T09:00:00Z"));
+    expect(second.map((r) => r.eventId)).not.toContain(event.eventId);
+    const rows = await listAudit({ eventId: event.eventId, filters: { action: "event.retention_delete" } }, db);
+    expect(rows.total).toBe(1);
+  });
+});
+
+describe("wasParticipantDataDeleted", () => {
+  it("is false for an event an admin archived by hand", async () => {
+    const event = await seedEvent(db);
+    // Not yet due, so other tests' retention runs leave it alone.
+    await db.update(events).set({ eventDate: "2099-01-15" }).where(eq(events.id, event.eventId));
+    expect((await archiveEvent(db, { eventId: event.eventId, adminId: event.adminId })).ok).toBe(true);
+    expect(await wasParticipantDataDeleted(event.eventId, db)).toBe(false);
   });
 });

@@ -22,6 +22,8 @@ const PARTICIPANT_HEADERS = [
 const nextConfig: NextConfig = {
   // PGlite ships WASM assets that must load from node_modules at runtime.
   serverExternalPackages: ["@electric-sql/pglite"],
+  // The default bottom-left spot covers the account menu at the foot of the sidebar.
+  devIndicators: { position: "bottom-right" },
   experimental: {
     serverActions: {
       // uploadImport accepts files up to 4 MB (IMPORT_MAX_FILE_BYTES); 4.5 MB is Vercel's request body cap.
