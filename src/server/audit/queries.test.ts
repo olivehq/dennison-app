@@ -109,6 +109,62 @@ describe("getActivityPage", () => {
   });
 });
 
+describe("getActivityPage summary", () => {
+  it("counts today's changes in the event timezone with the same filters its shortcuts apply", async () => {
+    await removeFirst();
+    const page = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
+    const { summary } = page;
+    const today = (await getActivityPage(seeded.eventId, { page: 1, from: summary.today, to: summary.today }, db))!;
+    const schedule = (await getActivityPage(seeded.eventId, { page: 1, type: "schedule", from: summary.today, to: summary.today }, db))!;
+    expect(summary.changes).toBe(today.total);
+    expect(summary.changes).toBeGreaterThan(1);
+    expect(summary.scheduleEdits).toBe(schedule.total);
+    expect(summary.scheduleEdits).toBe(1);
+    expect(summary.imports).toBe(0);
+    expect(summary.admins).toEqual([{ id: seeded.adminId, name: "Test Admin" }]);
+    expect(page.rows[0]).toMatchObject({ day: summary.today, area: "schedule", action: "appointment.remove" });
+    expect(page.rows[0].time).toMatch(/^\d{1,2}:\d{2} [AP]M$/);
+  });
+
+  it("counts imports and schedule edits in one pass and matches the filtered lists", async () => {
+    await removeFirst();
+    for (const action of ["import.commit", "alias.create", "participant.update"]) {
+      await recordAudit(db, { eventId: seeded.eventId, adminId: seeded.adminId, action, entityType: "x" });
+    }
+    const { summary } = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
+    const range = { from: summary.today, to: summary.today };
+    const imports = (await getActivityPage(seeded.eventId, { page: 1, type: "imports", ...range }, db))!;
+    const schedule = (await getActivityPage(seeded.eventId, { page: 1, type: "schedule", ...range }, db))!;
+    const all = (await getActivityPage(seeded.eventId, { page: 1, ...range }, db))!;
+    expect(summary.imports).toBe(2);
+    expect(summary.imports).toBe(imports.total);
+    expect(summary.scheduleEdits).toBe(schedule.total);
+    expect(summary.changes).toBe(all.total);
+  });
+
+  it("reads today's counts with one query instead of a row and count query for each tile", async () => {
+    let selects = 0;
+    const counting = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "select") selects += 1;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await getActivityPage(seeded.eventId, { page: 1 }, counting);
+    // Event, list rows, list count, buyers, suppliers, admins, active run, and the one summary count.
+    // The three tiles used to cost a row and a count query each (13 in all).
+    expect(selects).toBe(8);
+  });
+
+  it("decides today from the event's clock, not UTC", async () => {
+    // 11:30 PM Nov 10 in Los Angeles; "now" is 12:30 AM Nov 11 there.
+    const [late] = await recordAuditAt("2026-11-11T07:30:00Z");
+    const page = (await getActivityPage(seeded.eventId, { page: 1, from: "2026-11-10", to: "2026-11-10" }, db, new Date("2026-11-11T08:30:00Z")))!;
+    expect(page.summary).toMatchObject({ today: "2026-11-11", yesterday: "2026-11-10", changes: 0, scheduleEdits: 0, admins: [] });
+    expect(page.rows.map((r) => [r.id, r.day, r.time, r.area])).toEqual([[late.id, "2026-11-10", "11:30 PM", "settings"]]);
+  });
+});
+
 async function recordAuditAt(iso: string) {
   const row = await recordAudit(db, {
     eventId: seeded.eventId,

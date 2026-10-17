@@ -1,14 +1,16 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { admins, imports, type Import } from "@/db/schema";
+import { admins, imports, rankings, type Import } from "@/db/schema";
 import {
   importKindSchema,
   importValidationReportSchema,
   type ImportKind,
   type ImportState,
   type ImportValidationReport,
+  type RankingKind,
 } from "@/lib/schemas/import";
-import { importStateFor } from "./validate";
+import { cachePerRender } from "@/server/render-cache";
+import { importStateFor, rankingRoles } from "./validate";
 
 export type ImportSummary = {
   id: string;
@@ -77,47 +79,55 @@ export async function getImport(id: string, db: Db = getDb()): Promise<ImportDet
   return row ? toDetail(row) : null;
 }
 
-/** The latest import per kind, for the upload cards. Kinds never uploaded are null. */
-export async function getImportStatusByKind(
+/**
+ * The latest import per kind that isn't ignored, for the upload cards, the
+ * sidebar's waiting count, and matching readiness. An ignored file is
+ * skipped, so the file before it counts again. Kinds with no such import are
+ * null. One query, shared per render; a transaction reads fresh.
+ */
+export function getImportStatusByKind(
   eventId: string,
   db: Db = getDb(),
 ): Promise<Record<ImportKind, ImportSummary | null>> {
-  const latest = Object.fromEntries(importKinds.map((kind) => [kind, null])) as Record<ImportKind, ImportSummary | null>;
-  for (const kind of importKinds) {
-    const [row] = await selectImports(db)
-      .where(and(eq(imports.eventId, eventId), eq(imports.kind, kind)))
-      .orderBy(desc(imports.createdAt), desc(imports.id))
-      .limit(1);
-    latest[kind] = row ? toSummary(row, parseReport(row.import.validation)) : null;
-  }
-  return latest;
+  return latestImportsByKind(db, eventId);
 }
 
-export type MatchingReadiness = {
-  /** Every required kind has an applied import. */
-  ready: boolean;
-  applied: ImportKind[];
-  /** Kinds with no import at all. */
-  missing: ImportKind[];
-  /** Kinds whose latest import is not applied yet, with its state. */
-  pending: { kind: ImportKind; importId: string; state: ImportState }[];
-};
+const latestImportsByKind = cachePerRender(
+  async (db: Db, eventId: string): Promise<Record<ImportKind, ImportSummary | null>> => {
+    const rows = await db
+      .selectDistinctOn([imports.kind], { import: imports, createdByName: admins.name })
+      .from(imports)
+      .leftJoin(admins, eq(imports.createdBy, admins.id))
+      .where(and(eq(imports.eventId, eventId), ne(imports.status, "ignored")))
+      .orderBy(imports.kind, desc(imports.createdAt), desc(imports.id));
+    const latest = Object.fromEntries(importKinds.map((kind) => [kind, null])) as Record<ImportKind, ImportSummary | null>;
+    for (const row of rows) latest[row.import.kind] = toSummary(row, parseReport(row.import.validation));
+    return latest;
+  },
+);
 
-/** Matching needs the roster and all three ranking files applied. */
-export async function readinessForMatching(eventId: string, db: Db = getDb()): Promise<MatchingReadiness> {
-  const byKind = await getImportStatusByKind(eventId, db);
-  const applied: ImportKind[] = [];
-  const missing: ImportKind[] = [];
-  const pending: MatchingReadiness["pending"] = [];
-  for (const kind of importKinds) {
-    const latest = byKind[kind];
-    if (!latest) {
-      missing.push(kind);
-    } else if (latest.state === "applied") {
-      applied.push(kind);
-    } else {
-      pending.push({ kind, importId: latest.id, state: latest.state });
-    }
-  }
-  return { ready: missing.length === 0 && pending.length === 0, applied, missing, pending };
+/**
+ * The rankings of these rankers that an applied import of this kind wrote:
+ * what applying another file of the kind replaces (replace per ranker).
+ * Rankings with no import, or from another kind, never match.
+ */
+export function rankingsOfKindFor(eventId: string, kind: RankingKind, rankerIds: string[]): SQL {
+  return and(
+    eq(rankings.eventId, eventId),
+    eq(rankings.rankerType, rankingRoles(kind).rankerType),
+    inArray(rankings.rankerId, rankerIds),
+    sql`${rankings.importId} in (select ${imports.id} from ${imports} where ${imports.eventId} = ${eventId} and ${imports.kind} = ${kind} and ${imports.status} = 'applied')`,
+  )!;
+}
+
+/** How many current rankings applying a file with these rankers would replace, for the apply confirmation. */
+export async function countRankingsToReplace(
+  eventId: string,
+  kind: RankingKind,
+  rankerIds: string[],
+  db: Db = getDb(),
+): Promise<number> {
+  if (rankerIds.length === 0) return 0;
+  const [row] = await db.select({ n: count() }).from(rankings).where(rankingsOfKindFor(eventId, kind, rankerIds));
+  return row?.n ?? 0;
 }

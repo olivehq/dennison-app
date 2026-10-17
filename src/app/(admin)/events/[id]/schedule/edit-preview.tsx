@@ -27,12 +27,15 @@ export function EditPreviewPanel({
   onCancel: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-4 rounded-lg border p-4">
+    // min-w-0: inside the dialog's grid, long names would otherwise widen the panel past the dialog edge.
+    <div className="flex min-w-0 flex-col gap-4 rounded-lg border p-4">
       <div className="flex flex-col gap-1.5">
         <h3 className="text-sm font-semibold">This change will</h3>
         <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
           {preview.lines.map((line) => (
-            <li key={line}>{line}</li>
+            <li key={line} className="break-words">
+              {line}
+            </li>
           ))}
         </ul>
       </div>
@@ -41,8 +44,8 @@ export function EditPreviewPanel({
           <h3 className="text-sm font-semibold">Meeting counts</h3>
           <ul className="flex flex-col gap-1 text-sm">
             {preview.counts.map((c) => (
-              <li key={c.personId} className="flex items-center justify-between gap-3">
-                <span className="min-w-0 truncate">{c.name}</span>
+              <li key={c.personId} className="flex items-start justify-between gap-3">
+                <span className="min-w-0 break-words">{c.name}</span>
                 <span className="inline-flex shrink-0 items-center gap-1 tabular-nums">
                   <span className="sr-only">from</span>
                   {c.before}

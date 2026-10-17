@@ -19,7 +19,8 @@ export const eventStatusSchema = z.enum([
 
 export const eventSchema = z.object({
   name: z.string().trim().min(1, "Give the event a name.").max(120),
-  eventDate: z.iso.date("Use the format YYYY-MM-DD."),
+  // The native date picker submits "" when nothing is picked; only typed input can be malformed.
+  eventDate: z.iso.date({ error: (issue) => (issue.input === "" ? "Pick a show date." : "Use the format YYYY-MM-DD.") }),
   timezone: timezoneSchema,
 });
 

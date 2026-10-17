@@ -6,8 +6,9 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatTimestamp } from "@/lib/time";
+import { formatMinutes, formatTimestamp } from "@/lib/time";
 import { isEventEditable } from "@/server/events/editable";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
@@ -16,12 +17,13 @@ import {
   compareRunForPage,
   listRuns,
   type ActivationPreview,
+  type ActivationPreviews,
   type CompareTarget,
   type RunComparisonView,
   type RunSummary,
 } from "@/server/matching/queries";
 import { getMatchingGate } from "@/server/matching/readiness";
-import type { RunComparison } from "@/server/matching/runs";
+import type { AppointmentView, RunComparison } from "@/server/matching/runs";
 import { eventSectionHref } from "../event-sections";
 import { ActivateRunButton, RunMatchingButtons } from "./run-actions";
 
@@ -65,6 +67,8 @@ export default async function MatchingPage({
   const editable = isEventEditable(event);
   const topN = event.settings.mutualTopN;
   const base = eventSectionHref(event.id, "matching");
+  // Slot start times as set now, in the event's timezone (D16); a slot the settings no longer have shows a dash.
+  const slotTimes = new Map(event.settings.slots.map((slot) => [slot.n, formatMinutes(slot.startMinutes)]));
 
   return (
     <>
@@ -96,7 +100,7 @@ export default async function MatchingPage({
 
       <Card>
         <CardHeader>
-          <CardTitle className="font-display text-lg font-bold">Ready to match</CardTitle>
+          <CardTitle className="font-display text-lg font-bold">{gate.ready ? "Ready to match" : "Not ready to match"}</CardTitle>
           <CardDescription>Active people and the rankings loaded for them. Withdrawn people are left out.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -120,7 +124,7 @@ export default async function MatchingPage({
           {!gate.ready ? (
             <Alert variant="destructive">
               <AlertTriangleIcon />
-              <AlertTitle>Not ready to match</AlertTitle>
+              <AlertTitle>Fix {gate.reasons.length === 1 ? "this" : "these"} before running matching</AlertTitle>
               <AlertDescription>
                 <ul className="flex list-disc flex-col gap-1 pl-5">
                   {gate.reasons.map((reason) => (
@@ -172,6 +176,7 @@ export default async function MatchingPage({
                       run={run}
                       expanded={expanded}
                       comparison={expanded ? comparison : null}
+                      slotTimes={slotTimes}
                       base={base}
                       created={formatTimestamp(run.createdAt, event.timezone)}
                       cells={[
@@ -184,7 +189,8 @@ export default async function MatchingPage({
                       compareHref={expanded ? base : `${base}?compare=${run.id}`}
                       canCompare={(active !== null || run.parentRunId !== null) && !run.isActive && run.status === "completed"}
                       canActivate={editable && !run.isActive && run.status === "completed"}
-                      preview={previews.get(run.id) ?? null}
+                      preview={previews.byRun.get(run.id) ?? null}
+                      expectedActive={previews.active}
                     />
                   );
                 })}
@@ -201,6 +207,7 @@ function RunRows({
   run,
   expanded,
   comparison,
+  slotTimes,
   base,
   created,
   cells,
@@ -208,10 +215,12 @@ function RunRows({
   canCompare,
   canActivate,
   preview,
+  expectedActive,
 }: {
   run: RunSummary;
   expanded: boolean;
   comparison: RunComparisonView | null;
+  slotTimes: ReadonlyMap<number, string>;
   base: string;
   created: string;
   cells: string[];
@@ -219,6 +228,8 @@ function RunRows({
   canCompare: boolean;
   canActivate: boolean;
   preview: ActivationPreview | null;
+  /** The active run the preview counts were diffed against, sent with an activation so a change since is a conflict. */
+  expectedActive: ActivationPreviews["active"];
 }) {
   return (
     <>
@@ -233,6 +244,12 @@ function RunRows({
               ) : null}
               {run.parentRunId ? <Badge variant="outline">Kept existing</Badge> : null}
             </span>
+            {run.isActive && run.version > 1 ? (
+              // Schedule edits and undo bump the version and restamp the stats against the roster of that moment.
+              <span className="max-w-48 text-xs whitespace-normal text-muted-foreground">
+                Updated at your last edit, using the roster at that time
+              </span>
+            ) : null}
           </div>
         </TableCell>
         <TableCell className="whitespace-nowrap">{run.createdByName ?? "Unknown"}</TableCell>
@@ -242,7 +259,7 @@ function RunRows({
           </TableCell>
         ))}
         <TableCell className="text-right tabular-nums">
-          {run.warningCount ? <Badge variant="outline">{run.warningCount}</Badge> : <span className="text-muted-foreground">0</span>}
+          {run.warnings.length ? <WarningsPopover run={run} /> : <span className="text-muted-foreground">0</span>}
         </TableCell>
         <TableCell className="pr-4">
           <div className="flex justify-end gap-2">
@@ -254,10 +271,28 @@ function RunRows({
                 </Link>
               </Button>
             ) : null}
-            {canActivate ? <ActivateRunButton runId={run.id} disabled={false} preview={preview} /> : null}
+            {canActivate ? (
+              <ActivateRunButton
+                runId={run.id}
+                disabled={false}
+                preview={preview}
+                expectedActiveRunId={expectedActive?.id ?? null}
+                expectedVersion={expectedActive?.version ?? null}
+              />
+            ) : null}
           </div>
         </TableCell>
       </TableRow>
+      {run.status === "failed" ? (
+        <TableRow className="hover:bg-transparent">
+          <TableCell colSpan={9} className="px-4 pt-0 whitespace-normal">
+            <p className="text-sm text-destructive">
+              <span className="font-semibold">Why it failed:</span>{" "}
+              {run.warnings.length ? run.warnings.join(" ") : "No reason was recorded. Run matching again."}
+            </p>
+          </TableCell>
+        </TableRow>
+      ) : null}
       {expanded ? (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={9} className="bg-muted/40 p-4 whitespace-normal">
@@ -279,7 +314,7 @@ function RunRows({
                     ))}
                 </div>
                 {comparison.result.ok ? (
-                  <ComparisonPanel comparison={comparison.result.data} against={comparison.against} />
+                  <ComparisonPanel comparison={comparison.result.data} against={comparison.against} slotTimes={slotTimes} />
                 ) : (
                   <p className="text-sm text-destructive">{comparison.result.error.message}</p>
                 )}
@@ -294,7 +329,40 @@ function RunRows({
   );
 }
 
-function ComparisonPanel({ comparison, against }: { comparison: RunComparison; against: CompareTarget }) {
+/** The run's warnings (or, for a failed run, why it failed) behind its count in the Warnings column. */
+function WarningsPopover({ run }: { run: RunSummary }) {
+  const failed = run.status === "failed";
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="xs" variant="outline" className="tabular-nums">
+          {run.warnings.length}
+          <span className="sr-only">{failed ? ", show why it failed" : ", show warnings"}</span>
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-96 max-w-[calc(100vw-2rem)]">
+        <PopoverHeader>
+          <PopoverTitle>{failed ? "Why it failed" : run.warnings.length === 1 ? "1 warning" : `${run.warnings.length} warnings`}</PopoverTitle>
+        </PopoverHeader>
+        <ul className="flex max-h-72 list-disc flex-col gap-1 overflow-y-auto pl-5 text-left text-sm">
+          {run.warnings.map((warning, i) => (
+            <li key={i}>{warning}</li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ComparisonPanel({
+  comparison,
+  against,
+  slotTimes,
+}: {
+  comparison: RunComparison;
+  against: CompareTarget;
+  slotTimes: ReadonlyMap<number, string>;
+}) {
   const { added, removed, countChanges } = comparison;
   if (added.length === 0 && removed.length === 0) {
     return (
@@ -305,55 +373,89 @@ function ComparisonPanel({ comparison, against }: { comparison: RunComparison; a
       </p>
     );
   }
-  const more = (n: number) => (n > COMPARE_LIMIT ? <li className="text-muted-foreground">and {n - COMPARE_LIMIT} more</li> : null);
   return (
-    <div className="flex max-w-5xl flex-col gap-4 text-sm">
+    <div className="flex flex-col gap-5 text-sm">
       <p className="font-semibold">
         {against === "active" ? "Activating this run adds" : "Against the run it kept from, this run adds"} {added.length} and
         removes {removed.length} appointments, and changes the count of {countChanges.length}{" "}
         {countChanges.length === 1 ? "person" : "people"}.
       </p>
-      <div className="grid gap-4 md:grid-cols-3">
-        <div className="flex flex-col gap-1.5">
-          <h3 className="font-semibold">Added</h3>
-          <ul className="flex flex-col gap-1">
-            {added.slice(0, COMPARE_LIMIT).map((a) => (
-              <li key={a.id}>
-                <span className="tabular-nums text-muted-foreground">Slot {a.slot}</span> {a.supplierName} with {a.buyerName}
-              </li>
-            ))}
-            {added.length === 0 ? <li className="text-muted-foreground">None</li> : null}
-            {more(added.length)}
-          </ul>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <h3 className="font-semibold">Removed</h3>
-          <ul className="flex flex-col gap-1">
-            {removed.slice(0, COMPARE_LIMIT).map((a) => (
-              <li key={a.id}>
-                <span className="tabular-nums text-muted-foreground">Slot {a.slot}</span> {a.supplierName} with {a.buyerName}
-              </li>
-            ))}
-            {removed.length === 0 ? <li className="text-muted-foreground">None</li> : null}
-            {more(removed.length)}
-          </ul>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <h3 className="font-semibold">Counts that change</h3>
-          <ul className="flex flex-col gap-1">
+      <AppointmentTable title="Added" rows={added} slotTimes={slotTimes} />
+      <AppointmentTable title="Removed" rows={removed} slotTimes={slotTimes} />
+      <CompareSection title="Counts that change" total={countChanges.length}>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="pl-3">Name</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead className="text-right">Before</TableHead>
+              <TableHead className="pr-3 text-right">After</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {countChanges.slice(0, COMPARE_LIMIT).map((c) => (
-              <li key={c.personId}>
-                {c.name} <span className="text-muted-foreground">({c.type})</span>{" "}
-                <span className="tabular-nums">
-                  {c.before} → {c.after}
-                </span>
-              </li>
+              <TableRow key={c.personId}>
+                <TableCell className="pl-3 whitespace-normal">{c.name}</TableCell>
+                <TableCell>{c.type === "buyer" ? "Buyer" : "Supplier"}</TableCell>
+                <TableCell className="text-right tabular-nums">{c.before}</TableCell>
+                <TableCell className="pr-3 text-right tabular-nums">{c.after}</TableCell>
+              </TableRow>
             ))}
-            {countChanges.length === 0 ? <li className="text-muted-foreground">None</li> : null}
-            {more(countChanges.length)}
-          </ul>
-        </div>
-      </div>
+          </TableBody>
+        </Table>
+      </CompareSection>
     </div>
+  );
+}
+
+/** One titled block of the comparison: the table, "None" when empty, and "and N more" past the limit. */
+function CompareSection({ title, total, children }: { title: string; total: number; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="font-semibold">
+        {title} <span className="font-normal text-muted-foreground tabular-nums">({total})</span>
+      </h3>
+      {total === 0 ? (
+        <p className="text-muted-foreground">None</p>
+      ) : (
+        <div className="rounded-md border bg-background">{children}</div>
+      )}
+      {total > COMPARE_LIMIT ? <p className="text-muted-foreground">and {total - COMPARE_LIMIT} more</p> : null}
+    </section>
+  );
+}
+
+function AppointmentTable({
+  title,
+  rows,
+  slotTimes,
+}: {
+  title: string;
+  rows: AppointmentView[];
+  slotTimes: ReadonlyMap<number, string>;
+}) {
+  return (
+    <CompareSection title={title} total={rows.length}>
+      <Table>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead className="w-16 pl-3">Slot</TableHead>
+            <TableHead className="w-24">Time</TableHead>
+            <TableHead>Supplier</TableHead>
+            <TableHead className="pr-3">Buyer</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.slice(0, COMPARE_LIMIT).map((a) => (
+            <TableRow key={a.id}>
+              <TableCell className="pl-3 tabular-nums">{a.slot}</TableCell>
+              <TableCell className="tabular-nums">{slotTimes.get(a.slot) ?? "–"}</TableCell>
+              <TableCell className="whitespace-normal">{a.supplierName}</TableCell>
+              <TableCell className="pr-3 whitespace-normal">{a.buyerName}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </CompareSection>
   );
 }

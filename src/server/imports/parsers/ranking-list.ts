@@ -1,18 +1,22 @@
 import type { SheetRows } from "@/lib/xlsx";
 import { CHOICE_HEADER, rankingListColumns } from "../templates";
-import { columnReader, parseEmail } from "./shared";
+import { columnReader, MAX_RANK, parseEmail, parseRank } from "./shared";
 import type { ParsedRankingListRow, ParsedRows, RankingChoice } from "./types";
 
 type ChoiceColumn = { header: string; rank: number };
 
-export function choiceColumns(headers: string[]): ChoiceColumn[] {
-  return headers
-    .map((header) => {
-      const match = CHOICE_HEADER.exec(header.trim());
-      return match ? { header, rank: Number(match[1]) } : null;
-    })
-    .filter((column): column is ChoiceColumn => column !== null)
-    .sort((a, b) => a.rank - b.rank);
+/** The CHOICE #n columns sorted by n, and the headers whose n is not a rank (0, or over `MAX_RANK`). */
+export function choiceColumns(headers: string[]): { columns: ChoiceColumn[]; outOfRange: string[] } {
+  const columns: ChoiceColumn[] = [];
+  const outOfRange: string[] = [];
+  for (const header of headers) {
+    const match = CHOICE_HEADER.exec(header.trim());
+    if (!match) continue;
+    const rank = parseRank(match[1]);
+    if (rank === null) outOfRange.push(header);
+    else columns.push({ header, rank });
+  }
+  return { columns: columns.sort((a, b) => a.rank - b.rank), outOfRange };
 }
 
 /**
@@ -21,7 +25,19 @@ export function choiceColumns(headers: string[]): ChoiceColumn[] {
  * rank. Names absent from a row are unranked, never rejected (D2).
  */
 export function parseRankingList(sheet: SheetRows): ParsedRows<ParsedRankingListRow> {
-  const columns = choiceColumns(sheet.headers);
+  const { columns, outOfRange } = choiceColumns(sheet.headers);
+  if (outOfRange.length > 0) {
+    const named = outOfRange.map((header) => `"${header}"`).join(", ");
+    return {
+      rows: [],
+      errors: [
+        {
+          row: null,
+          message: `Choice columns must be numbered 1 to ${MAX_RANK.toLocaleString("en")}. Rename or remove ${named} and upload the file again.`,
+        },
+      ],
+    };
+  }
   if (columns.length === 0) {
     return { rows: [], errors: [{ row: null, message: "No CHOICE #n columns found." }] };
   }

@@ -27,8 +27,11 @@ import {
   describeEdit,
   healthOf,
   healthText,
+  openSlotsText,
   personLabel,
+  pickerRequestFor,
   sheetRows,
+  type EditDraft,
   type Person,
   type ScheduleModel,
   type SheetRow,
@@ -75,7 +78,6 @@ function affectedLine(result: EditResult): string {
 export function PersonSheet(props: PersonSheetProps) {
   const { person, model, slots, targets, topN, editing, runId, version, focusSlot, picker, onPickerChange, onVersion, onSelect, onClose } =
     props;
-  const router = useRouter();
   const isMobile = useIsMobile();
   const onError = useEditErrors();
   const [isPending, startTransition] = React.useTransition();
@@ -92,6 +94,9 @@ export function PersonSheet(props: PersonSheetProps) {
     return () => cancelAnimationFrame(frame);
   }, [person, focusSlot]);
 
+  // No router.refresh() after a save: the actions call revalidatePath, so the
+  // action response already carries the fresh page. A second request was one
+  // more slow round trip racing the admin's next clicks.
   const finish = (result: ActionResult<EditResult>, success: string) => {
     if (!result.ok) {
       onError(result.error);
@@ -99,27 +104,16 @@ export function PersonSheet(props: PersonSheetProps) {
     }
     onVersion(result.data.version);
     toast.success(success, { description: affectedLine(result.data) });
-    router.refresh();
     return true;
   };
 
-  // Picking a buyer opens a preview; Save commits it. Tied to the request so a new picker starts clean.
+  // Picking someone opens a preview; Save commits it. Tied to the request so a new picker starts clean.
   const [draft, setDraft] = React.useState<{ request: PickerRequest; candidate: SwapCandidate } | null>(null);
   const activeDraft = draft && draft.request === picker ? draft : null;
-  const preview = activeDraft
-    ? describeEdit(model, {
-        supplierId: activeDraft.request.supplierId,
-        slot: activeDraft.request.slot,
-        removeBuyerId: activeDraft.request.removeBuyerId,
-        add: {
-          buyerId: activeDraft.candidate.buyerId,
-          name: activeDraft.candidate.name,
-          count: activeDraft.candidate.count,
-          countAfter: activeDraft.candidate.countAfter,
-        },
-      })
-    : null;
+  const preview = activeDraft ? describeEdit(model, draftFor(model, activeDraft.request, activeDraft.candidate)) : null;
   const [removing, setRemoving] = React.useState<SheetRow | null>(null);
+  // After a replace: offer to open the schedule of the buyer who lost the slot.
+  const [followUp, setFollowUp] = React.useState<{ personId: string; name: string; slot: number } | null>(null);
 
   const pick = (candidate: SwapCandidate) => {
     if (picker) setDraft({ request: picker, candidate });
@@ -128,27 +122,40 @@ export function PersonSheet(props: PersonSheetProps) {
   const save = () => {
     if (!activeDraft) return;
     const { request: picker, candidate } = activeDraft;
+    const removeBuyerId = picker.pick === "buyer" ? picker.removeBuyerId : undefined;
     startTransition(async () => {
-      const result = picker.removeBuyerId
+      const result = removeBuyerId
         ? await replaceAppointmentAction({
             runId,
             version,
             slot: picker.slot,
-            supplierId: picker.supplierId,
-            removeBuyerId: picker.removeBuyerId,
+            supplierId: candidate.supplierId,
+            removeBuyerId,
             addBuyerId: candidate.buyerId,
           })
         : await addAppointmentAction({
             runId,
             version,
             slot: picker.slot,
-            supplierId: picker.supplierId,
+            supplierId: candidate.supplierId,
             buyerId: candidate.buyerId,
           });
-      const verb = picker.removeBuyerId ? `Replaced ${picker.removeBuyerName} with ${candidate.name}` : `Added ${candidate.name}`;
+      const verb =
+        picker.pick === "buyer" && picker.removeBuyerId
+          ? `Replaced ${picker.removeBuyerName} with ${candidate.name}`
+          : `Added ${candidate.name}`;
       if (finish(result, `${verb} in slot ${picker.slot}`)) {
         setDraft(null);
         onPickerChange(null);
+        const removed = removeBuyerId ? model.personById.get(removeBuyerId) : undefined;
+        // A withdrawn buyer's sheet has no Add button, so there is nothing to follow up on.
+        if (removeBuyerId && removeBuyerId !== person?.id && !removed?.withdrawn) {
+          setFollowUp({
+            personId: removeBuyerId,
+            name: removed ? personLabel(removed).primary : (picker.pick === "buyer" && picker.removeBuyerName) || "the buyer",
+            slot: picker.slot,
+          });
+        }
       }
     });
   };
@@ -181,27 +188,14 @@ export function PersonSheet(props: PersonSheetProps) {
         return;
       }
       onVersion(result.data.version);
-      toast.success(result.data.pinned ? `Pinned slot ${a.slot}` : `Unpinned slot ${a.slot}`, {
-        description: result.data.pinned ? "The next re-run keeps this meeting." : "The next re-run may move this meeting.",
+      toast.success(result.data.pinned ? `Pinned slot ${a.slot}.` : `Unpinned slot ${a.slot}.`, {
+        description: result.data.pinned ? "Marked as reviewed. A pin doesn't change matching." : undefined,
       });
-      router.refresh();
     });
   };
 
-  const requestFor = (row: SheetRow, replace: boolean): PickerRequest | null => {
-    if (!person) return null;
-    const supplier = (person.kind === "supplier" ? person : row.counterpart) as SupplierPerson | null;
-    if (!supplier) return null;
-    const buyer = row.appointment ? model.personById.get(row.appointment.buyerId) : undefined;
-    return {
-      supplierId: supplier.id,
-      supplierName: supplier.name,
-      slot: row.slot.slot,
-      slotLabel: `${row.slot.start} to ${row.slot.end}`,
-      removeBuyerId: replace ? buyer?.id : undefined,
-      removeBuyerName: replace && buyer ? personLabel(buyer).primary : undefined,
-    };
-  };
+  const requestFor = (row: SheetRow, replace: boolean): PickerRequest | null =>
+    person ? pickerRequestFor(model, person, row, replace) : null;
 
   const scheduleSlots: PersonScheduleSlot[] = rows.map((r) => {
     if (!r.appointment || !r.counterpart) return { slot: r.slot.slot, start: r.slot.start, end: r.slot.end, appointment: null };
@@ -227,11 +221,12 @@ export function PersonSheet(props: PersonSheetProps) {
     const a = row.appointment;
     const busy = a !== null && busyRow === a.id;
     if (!a) {
-      if (!editing || person.kind !== "supplier") return null;
+      // A withdrawn person gets no new meetings, so there is nothing to add.
+      if (!editing || person.withdrawn) return null;
       return (
         <Button size="xs" variant="outline" disabled={isPending} onClick={() => onPickerChange(requestFor(row, false))}>
           <PlusIcon data-icon="inline-start" />
-          Add buyer
+          {person.kind === "supplier" ? "Add buyer" : "Add supplier"}
         </Button>
       );
     }
@@ -281,7 +276,7 @@ export function PersonSheet(props: PersonSheetProps) {
   const health = person ? healthOf(person, targets) : "ok";
   const label = person ? personLabel(person) : null;
   const max = person?.kind === "supplier" ? targets.supplierTarget : targets.buyerMax;
-  const openCount = rows.filter((r) => !r.appointment).length;
+  const openText = person ? openSlotsText(person, rows) : null;
 
   return (
     <>
@@ -341,9 +336,7 @@ export function PersonSheet(props: PersonSheetProps) {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-baseline justify-between gap-2 text-sm">
                         <span className="font-semibold">{healthText(person, targets)}</span>
-                        <span className="text-muted-foreground">
-                          {openCount ? `${openCount} open ${openCount === 1 ? "slot" : "slots"}` : "No open slots"}
-                        </span>
+                        {openText ? <span className="text-muted-foreground">{openText}</span> : null}
                       </div>
                       <Progress
                         value={(person.count / Math.max(1, slots.length)) * 100}
@@ -368,9 +361,7 @@ export function PersonSheet(props: PersonSheetProps) {
                       ) : null}
                       {editing ? (
                         <p className="text-sm text-muted-foreground">
-                          {person.kind === "supplier"
-                            ? "Replace, remove, or pin a meeting, or add a buyer to an open slot. You see what changes before it saves, and every change shows in the activity log."
-                            : "Replace, remove, or pin a meeting. You see what changes before it saves. To fill an open slot, open a supplier who is free then."}
+                          {`Replace, remove, or pin a meeting, or add a ${person.kind === "supplier" ? "buyer" : "supplier"} to an open slot. You see what changes before it saves, and every change shows in the activity log.`}
                         </p>
                       ) : null}
                     </div>
@@ -386,38 +377,76 @@ export function PersonSheet(props: PersonSheetProps) {
                   </div>
                 )}
               </div>
+              {/*
+                The dialogs below are children of the sheet, not siblings: Radix then stacks
+                them as nested layers, so each one opens above the sheet and its overlay and
+                gets the focus trap, even when the sheet and a dialog open in the same click.
+              */}
+              <Dialog open={!isMobile && picker !== null} onOpenChange={(open) => !open && onPickerChange(null)}>
+                <DialogContent className="sm:max-w-lg">
+                  {picker ? (
+                    <>
+                      <DialogHeader className="min-w-0">
+                        <DialogTitle className="font-display text-lg leading-tight font-bold break-words">
+                          {pickerTitle(picker)}
+                        </DialogTitle>
+                        <DialogDescription className="break-words">{pickerDescription(picker)}</DialogDescription>
+                      </DialogHeader>
+                      {preview ? (
+                        <EditPreviewPanel preview={preview} pending={isPending} onSave={save} onCancel={() => setDraft(null)} />
+                      ) : (
+                        <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
+                      )}
+                    </>
+                  ) : null}
+                </DialogContent>
+              </Dialog>
+              <ConfirmDialog
+                open={removing !== null}
+                onOpenChange={(open) => !open && setRemoving(null)}
+                title="Remove this meeting?"
+                description={removal ? `${previewSentence(removal)} The slot stays open until you fill it.` : undefined}
+                confirmLabel="Remove meeting"
+                destructive
+                onConfirm={() => (removing ? remove(removing) : undefined)}
+              />
+              <ConfirmDialog
+                open={followUp !== null}
+                onOpenChange={(open) => !open && setFollowUp(null)}
+                title={followUp ? `Open ${followUp.name}'s schedule?` : "Open schedule?"}
+                description={
+                  followUp ? `${followUp.name} is now open in slot ${followUp.slot}. Open their schedule to fill it.` : undefined
+                }
+                confirmLabel="Open schedule"
+                cancelLabel="Stay here"
+                onConfirm={() => {
+                  if (followUp) onSelect(followUp.personId, followUp.slot);
+                }}
+              />
             </>
           ) : (
             <SheetTitle className="sr-only">Schedule</SheetTitle>
           )}
         </SheetContent>
       </Sheet>
-      <Dialog open={!isMobile && picker !== null} onOpenChange={(open) => !open && onPickerChange(null)}>
-        <DialogContent className="sm:max-w-lg">
-          {picker ? (
-            <>
-              <DialogHeader>
-                <DialogTitle className="font-display text-lg font-bold">{pickerTitle(picker)}</DialogTitle>
-                <DialogDescription>{pickerDescription(picker)}</DialogDescription>
-              </DialogHeader>
-              {preview ? (
-                <EditPreviewPanel preview={preview} pending={isPending} onSave={save} onCancel={() => setDraft(null)} />
-              ) : (
-                <SwapPicker request={picker} runId={runId} version={version} topN={topN} pending={isPending} onPick={pick} />
-              )}
-            </>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-      <ConfirmDialog
-        open={removing !== null}
-        onOpenChange={(open) => !open && setRemoving(null)}
-        title="Remove this meeting?"
-        description={removal ? `${previewSentence(removal)} The slot stays open until you fill it.` : undefined}
-        confirmLabel="Remove meeting"
-        destructive
-        onConfirm={() => (removing ? remove(removing) : undefined)}
-      />
     </>
   );
+}
+
+/** The edit a picked candidate makes, in the shape `describeEdit` previews. */
+function draftFor(model: ScheduleModel, request: PickerRequest, candidate: SwapCandidate): EditDraft {
+  if (request.pick === "buyer") {
+    return {
+      supplierId: candidate.supplierId,
+      slot: request.slot,
+      removeBuyerId: request.removeBuyerId,
+      add: { buyerId: candidate.buyerId, name: candidate.name, count: candidate.count, countAfter: candidate.countAfter },
+    };
+  }
+  const count = model.personById.get(request.buyerId)?.count ?? 0;
+  return {
+    supplierId: candidate.supplierId,
+    slot: request.slot,
+    add: { buyerId: request.buyerId, name: request.buyerName, count, countAfter: count + 1 },
+  };
 }

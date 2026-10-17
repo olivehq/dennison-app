@@ -3,15 +3,18 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { recipientKey } from "@/lib/schemas/email";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { getDb } from "@/db/client";
 import { requireSession } from "@/server/auth/session";
 import { getScheduleChangeState } from "@/server/email/queries";
-import { getEvent, getEventCounts } from "@/server/events/queries";
+import { getEvent } from "@/server/events/queries";
+import { findActiveRun } from "@/server/matching/runs";
 import { fullNameFor, listParticipants } from "@/server/roster/queries";
-import { listTokens } from "@/server/tokens/queries";
-import { latestLinks, linkOf } from "../_roster/link-status";
-import { lockReason } from "../_roster/lock-reason";
+import { readContactLinks } from "@/server/tokens/queries";
+import { linkOf } from "../_roster/link-status";
+import { ExportFullListButton } from "../_roster/export-full-list-button";
+import { linksBlockedReason, lockReason } from "../_roster/lock-reason";
 import { emailChangeOf } from "../_roster/email-change";
-import { healthFor, parseBiztechFilter, parseStatusFilter } from "../_roster/types";
+import { healthFor, parseBiztechFilter, parseLinkFilter, parseSearchQuery, parseStatusFilter } from "../_roster/types";
 import { eventSectionHref } from "../event-sections";
 import { AddParticipantButton, ParticipantsTable, type ParticipantTableRow } from "./participants-table";
 
@@ -29,22 +32,23 @@ export default async function ParticipantsPage({
 }) {
   await requireSession();
   const [{ id }, query] = await Promise.all([params, searchParams]);
+  const db = getDb();
   const event = await getEvent(id);
   if (!event) notFound();
 
-  const [participants, tokens, counts, emailState] = await Promise.all([
+  const [participants, links, activeRun, emailState] = await Promise.all([
     listParticipants(event.id, { includeWithdrawn: true }),
-    listTokens(event.id),
-    getEventCounts(event.id),
+    readContactLinks(db, event.id, { withUrls: false }),
+    findActiveRun(db, event.id),
     getScheduleChangeState(event.id),
   ]);
-  const links = latestLinks(tokens);
-  const hasRun = counts.activeRunId !== null;
+  const hasRun = activeRun !== null;
   const { buyerMin, buyerMax } = event.settings;
   const locked = lockReason(event, "add, edit, or withdraw participants");
+  const linksBlocked = linksBlockedReason(event);
 
   const rows: ParticipantTableRow[] = participants.map((p) => {
-    const health = healthFor(p.appointmentCount, buyerMin, buyerMax, hasRun);
+    const health = healthFor(p.appointmentCount, buyerMin, buyerMax, hasRun, p.status === "withdrawn");
     return {
       id: p.id,
       email: p.email,
@@ -73,22 +77,32 @@ export default async function ParticipantsPage({
       <PageHeader
         title="Participants"
         description={`${active} active${withdrawn ? `, ${withdrawn} withdrawn` : ""}. Buyers who rank suppliers and get a schedule.`}
-        actions={<AddParticipantButton eventId={event.id} disabled={locked !== null} />}
+        actions={
+          <>
+            <ExportFullListButton eventId={event.id} eventDate={event.eventDate} kind="participants_full" />
+            <AddParticipantButton eventId={event.id} disabled={locked !== null} />
+          </>
+        }
       />
       {locked ? (
         <Alert>
           <LockIcon />
           <AlertTitle>Read-only</AlertTitle>
-          <AlertDescription>{locked} You can still regenerate and revoke links.</AlertDescription>
+          <AlertDescription>
+            {linksBlocked ? `${locked} Its links can't be regenerated or revoked.` : `${locked} You can still regenerate and revoke links.`}
+          </AlertDescription>
         </Alert>
       ) : null}
       <ParticipantsTable
         eventId={event.id}
         rows={rows}
         lockedReason={locked}
+        linksBlockedReason={linksBlocked}
         importsHref={eventSectionHref(event.id, "imports")}
         initialStatus={parseStatusFilter(query.status)}
         initialBiztech={parseBiztechFilter(query.biztech)}
+        initialLink={parseLinkFilter(query.link)}
+        initialQuery={parseSearchQuery(query.q)}
       />
     </>
   );

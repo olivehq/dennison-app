@@ -32,8 +32,10 @@ export type AudienceContact = {
 
 export type Recipient = AudienceContact & {
   mergeValues: MergeValues;
-  /** The access token behind `schedule_link`, or null in a preview before links exist. */
+  /** The access token behind `schedule_link`, or null in a preview before links exist, or when the link was revoked. */
   tokenId: string | null;
+  /** The contact's newest link was revoked. Sends skip them; Regenerate on the roster gives them a new link. */
+  linkRevoked: boolean;
 };
 
 /** Shown in previews and test sends for someone who has no link yet. Links are issued at lock. */
@@ -133,7 +135,12 @@ export function filterAudience(
   }
 }
 
-/** Adds each contact's schedule link. `issue` creates links for contacts without one; `existing` writes nothing. */
+/**
+ * Adds each contact's schedule link. `issue` creates links for contacts who
+ * never had one or whose link expired; `existing` writes nothing. Neither
+ * gives a contact with a revoked link a new one: they come back with
+ * `linkRevoked` set and the pending link.
+ */
 export async function withLinks(
   db: Db,
   eventId: string,
@@ -144,20 +151,34 @@ export async function withLinks(
   if (!result.ok) return result;
   return ok(
     contacts.map((c) => {
-      const link = result.data.get(contactKey(c));
+      const link = result.data.links.get(contactKey(c));
       return {
         ...c,
         tokenId: link?.tokenId ?? null,
+        linkRevoked: result.data.revoked.has(contactKey(c)),
         mergeValues: { ...c.mergeValues, schedule_link: link ? linkFor(link.token) : PENDING_LINK },
       };
     }),
   );
 }
 
+/** The contacts an audience covers, without links. Only `changed_since_last_send` reads more than the contacts. */
+export async function audienceContactsFor(
+  db: Db,
+  eventId: string,
+  contacts: AudienceContact[],
+  audience: EmailAudience,
+  selectedIds: string[] = [],
+): Promise<AudienceContact[]> {
+  const changed = audience === "changed_since_last_send" ? await changedSinceLastSend(db, eventId) : undefined;
+  return filterAudience(contacts, audience, { selected: selectedIds, changed });
+}
+
 /**
  * The recipients of an audience with their merge values. With `links:
- * "issue"` (sending), contacts without a usable link get one (D59); with
- * `existing` (preview, test), nothing is written.
+ * "issue"` (sending), contacts without a usable link get one (D59), except
+ * those whose link was revoked (`linkRevoked`); with `existing` (preview,
+ * test), nothing is written.
  */
 export async function resolveAudience(
   db: Db,
@@ -168,7 +189,6 @@ export async function resolveAudience(
 ): Promise<ActionResult<Recipient[]>> {
   const contacts = await listAudienceContacts(db, eventId);
   if (!contacts) return fail("not_found", "That event no longer exists.");
-  const changed = audience === "changed_since_last_send" ? await changedSinceLastSend(db, eventId) : undefined;
-  const chosen = filterAudience(contacts, audience, { selected: selectedIds, changed });
+  const chosen = await audienceContactsFor(db, eventId, contacts, audience, selectedIds);
   return withLinks(db, eventId, chosen, options.links);
 }

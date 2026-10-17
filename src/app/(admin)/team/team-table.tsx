@@ -2,21 +2,21 @@
 
 import * as React from "react";
 import { format } from "date-fns";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { createDataTableColumnHelper, DataTable } from "@/components/app/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ActionResult } from "@/lib/errors";
-import { disableAdmin, enableAdmin, resendInvite } from "@/server/auth/actions";
+import { disableAdmin, enableAdmin, resendInvite, revokeInvite } from "@/server/auth/actions";
+import { NO_PROVIDER_NOTE } from "./invite-admin-dialog";
 
 export type TeamRow = {
   id: string;
   kind: "admin" | "invite";
   name: string;
   email: string;
-  state: "active" | "disabled" | "invited";
+  state: "active" | "disabled" | "invited" | "revoked";
   expiresAt: Date | null;
   expired: boolean;
   isSelf: boolean;
@@ -28,6 +28,7 @@ const STATE_LABELS: Record<TeamRow["state"], string> = {
   active: "Active",
   disabled: "Disabled",
   invited: "Invited",
+  revoked: "Revoked",
 };
 
 function StateCell({ row }: { row: TeamRow }) {
@@ -45,8 +46,6 @@ function StateCell({ row }: { row: TeamRow }) {
 }
 
 export function TeamTable({ rows }: { rows: TeamRow[] }) {
-  const router = useRouter();
-
   const run = React.useCallback(
     async (work: () => Promise<ActionResult<unknown>>, done: string) => {
       const result = await work();
@@ -55,9 +54,8 @@ export function TeamTable({ rows }: { rows: TeamRow[] }) {
         return;
       }
       toast.success(done);
-      router.refresh();
     },
-    [router],
+    [],
   );
 
   const columns = React.useMemo(
@@ -65,6 +63,7 @@ export function TeamTable({ rows }: { rows: TeamRow[] }) {
       helper.columns([
         helper.accessor("name", {
           header: "Name",
+          sortFn: "name",
           cell: ({ row }) => (
             <span className="font-medium">
               {row.original.name}
@@ -82,9 +81,25 @@ export function TeamTable({ rows }: { rows: TeamRow[] }) {
           header: () => <span className="sr-only">Actions</span>,
           cell: ({ row }) => {
             const item = row.original;
+            // A revoked invite is final: send a new one instead.
+            if (item.state === "revoked") return null;
             if (item.kind === "invite") {
               return (
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
+                  {item.expired ? null : (
+                    <ConfirmDialog
+                      title={`Revoke the invite to ${item.email}?`}
+                      description="The invite link stops working right away. To invite them again, send a new invite."
+                      confirmLabel="Revoke invite"
+                      destructive
+                      trigger={
+                        <Button variant="outline" size="sm">
+                          Revoke invite
+                        </Button>
+                      }
+                      onConfirm={() => run(() => revokeInvite(item.id), `Invite to ${item.email} revoked.`)}
+                    />
+                  )}
                   <ConfirmDialog
                     title={`Resend the invite to ${item.email}?`}
                     description="The old link stops working and a fresh one goes out, good for 7 days."
@@ -94,7 +109,15 @@ export function TeamTable({ rows }: { rows: TeamRow[] }) {
                         Resend invite
                       </Button>
                     }
-                    onConfirm={() => run(() => resendInvite(item.id), `Invite resent to ${item.email}.`)}
+                    onConfirm={async () => {
+                      const result = await resendInvite(item.id);
+                      if (!result.ok) {
+                        toast.error(result.error.message);
+                        return;
+                      }
+                      if (result.data.delivered) toast.success(`Invite resent to ${item.email}.`);
+                      else toast.warning(`Invite logged, not sent. ${NO_PROVIDER_NOTE}`);
+                    }}
                   />
                 </div>
               );
@@ -121,7 +144,7 @@ export function TeamTable({ rows }: { rows: TeamRow[] }) {
               <div className="flex justify-end">
                 <ConfirmDialog
                   title={`Disable ${item.name}?`}
-                  description="They are signed out everywhere and can't sign in until someone enables them again."
+                  description="They are signed out everywhere, invites they sent stop working, and they can't sign in until someone enables them again."
                   confirmLabel="Disable"
                   destructive
                   trigger={

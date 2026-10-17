@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { Controller, useFieldArray, useForm, type FieldPath } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -28,7 +29,8 @@ import type { ActionError } from "@/lib/errors";
 import { eventSchema } from "@/lib/schemas/event";
 import { eventSettingsSchema, MAX_SLOT_COUNT, type EventSettings } from "@/lib/schemas/event-settings";
 import { buildSlots, formatMinutes, parseClock } from "@/lib/time";
-import { updateEvent, updateEventSettings } from "@/server/events/actions";
+import { saveEventSettings } from "@/server/events/actions";
+import { describeTargetChanges, fitTargetsToSlots } from "./fit-targets";
 
 const formSchema = eventSchema.extend({ settings: eventSettingsSchema });
 type FormValues = z.infer<typeof formSchema>;
@@ -57,6 +59,12 @@ function minutesToTimeValue(minutes: number): string {
 function timeValueToMinutes(value: string, fallback: number): number {
   return parseClock(value) ?? fallback;
 }
+
+/** What one save sends: only the parts the admin changed. */
+type SavePayload = {
+  details?: { name: string; eventDate: string; timezone: string };
+  settings?: EventSettings;
+};
 
 type EventForForm = {
   id: string;
@@ -95,32 +103,56 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
     control,
     handleSubmit,
     setValue,
+    getValues,
     setError,
+    clearErrors,
     reset,
     formState: { errors, isSubmitting, dirtyFields },
   } = form;
   const { fields, replace } = useFieldArray({ control, name: "settings.slots" });
   const [rebuild, setRebuild] = React.useState(() => rebuildDefaults(event.settings));
+  /** Set when the save would cut into the active schedule and needs the admin's confirmation. */
+  const [resetPrompt, setResetPrompt] = React.useState<{ payload: SavePayload; values: FormValues; message: string } | null>(null);
 
   const settingsErrors = errors.settings;
   const slotsError = settingsErrors?.slots?.message ?? settingsErrors?.slots?.root?.message;
+  const slotCountError = settingsErrors?.slotCount?.message;
 
-  const applyServerError = (error: ActionError, prefix: "" | "settings.") => {
+  const applyServerError = (error: ActionError) => {
     if (error.code === "locked") {
       toast.error(error.message);
       router.refresh();
       return;
     }
-    const entries = Object.entries(error.fieldErrors ?? {});
-    if (entries.length === 0) {
-      toast.error(error.message);
-      return;
-    }
-    for (const [key, messages] of entries) {
-      const path = (key === "_" ? prefix.replace(/\.$/, "") || "name" : `${prefix}${key}`) as FieldPath<FormValues>;
-      setError(path, { message: messages[0] });
+    // Keys are form paths ("name", "settings.slotCount"); "_" has no field.
+    for (const [key, messages] of Object.entries(error.fieldErrors ?? {})) {
+      if (key !== "_") setError(key as FieldPath<FormValues>, { message: messages[0] });
     }
     toast.error(error.message);
+  };
+
+  /** Details and settings save together or not at all, so the form never shows a half-saved state. */
+  const save = async (payload: SavePayload, values: FormValues, clearSchedule: boolean) => {
+    const result = await saveEventSettings(event.id, { ...payload, clearSchedule });
+    if (!result.ok) {
+      if (result.error.code === "needs_schedule_reset") {
+        for (const [key, messages] of Object.entries(result.error.fieldErrors ?? {})) {
+          setError(key as FieldPath<FormValues>, { message: messages[0] });
+        }
+        setResetPrompt({ payload, values, message: result.error.message });
+        return;
+      }
+      applyServerError(result.error);
+      return;
+    }
+    if (result.data.clearedRunId) {
+      toast.success("Settings saved. The active schedule was cleared.", {
+        description: "Run matching to build a schedule with the new settings.",
+      });
+    } else {
+      toast.success("Settings saved.");
+    }
+    reset(values);
   };
 
   const onSubmit = async (values: FormValues) => {
@@ -130,27 +162,11 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
       toast("Nothing to save. Change a value first.");
       return;
     }
-    if (detailsChanged) {
-      const result = await updateEvent(event.id, {
-        name: values.name,
-        eventDate: values.eventDate,
-        timezone: values.timezone,
-      });
-      if (!result.ok) {
-        applyServerError(result.error, "");
-        return;
-      }
-    }
-    if (settingsChanged) {
-      const result = await updateEventSettings(event.id, values.settings);
-      if (!result.ok) {
-        applyServerError(result.error, "settings.");
-        return;
-      }
-    }
-    toast.success("Settings saved.");
-    reset(values);
-    router.refresh();
+    const payload: SavePayload = {
+      details: detailsChanged ? { name: values.name, eventDate: values.eventDate, timezone: values.timezone } : undefined,
+      settings: settingsChanged ? values.settings : undefined,
+    };
+    await save(payload, values, false);
   };
 
   const applyRebuild = () => {
@@ -163,7 +179,18 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
       });
       replace(slots);
       setValue("settings.slotCount", slots.length, { shouldDirty: true });
-      toast(`Built ${slots.length} slots from ${formatMinutes(slots[0].startMinutes)} to ${formatMinutes(slots[slots.length - 1].endMinutes)}.`);
+      // The server's slot count error was about the old count.
+      clearErrors("settings.slotCount");
+      // Targets above the new count would fail validation on save, so bring them into range now and say so.
+      const { supplierTarget, buyerMin, buyerIdeal, buyerMax } = getValues("settings");
+      const fitted = fitTargetsToSlots({ supplierTarget, buyerMin, buyerIdeal, buyerMax }, slots.length);
+      for (const change of fitted.changes) {
+        setValue(`settings.${change.field}`, change.to, { shouldDirty: true });
+        clearErrors(`settings.${change.field}`);
+      }
+      toast(`Built ${slots.length} slots from ${formatMinutes(slots[0].startMinutes)} to ${formatMinutes(slots[slots.length - 1].endMinutes)}.`, {
+        description: describeTargetChanges(fitted.changes) ?? undefined,
+      });
     } catch (error) {
       toast.error(error instanceof RangeError ? "Those numbers run past midnight. Lower the count, duration, or gap." : "Could not build slots.");
     }
@@ -395,9 +422,9 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
                 </TableBody>
               </Table>
             </div>
-            {slotsError ? (
+            {slotsError || slotCountError ? (
               <p role="alert" className="text-sm text-destructive">
-                {slotsError}
+                {slotCountError ?? slotsError}
               </p>
             ) : null}
           </CardContent>
@@ -483,6 +510,20 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
           </CardContent>
         </Card>
       </fieldset>
+
+      <ConfirmDialog
+        open={resetPrompt !== null}
+        onOpenChange={(open) => {
+          if (!open) setResetPrompt(null);
+        }}
+        title="Clear the active schedule?"
+        description={resetPrompt?.message}
+        confirmLabel="Save and clear schedule"
+        destructive
+        onConfirm={async () => {
+          if (resetPrompt) await save(resetPrompt.payload, resetPrompt.values, true);
+        }}
+      />
 
       {!readOnly ? (
         <div className="flex justify-end">

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import {
   admins,
@@ -9,7 +9,9 @@ import {
   type EmailDeliveryEvent,
   type EmailMessageStatus,
 } from "@/db/schema";
+import { compareNames } from "@/lib/names";
 import { recipientKey } from "@/lib/schemas/email";
+import { isResendable } from "./campaigns";
 import { listAudienceContacts } from "./recipients";
 import { scheduleChangeState, type ScheduleChangeState } from "./schedule-hash";
 
@@ -109,6 +111,8 @@ export type CampaignDetail = {
   sentByName: string | null;
   messages: DeliveryRow[];
   stats: StatusCounts;
+  /** Recipients "Resend to bounced" would send to, before leaving out revoked links. */
+  resendable: number;
 };
 
 function lastOf(events: EmailDeliveryEvent[]): EmailDeliveryEvent | null {
@@ -157,12 +161,15 @@ export async function getCampaign(campaignId: string, db: Db = getDb()): Promise
         attempts: attempts.get(key) ?? 1,
       };
     })
-    .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }));
+    .sort((a, b) => compareNames(a.name, b.name));
+  // A failed send may have stopped before writing everyone's message.
+  const neverMessaged = campaign.status === "failed" ? Math.max(0, (campaign.recipientCount ?? 0) - latest.length) : 0;
   return {
     campaign,
     sentByName: sender[0]?.name ?? null,
     messages,
     stats: countByCampaign(latest).get(campaignId) ?? emptyCounts(),
+    resendable: latest.filter(isResendable).length + neverMessaged,
   };
 }
 
@@ -200,16 +207,24 @@ export type EmailSummary = {
   changed: number;
   /** At least one campaign reached someone. */
   hasSent: boolean;
+  /** When the newest campaign that really sent went out (drafts, failed sends, and test sends excluded). */
+  lastSentAt: Date | null;
 };
 
 export async function getEmailSummary(eventId: string, db: Db = getDb()): Promise<EmailSummary> {
-  const [state, [sentCampaign]] = await Promise.all([
+  const [state, [lastSent]] = await Promise.all([
     scheduleChangeState(db, eventId),
     db
-      .select({ id: emailCampaigns.id })
+      .select({ sentAt: emailCampaigns.sentAt })
       .from(emailCampaigns)
-      .where(and(eq(emailCampaigns.eventId, eventId), inArray(emailCampaigns.status, ["sent"])))
+      .where(and(eq(emailCampaigns.eventId, eventId), eq(emailCampaigns.status, "sent")))
+      .orderBy(desc(emailCampaigns.sentAt))
       .limit(1),
   ]);
-  return { changed: state.changed.size, hasSent: sentCampaign !== undefined || state.emailed.size > 0 };
+  const lastSentAt = lastSent?.sentAt ?? null;
+  return {
+    changed: state.changed.size,
+    hasSent: lastSentAt !== null || state.emailed.size > 0,
+    lastSentAt,
+  };
 }

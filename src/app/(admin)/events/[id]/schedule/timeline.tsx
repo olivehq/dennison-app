@@ -6,6 +6,7 @@ import { cn } from "cn";
 import {
   AppointmentBlock,
   MutualIcon,
+  NEEDS_FILLING_CLASS,
   strengthLabel,
   treatmentClass,
   TYPE_LABEL,
@@ -18,8 +19,10 @@ import {
   appointmentsOf,
   healthOf,
   healthText,
+  isBelowTarget,
   personLabel,
   personMatches,
+  withdrawnNote,
   type Person,
   type ScheduleModel,
   type SupplierPerson,
@@ -52,7 +55,6 @@ type TimelineProps = {
   free: number;
   selectedId: string | null;
   focusSlot: number | null;
-  liveSlot: number | null;
   editing: boolean;
   now: number;
   nowText: string;
@@ -240,7 +242,6 @@ export function Timeline(props: TimelineProps) {
             query={props.query}
             selectedId={props.selectedId}
             focusSlot={props.focusSlot}
-            liveSlot={props.liveSlot}
             editing={props.editing}
             onSelect={props.onSelect}
             onOpenSlot={props.onOpenSlot}
@@ -273,129 +274,156 @@ type LanesProps = {
   query: string;
   selectedId: string | null;
   focusSlot: number | null;
-  liveSlot: number | null;
   editing: boolean;
   onSelect: (personId: string, slot?: number) => void;
   onOpenSlot: (personId: string, slot: number) => void;
 };
 
 /** The lane rows. Memoised so the moving now line does not re-render 500 blocks every minute. */
-const Lanes = React.memo(function Lanes({
+const Lanes = React.memo(function Lanes({ lanes, selectedId, focusSlot, ...rest }: LanesProps) {
+  return (
+    <>
+      {lanes.map((p) => {
+        const selected = selectedId === p.id;
+        // Only the selected lane gets a focus slot, so a click re-renders two lanes, not all of them.
+        return <Lane key={p.id} person={p} selected={selected} focusSlot={selected ? focusSlot : null} {...rest} />;
+      })}
+    </>
+  );
+});
+
+type LaneProps = Omit<LanesProps, "lanes" | "selectedId"> & {
+  person: Person;
+  selected: boolean;
+};
+
+/** One lane. Memoised so selecting a person re-renders only the old and new selected lanes. */
+const Lane = React.memo(function Lane({
+  person: p,
   mode,
-  lanes,
   model,
   geom,
   topN,
   targets,
   query,
-  selectedId,
+  selected,
   focusSlot,
-  liveSlot,
   editing,
   onSelect,
   onOpenSlot,
-}: LanesProps) {
+}: LaneProps) {
+  const health = healthOf(p, targets);
+  const label = personLabel(p);
+  const mine = appointmentsOf(model, p.id);
+  const laneHit = query !== "" && personMatches(p, query);
+  const laneName = `${p.kind === "supplier" ? `Desk ${p.desk ?? "not set"}, ${p.name}` : p.name}${p.withdrawn ? ", withdrawn" : ""}`;
+  // Open slots in a lane under its target are holes to fill, drawn in the destructive treatment.
+  const short = isBelowTarget(p, targets);
   return (
-    <>
-      {lanes.map((p) => {
-        const health = healthOf(p, targets);
-        const label = personLabel(p);
-        const mine = appointmentsOf(model, p.id);
-        const laneHit = query !== "" && personMatches(p, query);
-        const laneName = p.kind === "supplier" ? `Desk ${p.desk ?? "not set"}, ${p.name}` : p.name;
-        return (
-          <div
-            key={p.id}
-            role="group"
-            aria-label={laneName}
-            className="grid h-[50px] grid-cols-[var(--label-w)_1fr] border-b border-border/75"
+    <div
+      key={p.id}
+      role="group"
+      aria-label={laneName}
+      className="grid h-[50px] grid-cols-[var(--label-w)_1fr] border-b border-border/75"
+    >
+      <button
+        type="button"
+        onClick={() => onSelect(p.id)}
+        aria-label={`${laneName}${p.kind === "supplier" ? `, ${TYPE_LABEL[p.type]}` : ""}. ${healthText(p, targets)}. Open schedule`}
+        aria-pressed={selected}
+        className={cn(
+          "sticky left-0 z-10 flex min-w-0 items-center gap-1.5 border-r bg-card pr-1.5 pl-2 text-left outline-none hover:bg-accent focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:gap-2.5 sm:pr-2.5 sm:pl-3",
+          healthInset(health),
+          selected && "bg-accent",
+        )}
+      >
+        {p.kind === "supplier" ? (
+          <span className="inline-grid h-5 min-w-[22px] shrink-0 place-items-center rounded-sm bg-secondary px-1 font-display text-xs font-bold text-secondary-foreground tabular-nums sm:h-6 sm:min-w-7 sm:text-[13px]">
+            {p.desk ?? "–"}
+          </span>
+        ) : null}
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              "line-clamp-2 text-xs leading-tight font-semibold sm:block sm:truncate sm:text-[13.5px]",
+              p.withdrawn && "text-destructive",
+            )}
           >
-            <button
-              type="button"
-              onClick={() => onSelect(p.id)}
-              aria-label={`${laneName}${p.kind === "supplier" ? `, ${TYPE_LABEL[p.type]}` : ""}. ${healthText(p, targets)}. Open schedule`}
-              aria-pressed={selectedId === p.id}
-              className={cn(
-                "sticky left-0 z-10 flex min-w-0 items-center gap-1.5 border-r bg-card pr-1.5 pl-2 text-left outline-none hover:bg-accent focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset sm:gap-2.5 sm:pr-2.5 sm:pl-3",
-                healthInset(health),
-                selectedId === p.id && "bg-accent",
-              )}
-            >
-              {p.kind === "supplier" ? (
-                <span className="inline-grid h-5 min-w-[22px] shrink-0 place-items-center rounded-sm bg-secondary px-1 font-display text-xs font-bold text-secondary-foreground tabular-nums sm:h-6 sm:min-w-7 sm:text-[13px]">
-                  {p.desk ?? "–"}
-                </span>
-              ) : null}
-              <span className="min-w-0 flex-1">
-                <span className="line-clamp-2 text-xs leading-tight font-semibold sm:block sm:truncate sm:text-[13.5px]">
-                  {label.primary}
-                </span>
-                {p.kind === "supplier" ? (
-                  <span className="mt-0.5 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-                    <span aria-hidden="true" className={cn("size-2 rounded-[2px]", typeDotClass(p.type))} />
-                    {TYPE_LABEL[p.type]}
-                    {p.withdrawn ? ", withdrawn" : null}
-                  </span>
-                ) : label.secondary || p.withdrawn ? (
-                  <span className="mt-0.5 hidden truncate text-xs text-muted-foreground sm:block">
-                    {[label.secondary, p.withdrawn ? "Withdrawn" : null].filter(Boolean).join(", ")}
-                  </span>
-                ) : null}
-              </span>
-              <CountChip count={p.count} health={health} />
-            </button>
-            <div className="relative">
-              {geom.map((s) => {
-                const a = mine.get(s.slot);
-                const style = { left: `${s.left}%`, width: `${s.width}%` };
-                if (!a) {
-                  const openLabel = `Open slot ${s.slot}, ${s.start} to ${s.end}, for ${label.primary}`;
-                  return editing ? (
-                    <button
-                      key={s.slot}
-                      type="button"
-                      onClick={() => onOpenSlot(p.id, s.slot)}
-                      aria-label={`${openLabel}. Fill it`}
-                      className="absolute inset-y-[5px] flex items-center justify-center gap-1 rounded-[3px] border-[1.5px] border-dashed border-open bg-card/60 text-[11.5px] font-semibold text-muted-foreground outline-none hover:border-foreground hover:bg-card hover:text-foreground focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                      style={style}
-                    >
-                      <PlusIcon aria-hidden="true" className="size-3" />
-                      <span className="max-sm:sr-only">Open</span>
-                    </button>
-                  ) : (
-                    <div
-                      key={s.slot}
-                      role="img"
-                      aria-label={openLabel}
-                      className="absolute inset-y-[5px] flex items-center justify-center rounded-[3px] border-[1.5px] border-dashed border-open text-[11.5px] font-semibold text-muted-foreground"
-                      style={style}
-                    >
-                      <span className="max-sm:sr-only">Open</span>
-                    </div>
-                  );
-                }
-                return (
-                  <TimelineBlock
-                    key={s.slot}
-                    appointment={a}
-                    slot={s}
-                    style={style}
-                    mode={mode}
-                    model={model}
-                    topN={topN}
-                    selected={selectedId === p.id && focusSlot === s.slot}
-                    live={liveSlot === s.slot}
-                    dim={query !== "" && !laneHit ? !counterpartMatches(model, a, mode, query) : false}
-                    hit={query !== "" && !laneHit && counterpartMatches(model, a, mode, query)}
-                    onClick={() => onSelect(p.id, s.slot)}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-    </>
+            {label.primary}
+          </span>
+          {p.kind === "supplier" ? (
+            <span className="mt-0.5 hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+              <span aria-hidden="true" className={cn("size-2 rounded-[2px]", typeDotClass(p.type))} />
+              {TYPE_LABEL[p.type]}
+              {p.withdrawn ? <span className="font-semibold text-destructive">Withdrawn</span> : null}
+            </span>
+          ) : label.secondary || p.withdrawn ? (
+            <span className="mt-0.5 hidden truncate text-xs text-muted-foreground sm:block">
+              {p.withdrawn ? <span className="font-semibold text-destructive">Withdrawn</span> : null}
+              {p.withdrawn && label.secondary ? ", " : null}
+              {label.secondary}
+            </span>
+          ) : null}
+        </span>
+        <CountChip count={p.count} health={health} />
+      </button>
+      <div className="relative">
+        {geom.map((s) => {
+          const a = mine.get(s.slot);
+          const style = { left: `${s.left}%`, width: `${s.width}%` };
+          if (!a) {
+            const openLabel = `Open slot ${s.slot}, ${s.start} to ${s.end}, for ${label.primary}${short ? ". Needs filling" : ""}`;
+            const action = p.withdrawn ? "Open schedule" : p.kind === "supplier" ? "Add a buyer" : "Add a supplier";
+            return editing ? (
+              <button
+                key={s.slot}
+                type="button"
+                onClick={() => onOpenSlot(p.id, s.slot)}
+                aria-label={`${openLabel}. ${action}`}
+                data-needs-filling={short || undefined}
+                className={cn(
+                  "absolute inset-y-[5px] flex items-center justify-center gap-1 rounded-[3px] text-[11.5px] font-semibold text-muted-foreground outline-none hover:border-foreground hover:bg-card hover:text-foreground focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+                  short ? cn(NEEDS_FILLING_CLASS, "text-destructive") : "border-[1.5px] border-dashed border-open bg-card/60",
+                )}
+                style={style}
+              >
+                <PlusIcon aria-hidden="true" className="size-3" />
+                <span className="max-sm:sr-only">Open</span>
+              </button>
+            ) : (
+              <div
+                key={s.slot}
+                role="img"
+                aria-label={openLabel}
+                data-needs-filling={short || undefined}
+                className={cn(
+                  "absolute inset-y-[5px] flex items-center justify-center rounded-[3px] text-[11.5px] font-semibold text-muted-foreground",
+                  short ? cn(NEEDS_FILLING_CLASS, "text-destructive") : "border-[1.5px] border-dashed border-open",
+                )}
+                style={style}
+              >
+                <span className="max-sm:sr-only">Open</span>
+              </div>
+            );
+          }
+          return (
+            <TimelineBlock
+              key={s.slot}
+              appointment={a}
+              slot={s}
+              style={style}
+              mode={mode}
+              model={model}
+              topN={topN}
+              selected={selected && focusSlot === s.slot}
+              dim={query !== "" && !laneHit ? !counterpartMatches(model, a, mode, query) : false}
+              hit={query !== "" && !laneHit && counterpartMatches(model, a, mode, query)}
+              onClick={() => onSelect(p.id, s.slot)}
+            />
+          );
+        })}
+      </div>
+    </div>
   );
 });
 
@@ -412,7 +440,6 @@ function TimelineBlock({
   model,
   topN,
   selected,
-  live,
   dim,
   hit,
   onClick,
@@ -424,18 +451,36 @@ function TimelineBlock({
   model: ScheduleModel;
   topN: number;
   selected: boolean;
-  live: boolean;
   dim: boolean;
   hit: boolean;
   onClick: () => void;
 }) {
+  // Closed on click, and kept closed until the pointer or focus leaves the block.
+  const [cardOpen, setCardOpen] = React.useState(false);
+  const clicked = React.useRef(false);
   const supplier = model.personById.get(a.supplierId) as SupplierPerson | undefined;
   const buyer = model.personById.get(a.buyerId);
   if (!supplier || !buyer) return null;
   const buyerLabel = personLabel(buyer);
+  const note = a.counterpartWithdrawn ? withdrawnNote(model, a) : undefined;
   return (
-    <HoverCard openDelay={280} closeDelay={60}>
-      <HoverCardTrigger asChild>
+    <HoverCard
+      open={cardOpen}
+      onOpenChange={(open) => {
+        if (!open || !clicked.current) setCardOpen(open);
+      }}
+      openDelay={280}
+      closeDelay={60}
+    >
+      <HoverCardTrigger
+        asChild
+        onPointerLeave={() => {
+          clicked.current = false;
+        }}
+        onBlur={() => {
+          clicked.current = false;
+        }}
+      >
         <AppointmentBlock
           appointment={a}
           supplierName={supplier.name}
@@ -446,16 +491,15 @@ function TimelineBlock({
           laneType={mode}
           selected={selected}
           timeLabel={`${slot.start} to ${slot.end}`}
-          onClick={onClick}
+          withdrawnNote={note}
+          onClick={() => {
+            // The sheet opens on click. A hover card left on top of it would take the first Esc.
+            clicked.current = true;
+            setCardOpen(false);
+            onClick();
+          }}
           style={style}
-          title={a.counterpartWithdrawn ? "Someone in this meeting withdrew. Replace or remove it before locking." : undefined}
-          data-withdrawn={a.counterpartWithdrawn || undefined}
-          className={cn(
-            live && !selected && "outline-2 outline-offset-1 outline-now",
-            dim && "opacity-25",
-            hit && "outline-2 outline-offset-1 outline-foreground",
-            a.counterpartWithdrawn && "border-l-4 border-l-destructive",
-          )}
+          className={cn(dim && "opacity-25", hit && "outline-2 outline-offset-1 outline-foreground")}
         />
       </HoverCardTrigger>
       <HoverCardContent align="start" className="w-80">
@@ -492,15 +536,10 @@ function TimelineBlock({
             <p className="text-muted-foreground">{strengthLabel(a.strength, topN)}</p>
           </div>
         </div>
-        {a.counterpartWithdrawn ? (
-          <p className="mt-2 border-t pt-2 text-xs font-semibold text-destructive">
-            {[supplier.withdrawn ? supplier.name : null, buyer.withdrawn ? buyerLabel.primary : null].filter(Boolean).join(" and ")} withdrew.
-            Replace or remove this meeting before locking.
-          </p>
-        ) : null}
+        {note ? <p className="mt-2 border-t pt-2 text-xs font-semibold text-destructive">{note}</p> : null}
         {a.pinned || a.source === "manual" ? (
           <p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
-            {[a.pinned ? "Pinned, kept by the next re-run" : null, a.source === "manual" ? "Placed by hand" : null]
+            {[a.pinned ? "Pinned, marked as reviewed" : null, a.source === "manual" ? "Placed by hand" : null]
               .filter(Boolean)
               .join(". ")}
           </p>

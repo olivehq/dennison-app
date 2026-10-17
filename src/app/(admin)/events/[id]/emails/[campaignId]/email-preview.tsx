@@ -1,30 +1,21 @@
-"use client";
-
-import * as React from "react";
 import { cn } from "cn";
-import { sanitizeEmailHtml } from "./sanitize-email-html";
-
-const noop = () => () => {};
+import { inertLinks } from "./inert-links";
 
 /**
- * Email HTML shown in the page, sanitized first. Renders nothing on the
- * server, where there is no DOMParser.
+ * Email HTML shown in the page. The caller passes HTML that the server already
+ * ran through `sanitizeEmailHtml` (the preview action does, and so does the
+ * sent-campaign page); this component does not clean it again, because a
+ * merged schedule link is http in development and would be stripped.
+ * Links show as links but can't be opened (`inertLinks`).
  */
-export function EmailPreview({ html, className }: { html: string; className?: string }) {
-  const isClient = React.useSyncExternalStore(
-    noop,
-    () => true,
-    () => false,
-  );
-  const safe = React.useMemo(() => (isClient ? sanitizeEmailHtml(html) : ""), [html, isClient]);
+export function EmailPreview({ sanitizedHtml, className }: { sanitizedHtml: string; className?: string }) {
   return (
     <div
       className={cn(
-        "text-sm leading-relaxed break-words [&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5",
+        "overflow-x-auto text-sm leading-relaxed break-words [&_a]:text-primary [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_img]:max-w-full [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5",
         className,
       )}
-      // Sanitized above: formatting tags and http, https, and mailto links only.
-      dangerouslySetInnerHTML={{ __html: safe }}
+      dangerouslySetInnerHTML={{ __html: inertLinks(sanitizedHtml) }}
     />
   );
 }

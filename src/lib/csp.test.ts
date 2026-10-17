@@ -7,11 +7,23 @@ describe("buildCsp", () => {
     expect(csp).toContain("script-src 'self' 'nonce-abc' 'strict-dynamic';");
     expect(csp).not.toContain("unsafe-eval");
     expect(csp).toContain("style-src 'self' 'unsafe-inline'");
-    expect(csp).toContain("img-src 'self' data: blob:");
+    expect(csp).toContain("img-src 'self' data: blob: https:;");
     expect(csp).toContain("connect-src 'self' https://o1.ingest.us.sentry.io;");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("base-uri 'self'");
     expect(csp).toContain("form-action 'self'");
+  });
+
+  it("allows https images only, and loosens nothing else", () => {
+    const csp = buildCsp({ nonce: "abc", isDev: false });
+    const directive = (name: string) => csp.split("; ").find((d) => d.startsWith(`${name} `));
+    expect(directive("img-src")).toBe("img-src 'self' data: blob: https:");
+    expect(directive("img-src")).not.toMatch(/http:|\*/);
+    expect(directive("script-src")).toBe("script-src 'self' 'nonce-abc' 'strict-dynamic'");
+    expect(directive("connect-src")).toBe("connect-src 'self'");
+    expect(directive("default-src")).toBe("default-src 'self'");
+    expect(directive("object-src")).toBe("object-src 'none'");
+    expect(csp).not.toContain("frame-src");
   });
 
   it("adds 'unsafe-eval' only in development and ignores a malformed DSN", () => {

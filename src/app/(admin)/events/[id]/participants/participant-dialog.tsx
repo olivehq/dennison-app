@@ -95,7 +95,6 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
         : `${values.firstName} ${values.lastName} added.`,
     );
     onOpenChange(false);
-    router.refresh();
   };
 
   return (

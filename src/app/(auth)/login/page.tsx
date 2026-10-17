@@ -6,7 +6,7 @@ import { getSession } from "@/server/auth/session";
 import { safeNextPath } from "../auth-errors";
 import { LoginForm } from "./login-form";
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string }> }) {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
   const [session, params] = await Promise.all([getSession(), searchParams]);
   const next = safeNextPath(params.next);
   if (session) redirect(next);

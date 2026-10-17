@@ -26,7 +26,11 @@ type ConfirmDialogProps = {
   destructive?: boolean;
   /** When set, the user has to type this word before the confirm button enables. */
   confirmWord?: string;
-  /** Runs when confirmed. The dialog stays open with a spinner until it settles, then closes. */
+  /**
+   * Runs when confirmed. The dialog stays open with a spinner until it settles,
+   * then closes. If it throws, the dialog stays open and shows an error so the
+   * user can try again or cancel.
+   */
   onConfirm: () => void | Promise<void>;
   /** Uncontrolled: pass a trigger element. Controlled: pass open and onOpenChange. */
   trigger?: React.ReactElement;
@@ -48,12 +52,20 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [typed, setTyped] = React.useState("");
   const [pending, setPending] = React.useState(false);
+  const [failed, setFailed] = React.useState(false);
+  // Uncontrolled (trigger only): the dialog owns its open state, so it can close itself once the work settles.
+  const [innerOpen, setInnerOpen] = React.useState(false);
+  const isOpen = open ?? innerOpen;
   const inputId = React.useId();
 
   const ready = !confirmWord || typed.trim() === confirmWord;
 
   const handleOpenChange = (next: boolean) => {
-    if (!next) setTyped("");
+    if (!next) {
+      setTyped("");
+      setFailed(false);
+    }
+    setInnerOpen(next);
     onOpenChange?.(next);
   };
 
@@ -62,16 +74,20 @@ export function ConfirmDialog({
     event.preventDefault();
     if (!ready || pending) return;
     setPending(true);
+    setFailed(false);
     try {
       await onConfirm();
       handleOpenChange(false);
+    } catch (error) {
+      console.error(error);
+      setFailed(true);
     } finally {
       setPending(false);
     }
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={handleOpenChange}>
+    <AlertDialog open={isOpen} onOpenChange={handleOpenChange}>
       {trigger ? <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger> : null}
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -93,6 +109,11 @@ export function ConfirmDialog({
             />
             <FieldDescription>This cannot be undone.</FieldDescription>
           </Field>
+        ) : null}
+        {failed ? (
+          <p role="alert" className="text-sm text-destructive">
+            That didn&apos;t finish. Reload the page to see what was saved, then try again if you need to.
+          </p>
         ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>

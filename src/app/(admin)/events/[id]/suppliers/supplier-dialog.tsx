@@ -124,7 +124,6 @@ export function SupplierDialog({ eventId, supplier, open, onOpenChange }: Suppli
         : `${values.name} added.`,
     );
     onOpenChange(false);
-    router.refresh();
   };
 
   const contactFields = (key: "adminContact" | "attendeeContact", legend: string, hint: string) => {

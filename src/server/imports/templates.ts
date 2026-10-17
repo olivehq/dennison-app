@@ -123,7 +123,8 @@ export const rankingListColumns = {
   choice: {
     header: "CHOICE #1 ... CHOICE #N",
     required: true,
-    description: "One name per cell, in rank order. Missing names are unranked, not rejected (D2).",
+    description:
+      "One name per cell, in rank order. Missing names are unranked, not rejected (D2). In the supplier file a cell can also hold the buyer's email or company.",
     aliases: [],
   },
 } as const satisfies Record<string, TemplateColumn>;
@@ -163,7 +164,8 @@ export const templates: Record<ImportKind, ImportTemplate> = {
   supplier_rankings: {
     kind: "supplier_rankings",
     title: "Supplier rankings of buyers",
-    description: "eShow export: one row per supplier, CHOICE #n columns name participants.",
+    description:
+      "eShow export: one row per supplier, CHOICE #n columns name participants. A choice can be the buyer's email (matched first), name, or company. Use the email when two buyers share a name or company.",
     formats: rankingFormats,
     columns: Object.values(rankingListColumns),
   },

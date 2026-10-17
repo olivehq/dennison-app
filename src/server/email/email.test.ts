@@ -1,27 +1,44 @@
 import { createHmac } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
-import { auditEvents, emailCampaigns, emailMessages, events, participants, type EmailCampaign } from "@/db/schema";
+import {
+  accessTokens,
+  appointments,
+  auditEvents,
+  emailCampaigns,
+  emailMessages,
+  events,
+  participants,
+  suppliers,
+  type EmailCampaign,
+} from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
+import { recordAudit } from "@/server/audit/audit";
 import { getEvent } from "@/server/events/queries";
-import { clearLoggedEmails, getLoggedEmails, sendBatch } from "@/lib/email/adapter";
+import { raceBeforeTransaction, recordQueries } from "@/server/events/test-race";
+import { clearLoggedEmails, getLoggedEmails, isEmailConfigured, sendBatch, sendEmail } from "@/lib/email/adapter";
 import { campaignFieldsSchema, recipientKey, type CampaignFieldsInput } from "@/lib/schemas/email";
 import { getActiveRun } from "@/server/matching/queries";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { replaceAppointment, swapCandidates } from "@/server/schedule/edits";
 import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
-import { verifyToken } from "@/server/tokens/tokens";
+import { decryptToken } from "@/lib/tokens";
+import { revokeToken, verifyToken } from "@/server/tokens/tokens";
 import {
   createCampaign,
   duplicateCampaign,
   NOT_LOCKED_MESSAGE,
+  REGENERATE_HINT,
   previewCampaign,
   PROVIDER_ID_WRITE_ATTEMPTS,
   resendToBounced,
   sendCampaign,
   sendTest,
+  TEST_DRAFT_ONLY,
+  TEST_EXAMPLE_SENDER_MESSAGE,
+  TEST_NO_API_KEY_MESSAGE,
   TEST_SEND_ADMINS_ONLY,
   updateCampaign,
 } from "./campaigns";
@@ -38,12 +55,27 @@ import { handleResendWebhook, recordDeliveryEvent } from "./webhook";
 
 vi.mock("@/lib/email/adapter", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/email/adapter")>();
-  return { ...actual, sendBatch: vi.fn(actual.sendBatch) };
+  return {
+    ...actual,
+    sendBatch: vi.fn(actual.sendBatch),
+    sendEmail: vi.fn(actual.sendEmail),
+    isEmailConfigured: vi.fn(actual.isEmailConfigured),
+  };
 });
 
 vi.mock("@/server/events/queries", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/server/events/queries")>();
   return { ...actual, getEvent: vi.fn(actual.getEvent) };
+});
+
+vi.mock("@/server/audit/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/audit/audit")>();
+  return { ...actual, recordAudit: vi.fn(actual.recordAudit) };
+});
+
+vi.mock("@/lib/tokens", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tokens")>();
+  return { ...actual, decryptToken: vi.fn(actual.decryptToken) };
 });
 
 vi.mock("./schedule-hash", async (importOriginal) => {
@@ -168,6 +200,162 @@ describe("before lock", () => {
   });
 });
 
+describe("test sends", () => {
+  const toAdmin = (campaignId: string) => ({ campaignId, toEmail: "admin@example.com", adminId: seeded.adminId });
+
+  async function withSender(campaign: EmailCampaign, fromEmail: string) {
+    const saved = await updateCampaign(db, {
+      campaignId: campaign.id,
+      adminId: seeded.adminId,
+      fields: fieldsOf(campaign, { fromEmail }),
+    });
+    if (!saved.ok) throw new Error(saved.error.message);
+    return saved.data;
+  }
+
+  const testSentAt = async (id: string) =>
+    (await db.select({ at: emailCampaigns.testSentAt }).from(emailCampaigns).where(eq(emailCampaigns.id, id)))[0].at;
+
+  afterEach(() => {
+    vi.mocked(isEmailConfigured).mockReset();
+    vi.mocked(sendEmail).mockReset();
+  });
+
+  it("fails loudly in production without RESEND_API_KEY, and sends nothing", async () => {
+    const draft = await withSender(await newDraft(), "schedule@da-events.com");
+    vi.mocked(isEmailConfigured).mockReturnValue(false);
+    const result = await sendTest(db, toAdmin(draft.id), { isProduction: true });
+    expect(!result.ok && result.error).toMatchObject({ code: "internal", message: TEST_NO_API_KEY_MESSAGE });
+    expect(TEST_NO_API_KEY_MESSAGE).toContain("RESEND_API_KEY");
+    expect(TEST_NO_API_KEY_MESSAGE).toContain("Vercel");
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(await testSentAt(draft.id)).toBeNull();
+  });
+
+  it("fails loudly in production while the sender is still on example.com", async () => {
+    const draft = await withSender(await newDraft(), "schedule@example.com");
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    const result = await sendTest(db, toAdmin(draft.id), { isProduction: true });
+    expect(!result.ok && result.error).toMatchObject({ code: "internal", message: TEST_EXAMPLE_SENDER_MESSAGE });
+    expect(TEST_EXAMPLE_SENDER_MESSAGE).toContain("Resend");
+    expect(TEST_EXAMPLE_SENDER_MESSAGE).toContain("EMAIL_FROM");
+    expect(sendEmail).not.toHaveBeenCalled();
+    // Subdomains of the reserved names count too.
+    const sub = await withSender(draft, "schedule@mail.example.org");
+    const again = await sendTest(db, toAdmin(sub.id), { isProduction: true });
+    expect(!again.ok && again.error.message).toBe(TEST_EXAMPLE_SENDER_MESSAGE);
+  });
+
+  it("sends through the adapter in production when configured, and says it was delivered", async () => {
+    const draft = await withSender(await newDraft(), "schedule@da-events.com");
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    vi.mocked(sendEmail).mockResolvedValue({ id: "re_123" });
+    const result = await sendTest(db, toAdmin(draft.id), { isProduction: true });
+    expect(result).toMatchObject({ ok: true, data: { toEmail: "admin@example.com", delivered: true } });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendEmail).mock.calls[0][0]).toMatchObject({
+      to: "admin@example.com",
+      from: expect.stringContaining("<schedule@da-events.com>"),
+      replyTo: "admin@example.com",
+    });
+    expect(await testSentAt(draft.id)).not.toBeNull();
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, draft.id), eq(auditEvents.action, "email.test")));
+    expect(audit.after).toMatchObject({ toEmail: "admin@example.com", delivered: true });
+  });
+
+  it("outside production the logger may take it, but the result says nothing was delivered", async () => {
+    const draft = await newDraft();
+    vi.mocked(isEmailConfigured).mockReturnValue(false);
+    // The fake adapter stands in for the logger.
+    vi.mocked(sendEmail).mockResolvedValue({ id: "logged-1" });
+    const result = await sendTest(db, toAdmin(draft.id), { isProduction: false });
+    expect(result).toMatchObject({ ok: true, data: { delivered: false } });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(await testSentAt(draft.id)).toBeNull();
+  });
+
+  it("shows Resend's message when it refuses, with a hint for a domain problem", async () => {
+    const draft = await withSender(await newDraft(), "schedule@da-events.com");
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    vi.mocked(sendEmail).mockRejectedValue(new Error("Resend rejected the email: The da-events.com domain is not verified."));
+    const domain = await sendTest(db, toAdmin(draft.id), { isProduction: true });
+    expect(!domain.ok && domain.error.message).toContain("The da-events.com domain is not verified.");
+    expect(!domain.ok && domain.error.message).toContain("Verify the sending domain in Resend");
+    vi.mocked(sendEmail).mockRejectedValue(
+      new Error("Resend rejected the email: You can only send testing emails to your own address."),
+    );
+    const other = await sendTest(db, toAdmin(draft.id), { isProduction: true });
+    expect(!other.ok && other.error.message).toBe(
+      "The test email was not sent: Resend rejected the email: You can only send testing emails to your own address.",
+    );
+    expect(await testSentAt(draft.id)).toBeNull();
+  });
+});
+
+describe("body sanitizing", () => {
+  const hostile =
+    '<p onclick="x">Hi {{first_name}}</p><script>alert(1)</script><img src="http://insecure.example.com/a.png"><a href="javascript:alert(1)">bad</a><table width="600" style="background-color: #fff; position: fixed"><tr><td style="padding: 8px; background-color: url(https://evil.example.com/x)">Cell</td></tr></table><img src="https://cdn.example.com/logo.png" alt="Logo" width="100"><a href="{{schedule_link}}">Open</a>';
+  const unsafe = /<script|onclick|javascript:|insecure\.example|position|evil\.example/i;
+
+  it("cleans the body when a campaign is saved and keeps tables, https images, and merge fields", async () => {
+    const draft = await newDraft();
+    const saved = await updateCampaign(db, {
+      campaignId: draft.id,
+      adminId: seeded.adminId,
+      fields: fieldsOf(draft, { htmlBody: hostile }),
+    });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    const stored = saved.data.htmlBody;
+    expect(stored).not.toMatch(unsafe);
+    expect(stored).toContain("Hi {{first_name}}");
+    expect(stored).toContain('<table width="600" style="background-color: #fff">');
+    expect(stored).toContain("<td>Cell</td>".replace("<td>", '<td style="padding: 8px">'));
+    expect(stored).toContain('<img src="https://cdn.example.com/logo.png" alt="Logo" width="100">');
+    expect(stored).toContain('href="{{schedule_link}}"');
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.id));
+    expect(row.htmlBody).toBe(stored);
+  });
+
+  it("cleans again when rendering, so an old unsanitized row or unsaved preview text is safe", async () => {
+    const draft = await newDraft();
+    await db.update(emailCampaigns).set({ htmlBody: hostile }).where(eq(emailCampaigns.id, draft.id));
+    const stored = await previewCampaign(db, { campaignId: draft.id });
+    expect(stored.ok && stored.data.html).not.toMatch(unsafe);
+    const unsaved = await previewCampaign(db, {
+      campaignId: draft.id,
+      htmlBody: '<p>ok</p><iframe src="https://evil.example.com"></iframe>',
+    });
+    expect(unsaved.ok && unsaved.data.html).toContain("<p>ok</p>");
+    expect(unsaved.ok && unsaved.data.html).not.toContain("iframe");
+
+    vi.mocked(sendEmail).mockResolvedValue({ id: "re_1" });
+    const test = await sendTest(db, { campaignId: draft.id, toEmail: "admin@example.com", adminId: seeded.adminId });
+    expect(test.ok).toBe(true);
+    const html = vi.mocked(sendEmail).mock.calls[0][0].html;
+    expect(html).not.toMatch(unsafe);
+    expect(html).toContain("<table");
+    vi.mocked(sendEmail).mockReset();
+  });
+
+  it("still links the schedule link merge field", async () => {
+    const draft = await newDraft();
+    const key = recipientKey("buyer", seeded.buyers[0].id);
+    const preview = await previewCampaign(db, {
+      campaignId: draft.id,
+      recipient: key,
+      htmlBody: '<p>{{schedule_link}}</p><p><a href="{{schedule_link}}">Mine</a></p><p>{{first_name}}</p>',
+    });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.data.html).toMatch(/<p><a href="http[^"]+\/s\/[^"]+">http[^<]+<\/a><\/p>/);
+    expect(preview.data.html).toMatch(/<a href="http[^"]+\/s\/[^"]+" target="_blank" rel="noopener noreferrer">Mine<\/a>/);
+  });
+});
+
 describe("audiences and links", () => {
   beforeAll(async () => {
     const locked = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
@@ -212,6 +400,28 @@ describe("audiences and links", () => {
     }
     expect(new Set(bulk.values()).size).toBeGreaterThan(1);
   });
+
+  it("blanks meetings with a withdrawn person in bulk, as the participant page does", async () => {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const [meeting] = await db.select().from(appointments).where(eq(appointments.eventId, other.eventId)).limit(1);
+    const before = await scheduleHashesForEvent(db, other.eventId);
+    // Withdrawn after matching: their meetings stay in the schedule until an admin edits it.
+    await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, meeting.buyerId));
+    const otherSupplier = other.suppliers.find((x) => x.id !== meeting.supplierId)!;
+    await db.update(suppliers).set({ status: "withdrawn" }).where(eq(suppliers.id, otherSupplier.id));
+
+    const bulk = await scheduleHashesForEvent(db, other.eventId);
+    for (const b of other.buyers) {
+      expect(await scheduleHashFor(db, other.eventId, "buyer", b.id)).toBe(bulk.get(`buyer:${b.id}`));
+    }
+    for (const x of other.suppliers) {
+      expect(await scheduleHashFor(db, other.eventId, "supplier_admin", x.id)).toBe(bulk.get(`supplier:${x.id}`));
+    }
+    // The supplier who met the withdrawn buyer now has an open slot there.
+    expect(bulk.get(`supplier:${meeting.supplierId}`)).not.toBe(before.get(`supplier:${meeting.supplierId}`));
+  });
 });
 
 describe("sending", () => {
@@ -238,7 +448,9 @@ describe("sending", () => {
     expect(getLoggedEmails()[0]).toMatchObject({ to: "Admin@Example.com", replyTo: "admin@example.com" });
     expect(getLoggedEmails()[0].subject).toMatch(/^\[Test\] /);
     const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
-    expect(row.testSentAt).not.toBeNull();
+    // The logger took it, so nothing reached an inbox and "test sent" stays unset.
+    expect(test.ok && test.data.delivered).toBe(false);
+    expect(row.testSentAt).toBeNull();
     expect(row.status).toBe("draft");
   });
 
@@ -278,7 +490,8 @@ describe("sending", () => {
     const result = await sendCampaign(db, { campaignId: campaign.id, adminId: seeded.adminId });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data).toMatchObject({ recipients: 20, sent: 20, failed: 0, eventAdvanced: true });
+    // No provider in tests: the logger took every message, and the result says so.
+    expect(result.data).toMatchObject({ recipients: 20, sent: 20, failed: 0, eventAdvanced: true, delivered: false });
     expect(await eventStatus()).toBe("sent");
 
     const rows = await messagesOf(campaign.id);
@@ -311,7 +524,7 @@ describe("sending", () => {
     expect(item?.counts).toMatchObject({ total: 20, sent: 20 });
     expect(await countChangedSinceLastSend(db, seeded.eventId)).toBe(0);
     const summary = await getEmailSummary(seeded.eventId, db);
-    expect(summary).toEqual({ changed: 0, hasSent: true });
+    expect(summary).toEqual({ changed: 0, hasSent: true, lastSentAt: expect.any(Date) });
     const state = await scheduleChangeState(db, seeded.eventId);
     expect(state.emailed.size).toBe(20);
   });
@@ -357,7 +570,7 @@ describe("sending", () => {
     const result = await resendToBounced(db, { campaignId: campaign.id, adminId: seeded.adminId });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data).toMatchObject({ recipients: 1, sent: 1 });
+    expect(result.data).toMatchObject({ recipients: 1, sent: 1, delivered: false });
     expect(getLoggedEmails()).toHaveLength(1);
     expect(await messagesOf(campaign.id)).toHaveLength(21);
     const detail = await getCampaign(campaign.id, db);
@@ -438,6 +651,132 @@ describe("changed since last send (D13)", () => {
   });
 });
 
+describe("preview follows the editor", () => {
+  it("picks the first recipient of the unsaved audience", async () => {
+    const draft = await newDraft();
+    expect(draft.audience).toBe("all");
+    const asSuppliers = await previewCampaign(db, { campaignId: draft.id, audience: "suppliers" });
+    expect(asSuppliers.ok && asSuppliers.data.recipient?.key).toMatch(/^supplier_(admin|attendee):/);
+    const asBuyers = await previewCampaign(db, { campaignId: draft.id, audience: "buyers" });
+    expect(asBuyers.ok && asBuyers.data.recipient?.key).toMatch(/^buyer:/);
+    const pick = recipientKey("buyer", seeded.buyers[5].id);
+    const asSelected = await previewCampaign(db, { campaignId: draft.id, audience: "selected", selectedRecipients: [pick] });
+    expect(asSelected.ok && asSelected.data.recipient?.key).toBe(pick);
+  });
+});
+
+describe("preview link lookups", () => {
+  it("reads the link of the one previewed contact, not the whole audience", async () => {
+    const draft = await newDraft();
+    const everyone = await resolveAudience(db, seeded.eventId, "all", [], { links: "existing" });
+    expect(everyone.ok && everyone.data.length).toBeGreaterThan(5);
+
+    vi.mocked(decryptToken).mockClear();
+    const auto = await previewCampaign(db, { campaignId: draft.id, audience: "all" });
+    expect(auto.ok && auto.data.recipient).not.toBeNull();
+    expect(decryptToken).toHaveBeenCalledTimes(1);
+
+    vi.mocked(decryptToken).mockClear();
+    const picked = await previewCampaign(db, { campaignId: draft.id, recipient: recipientKey("buyer", seeded.buyers[3].id) });
+    expect(picked.ok).toBe(true);
+    expect(decryptToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to anyone when the unsaved audience is empty, and still refuses an unknown recipient", async () => {
+    const draft = await newDraft();
+    const empty = await previewCampaign(db, { campaignId: draft.id, audience: "selected", selectedRecipients: [] });
+    expect(empty.ok && empty.data.recipient).not.toBeNull();
+    const missing = await previewCampaign(db, { campaignId: draft.id, recipient: recipientKey("buyer", "00000000-0000-4000-8000-000000000000") });
+    expect(missing).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+});
+
+describe("delivery rows", () => {
+  it("sort names by number, so Buyer 2 comes before Buyer 10", async () => {
+    const draft = await newDraft();
+    const message = (recipientName: string, entityId: string) => ({
+      campaignId: draft.id,
+      eventId: seeded.eventId,
+      contactType: "buyer" as const,
+      entityId,
+      recipientName,
+      toEmail: `${entityId}@example.com`,
+    });
+    await db.insert(emailMessages).values([
+      message("Buyer 10", seeded.buyers[0].id),
+      message("Buyer 2", seeded.buyers[1].id),
+      message("buyer 1", seeded.buyers[2].id),
+    ]);
+    const detail = await getCampaign(draft.id, db);
+    expect(detail?.messages.map((m) => m.name)).toEqual(["buyer 1", "Buyer 2", "Buyer 10"]);
+  });
+});
+
+describe("revoked links (decision a)", () => {
+  it("a send skips people whose link was revoked, says how many, and issues for expired links", async () => {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!locked.ok) throw new Error(locked.error.message);
+    const tokenOf = async (entityId: string) =>
+      (await db.select().from(accessTokens).where(eq(accessTokens.entityId, entityId))).sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+      );
+    const revokedBuyer = other.buyers[0];
+    const expiredBuyer = other.buyers[1];
+    const [revoked] = await tokenOf(revokedBuyer.id);
+    expect((await revokeToken(db, revoked.id, other.adminId)).ok).toBe(true);
+    const [expired] = await tokenOf(expiredBuyer.id);
+    await db.update(accessTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(accessTokens.id, expired.id));
+
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+    const sent = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(sent.ok && sent.data).toMatchObject({ skippedRevoked: 1, failed: 0 });
+    const rows = await messagesOf(created.data.id);
+    expect(rows.some((m) => m.entityId === revokedBuyer.id)).toBe(false);
+    // The revoked link stays the newest, and revoked.
+    expect(await tokenOf(revokedBuyer.id)).toHaveLength(1);
+    // The expired link was replaced, and the message carries the new one.
+    const [fresh] = await tokenOf(expiredBuyer.id);
+    expect(fresh.id).not.toBe(expired.id);
+    expect(rows.find((m) => m.entityId === expiredBuyer.id)?.accessTokenId).toBe(fresh.id);
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
+    expect(audit.after).toMatchObject({ skippedRevoked: 1 });
+
+    // A selected audience of only that person sends nothing and says why.
+    const only = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!only.ok) throw new Error(only.error.message);
+    const saved = await updateCampaign(db, {
+      campaignId: only.data.id,
+      adminId: other.adminId,
+      fields: fieldsOf(only.data, { audience: "selected", selectedRecipients: [recipientKey("buyer", revokedBuyer.id)] }),
+    });
+    if (!saved.ok) throw new Error(saved.error.message);
+    const refused = await sendCampaign(db, { campaignId: only.data.id, adminId: other.adminId });
+    expect(!refused.ok && refused.error.message).toContain(REGENERATE_HINT);
+    expect(await campaignStatus(only.data.id)).toBe("draft");
+
+    // Resend to bounced leaves out a bounced person whose link was revoked since.
+    const bouncedBuyer = other.buyers[2];
+    await db
+      .update(emailMessages)
+      .set({ status: "bounced" })
+      .where(and(eq(emailMessages.campaignId, created.data.id), eq(emailMessages.entityId, bouncedBuyer.id)));
+    const [bouncedToken] = await tokenOf(bouncedBuyer.id);
+    expect((await revokeToken(db, bouncedToken.id, other.adminId)).ok).toBe(true);
+    clearLoggedEmails();
+    const resend = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(!resend.ok && resend.error.message).toContain(REGENERATE_HINT);
+    expect(getLoggedEmails()).toHaveLength(0);
+    expect(await tokenOf(bouncedBuyer.id)).toHaveLength(1);
+  });
+});
+
 describe("batches", () => {
   it("sends in chunks of 100 and marks only a refused chunk as failed", async () => {
     const big = await seedEvent(db, { buyers: 120 });
@@ -505,6 +844,84 @@ describe("a send that stops", () => {
   });
 });
 
+describe("lock order and sends that can't finish", () => {
+  /** A locked event with one draft campaign. */
+  async function lockedDraft() {
+    const other = await seedEvent(db);
+    const run = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const locked = await lockSchedule(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!locked.ok) throw new Error(locked.error.message);
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+    return { other, campaign: created.data };
+  }
+
+  it("the closing transaction of a send locks the event row before it writes the campaign", async () => {
+    const { other, campaign } = await lockedDraft();
+    const recorded = recordQueries(db);
+    const result = await sendCampaign(recorded.db, { campaignId: campaign.id, adminId: other.adminId });
+    expect(result.ok).toBe(true);
+    const q = recorded.queries;
+    const close = q.findLastIndex((s) => /^update "email_campaigns" set "status"/.test(s));
+    const lastMessageWrite = q.findLastIndex((s, i) => i < close && s.includes('"email_messages"'));
+    const between = q.slice(lastMessageWrite + 1, close);
+    expect(between.some((s) => /from "events" .*for update/.test(s))).toBe(true);
+  });
+
+  it("a test send refuses a campaign that is sending or sent, and sends nothing", async () => {
+    const { campaign } = await sentCampaignOnNewEvent();
+    clearLoggedEmails();
+    const sent = await sendTest(db, { campaignId: campaign.id, toEmail: "admin@example.com", adminId: seeded.adminId });
+    expect(sent).toEqual({ ok: false, error: { code: "conflict", message: TEST_DRAFT_ONLY } });
+    await db.update(emailCampaigns).set({ status: "sending" }).where(eq(emailCampaigns.id, campaign.id));
+    const sending = await sendTest(db, { campaignId: campaign.id, toEmail: "admin@example.com", adminId: seeded.adminId });
+    expect(sending).toEqual({ ok: false, error: { code: "conflict", message: TEST_DRAFT_ONLY } });
+    await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
+    expect(getLoggedEmails()).toHaveLength(0);
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
+    expect(row.testSentAt).toBeNull();
+  });
+
+  it("marks the campaign failed, not sending, when the closing transaction fails", async () => {
+    const { other, campaign } = await lockedDraft();
+    const actual = vi.mocked(recordAudit).getMockImplementation()!;
+    let thrown = false;
+    vi.mocked(recordAudit).mockImplementation(async (tx, entry) => {
+      if (entry.action === "email.send" && !thrown) {
+        thrown = true;
+        throw new Error("deadlock detected");
+      }
+      return actual(tx, entry);
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    clearLoggedEmails();
+    const result = await sendCampaign(db, { campaignId: campaign.id, adminId: other.adminId });
+    error.mockRestore();
+    vi.mocked(recordAudit).mockImplementation(actual);
+
+    expect(!result.ok && result.error.code).toBe("internal");
+    expect(!result.ok && result.error.message).toContain("marked failed");
+    expect(await campaignStatus(campaign.id)).toBe("failed");
+    // The messages did go out, so the event moved on to sent.
+    expect(getLoggedEmails().length).toBeGreaterThan(0);
+    expect(await getEvent(other.eventId, db)).toMatchObject({ status: "sent" });
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, campaign.id)));
+    expect(audit.after).toMatchObject({
+      status: "failed",
+      failureReason: "The send finished but its result was not saved: deadlock detected",
+    });
+    // Nobody the provider accepted is mailed again.
+    clearLoggedEmails();
+    const retry = await resendToBounced(db, { campaignId: campaign.id, adminId: other.adminId });
+    expect(!retry.ok && retry.error.code).toBe("validation");
+    expect(getLoggedEmails()).toHaveLength(0);
+  });
+});
+
 describe("webhook handler", () => {
   const secretBytes = Buffer.from("aw-test-webhook-secret-32-bytes!!");
   const secret = `whsec_${secretBytes.toString("base64")}`;
@@ -545,6 +962,39 @@ describe("webhook handler", () => {
     expect(warn).toHaveBeenCalledOnce();
     expect((await handleResendWebhook(db, request, { secret: undefined, isProduction: true })).status).toBe(500);
     warn.mockRestore();
+  });
+});
+
+describe("last sent date", () => {
+  it("is the newest date a campaign really sent, ignoring drafts and failed sends", async () => {
+    const other = await seedEvent(db);
+    const draft = async () => {
+      const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+      if (!created.ok) throw new Error(created.error.message);
+      return created.data;
+    };
+    const older = await draft();
+    const newer = await draft();
+    const failed = await draft();
+    await draft();
+    expect((await getEmailSummary(other.eventId, db)).lastSentAt).toBeNull();
+
+    await db
+      .update(emailCampaigns)
+      .set({ status: "sent", sentAt: new Date("2026-10-01T09:00:00Z") })
+      .where(eq(emailCampaigns.id, older.id));
+    await db
+      .update(emailCampaigns)
+      .set({ status: "sent", sentAt: new Date("2026-10-05T14:30:00Z") })
+      .where(eq(emailCampaigns.id, newer.id));
+    await db
+      .update(emailCampaigns)
+      .set({ status: "failed", sentAt: new Date("2026-10-09T10:00:00Z") })
+      .where(eq(emailCampaigns.id, failed.id));
+
+    const summary = await getEmailSummary(other.eventId, db);
+    expect(summary.lastSentAt?.toISOString()).toBe("2026-10-05T14:30:00.000Z");
+    expect(summary.hasSent).toBe(true);
   });
 });
 
@@ -590,6 +1040,95 @@ describe("archived events", () => {
   });
 });
 
+describe("campaign writes on an event archived mid-action", () => {
+  it("refuse create, edit, and duplicate, and a test send records nothing, when the archive lands before the write", async () => {
+    const other = await seedEvent(db);
+    const draft = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!draft.ok) throw new Error(draft.error.message);
+    const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, other.eventId));
+    const unarchive = () => db.update(events).set({ status: "matched" }).where(eq(events.id, other.eventId));
+    const refused = { ok: false, error: { code: "locked", message: "This event is archived." } };
+    const campaignCount = async () =>
+      (await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, other.eventId))).length;
+    const auditCount = async () =>
+      (await db.select().from(auditEvents).where(eq(auditEvents.eventId, other.eventId))).length;
+    const audits = await auditCount();
+
+    // Each read sees an unarchived event; the archive commits just before the write's transaction.
+    expect(await createCampaign(raceBeforeTransaction(db, archive), { eventId: other.eventId, adminId: other.adminId })).toEqual(refused);
+    await unarchive();
+    const edit = await updateCampaign(raceBeforeTransaction(db, archive), {
+      campaignId: draft.data.id,
+      adminId: other.adminId,
+      fields: fieldsOf(draft.data, { subject: "Changed" }),
+    });
+    expect(edit).toEqual(refused);
+    await unarchive();
+    const copy = await duplicateCampaign(raceBeforeTransaction(db, archive), {
+      campaignId: draft.data.id,
+      adminId: other.adminId,
+      kind: "reminder",
+    });
+    expect(copy).toEqual(refused);
+    await unarchive();
+    // A test goes out before its record is written: archived in between, the
+    // admin still gets it, and nothing is written on the archived event.
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    vi.mocked(sendEmail).mockResolvedValueOnce({ id: "re_raced" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const test = await sendTest(raceBeforeTransaction(db, archive), {
+      campaignId: draft.data.id,
+      toEmail: "admin@example.com",
+      adminId: other.adminId,
+    });
+    warn.mockRestore();
+    vi.mocked(isEmailConfigured).mockReset();
+    expect(test).toMatchObject({ ok: true, data: { delivered: true } });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    vi.mocked(sendEmail).mockReset();
+
+    expect(await campaignCount()).toBe(1);
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.data.id));
+    expect(row.subject).toBe(draft.data.subject);
+    expect(row.testSentAt).toBeNull();
+    expect(await auditCount()).toBe(audits);
+  });
+
+  it("roll the campaign change back when its audit row can't be written", async () => {
+    const other = await seedEvent(db);
+    const draft = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!draft.ok) throw new Error(draft.error.message);
+    const auditFails = () => vi.mocked(recordAudit).mockRejectedValueOnce(new Error("audit write failed"));
+    const campaignCount = async () =>
+      (await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, other.eventId))).length;
+
+    auditFails();
+    await expect(createCampaign(db, { eventId: other.eventId, adminId: other.adminId })).rejects.toThrow("audit write failed");
+    auditFails();
+    await expect(duplicateCampaign(db, { campaignId: draft.data.id, adminId: other.adminId, kind: "reminder" })).rejects.toThrow(
+      "audit write failed",
+    );
+    expect(await campaignCount()).toBe(1);
+
+    auditFails();
+    await expect(
+      updateCampaign(db, { campaignId: draft.data.id, adminId: other.adminId, fields: fieldsOf(draft.data, { subject: "Changed" }) }),
+    ).rejects.toThrow("audit write failed");
+    const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.data.id));
+    expect(row.subject).toBe(draft.data.subject);
+
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    vi.mocked(sendEmail).mockResolvedValueOnce({ id: "re_456" });
+    auditFails();
+    await expect(
+      sendTest(db, { campaignId: draft.data.id, toEmail: "admin@example.com", adminId: other.adminId }),
+    ).rejects.toThrow("audit write failed");
+    vi.mocked(isEmailConfigured).mockReset();
+    const [tested] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.data.id));
+    expect(tested.testSentAt).toBeNull();
+  });
+});
+
 describe("resend to bounced claims the campaign", () => {
   it("sends once when clicked twice at the same time", async () => {
     const { campaign } = await sentCampaignOnNewEvent();
@@ -628,12 +1167,21 @@ describe("resend to bounced claims the campaign", () => {
 });
 
 describe("a database failure after the provider accepted a batch", () => {
-  /** Makes the next `times` writes to email_messages throw; everything else goes through. */
-  function failMessageWrites(times: number) {
+  /**
+   * Lets the next `after` writes to email_messages through (by default the
+   * hand-off time written before the batch goes out), then makes the next
+   * `times` throw; everything else goes through.
+   */
+  function failMessageWrites(times: number, after = 1) {
     const original = db.update.bind(db);
+    let skip = after;
     let left = times;
     return vi.spyOn(db, "update").mockImplementation(((table: Parameters<Db["update"]>[0]) => {
       if (table !== emailMessages || left === 0) return original(table);
+      if (skip > 0) {
+        skip--;
+        return original(table);
+      }
       left--;
       return { set: () => ({ where: () => Promise.reject(new Error("database went away")) }) };
     }) as unknown as Db["update"]);
@@ -684,6 +1232,72 @@ describe("a database failure after the provider accepted a batch", () => {
       .from(auditEvents)
       .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
     expect(audit.after).not.toHaveProperty("sentWithoutIds");
+  });
+
+  it("keeps going when the fallback write fails too, and resend never mails anyone the provider accepted", async () => {
+    const { other } = await sentCampaignOnNewEvent();
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Every provider-id attempt fails, and so does the write that marks the batch sent.
+    const update = failMessageWrites(PROVIDER_ID_WRITE_ATTEMPTS + 1);
+    clearLoggedEmails();
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    update.mockRestore();
+    error.mockRestore();
+
+    const accepted = getLoggedEmails().length;
+    expect(accepted).toBeGreaterThan(0);
+    expect(result.ok && result.data).toMatchObject({ sent: accepted, failed: 0 });
+    expect(await campaignStatus(created.data.id)).toBe("sent");
+    const rows = await messagesOf(created.data.id);
+    // Still queued, but with the time they were handed to the provider.
+    expect(rows.every((m) => m.status === "queued" && m.sentAt !== null)).toBe(true);
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, created.data.id)));
+    expect(audit.after).toMatchObject({
+      status: "sent",
+      sentWithoutIds: rows.length,
+      statusNotSaved: rows.length,
+      statusError: "database went away",
+    });
+    expect((await getCampaign(created.data.id, db))?.resendable).toBe(0);
+
+    // Neither a sent nor a failed campaign mails them again.
+    clearLoggedEmails();
+    const resend = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(!resend.ok && resend.error.code).toBe("validation");
+    await db.update(emailCampaigns).set({ status: "failed" }).where(eq(emailCampaigns.id, created.data.id));
+    const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(!retry.ok && retry.error.code).toBe("validation");
+    expect(getLoggedEmails()).toHaveLength(0);
+  });
+
+  it("does not send a batch whose hand-off time can't be saved, and resend sends it later", async () => {
+    const { other } = await sentCampaignOnNewEvent();
+    const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const update = failMessageWrites(1, 0);
+    clearLoggedEmails();
+    const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
+    update.mockRestore();
+    error.mockRestore();
+
+    expect(getLoggedEmails()).toHaveLength(0);
+    expect(result.ok && result.data).toMatchObject({ sent: 0, failed: result.ok ? result.data.recipients : -1 });
+    expect(await campaignStatus(created.data.id)).toBe("failed");
+    const rows = await messagesOf(created.data.id);
+    expect(rows.every((m) => m.status === "queued" && m.sentAt === null)).toBe(true);
+    expect((await getCampaign(created.data.id, db))?.resendable).toBe(rows.length);
+
+    const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
+    expect(retry.ok && retry.data).toMatchObject({ recipients: rows.length, sent: rows.length });
+    expect(getLoggedEmails()).toHaveLength(rows.length);
   });
 
   it("still marks a batch the provider refused as failed", async () => {

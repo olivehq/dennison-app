@@ -66,3 +66,18 @@ export function people(count: number): string {
 export function recipients(count: number): string {
   return `${count} ${count === 1 ? "recipient" : "recipients"}`;
 }
+
+/** The toast after a send that left out people whose link was revoked. */
+export function skippedRevokedMessage(count: number): string {
+  const who = count === 1 ? "1 person was" : `${count} people were`;
+  return `${who} skipped because their link was revoked. Use Regenerate on the roster to give someone a new link.`;
+}
+
+/** Shown when mail only went to the server log (no email provider): the campaign page and the send toast. */
+export const NOT_DELIVERED_NOTICE = "This server has no email provider set up.";
+
+/** The toast after a send: what went out, or that nothing did. */
+export function sentMessage(count: number, delivered: boolean): string {
+  if (delivered) return `Sent to ${recipients(count)}`;
+  return `Logged ${count} ${count === 1 ? "email" : "emails"}, not sent. ${NOT_DELIVERED_NOTICE}`;
+}

@@ -161,7 +161,22 @@ describe('runMatching pinned appointments', () => {
     const result = runMatching({ ...input, pinned: [{ ...a, pinned: true }, clash] });
     expect(findConflicts(result.appointments)).toEqual([]);
     expect(result.appointments).toContainEqual({ ...a, pinned: true });
-    expect(result.warnings.filter((w) => w.includes('conflicts with another pinned'))).toHaveLength(1);
+    expect(result.warnings.filter((w) => w.includes('conflicts with another kept appointment'))).toHaveLength(1);
+  });
+
+  it('keeps unpinned kept rows in place with their own flag, and says "kept" when it drops one', () => {
+    const kept = first.appointments.filter((_, i) => i % 5 === 0);
+    const pinned = kept.map((a, i) => ({ ...a, pinned: i % 2 === 0 }));
+    const victim = pinned.find((a) => !a.pinned)!;
+    const buyers = input.buyers.map((b) => (b.id === victim.buyerId ? { ...b, withdrawn: true } : b));
+    const result = runMatching({ ...input, buyers, pinned });
+
+    for (const row of pinned.filter((a) => a.buyerId !== victim.buyerId)) expect(result.appointments).toContainEqual(row);
+    const keys = new Set(pinned.filter((a) => a.pinned).map((a) => `${a.slot}|${a.buyerId}|${a.supplierId}`));
+    expect(result.appointments.filter((a) => a.pinned).every((a) => keys.has(`${a.slot}|${a.buyerId}|${a.supplierId}`))).toBe(true);
+    expect(result.warnings).toContain(
+      `Dropped kept appointment slot ${victim.slot} ${victim.buyerId} x ${victim.supplierId}: buyer is withdrawn or unknown`,
+    );
   });
 });
 
@@ -305,6 +320,15 @@ describe('repair pass', () => {
     const input = tiny([b('A'), b('D')], suppliers, [], settings);
     const result = repairSchedule([row(1, 'A', 'S1', true), row(2, 'A', 'S2', true)], input);
     expect(result.appointments.map((a) => a.buyerId)).toEqual(['A', 'A']);
+    expect(result.warnings).toEqual(['Buyer D has 0 appointments (min 1)']);
+  });
+
+  it('never moves a row a run kept, even when it is not pinned', () => {
+    // The same schedule as the first repair test, given to runMatching as kept rows.
+    const input = tiny([b('A'), b('D')], suppliers, [['A', 'S1', 1, 1], ['A', 'S2', 2, 9], ['D', 'S2', 3, 2]], settings);
+    const kept = [row(1, 'A', 'S1'), row(2, 'A', 'S2')];
+    const result = runMatching({ ...input, pinned: kept });
+    expect(result.appointments).toEqual(kept);
     expect(result.warnings).toEqual(['Buyer D has 0 appointments (min 1)']);
   });
 

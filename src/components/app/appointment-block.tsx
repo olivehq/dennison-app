@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowLeftRight, PencilLine, Pin } from "lucide-react";
+import { ArrowLeftRight, PencilLine, Pin, UserX } from "lucide-react";
 import { cn } from "cn";
 import { RankBadge } from "@/components/app/rank-badge";
 
@@ -50,6 +50,15 @@ export function treatmentClass(type: SupplierType, strength: MatchStrength): str
   }
 }
 
+/**
+ * Slots that need an admin, drawn louder than any match treatment: a meeting
+ * with someone who withdrew is a full destructive border on a light
+ * destructive fill; an open slot in a lane below target is a destructive
+ * dashed border. Shared by the timeline and the legend.
+ */
+export const WITHDRAWN_CLASS = "border-2 border-destructive bg-destructive/10 text-destructive";
+export const NEEDS_FILLING_CLASS = "border-[1.5px] border-dashed border-destructive bg-destructive/5";
+
 export function typeDotClass(type: SupplierType): string {
   return TONES[type].dot;
 }
@@ -98,6 +107,11 @@ type AppointmentBlockProps = Omit<React.ComponentProps<"button">, "children"> & 
   selected?: boolean;
   /** Slot time range for the accessible label, e.g. "3:10 to 3:20 PM". */
   timeLabel?: string;
+  /**
+   * Set when the buyer or the supplier withdrew: the block says "Withdrawn"
+   * in the destructive treatment, and this note is its title and starts its label.
+   */
+  withdrawnNote?: string;
 };
 
 /** Absolutely positioned by the parent through `style` (left and width from minutes). */
@@ -111,11 +125,13 @@ export function AppointmentBlock({
   laneType,
   selected = false,
   timeLabel,
+  withdrawnNote,
   className,
   ...props
 }: AppointmentBlockProps) {
   const name = laneType === "supplier" ? buyerName : supplierName;
   const label = [
+    withdrawnNote ? `Withdrawn. ${withdrawnNote.replace(/\.$/, "")}` : null,
     `${supplierName}${desk != null ? `, desk ${desk}` : ""}, with ${buyerName}`,
     `Slot ${a.slot}${timeLabel ? `, ${timeLabel}` : ""}`,
     `Buyer rank ${a.buyerRank ?? "blank"}, supplier rank ${a.supplierRank ?? "blank"}`,
@@ -133,31 +149,45 @@ export function AppointmentBlock({
       data-slot="appointment-block"
       data-strength={a.strength}
       data-selected={selected || undefined}
+      data-withdrawn={withdrawnNote ? true : undefined}
       aria-label={label}
       aria-pressed={selected}
+      title={withdrawnNote}
       className={cn(
         "absolute inset-y-[5px] flex min-w-0 flex-col justify-center gap-0.5 overflow-hidden rounded-[3px] px-1.5 text-left text-[11.5px] leading-tight transition-[opacity,filter] hover:brightness-[0.97] focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring motion-reduce:transition-none",
-        treatmentClass(supplierType, a.strength),
+        withdrawnNote ? WITHDRAWN_CLASS : treatmentClass(supplierType, a.strength),
         selected && "outline-2 outline-offset-1 outline-foreground",
         className,
       )}
       {...props}
     >
-      <span className="flex min-w-0 items-center gap-1">
-        <span className="truncate font-bold">{name}</span>
-      </span>
-      <span className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap">
-        {a.strength === "mutual" ? <MutualIcon /> : null}
-        {laneType === "buyer" && desk != null ? (
-          <span className="rounded-[2px] px-0.5 font-bold tabular-nums ring-1 ring-current ring-inset" title={`Desk ${desk}`}>
-            {desk}
+      {withdrawnNote ? (
+        <>
+          <span className="flex min-w-0 items-center gap-1">
+            <UserX aria-hidden="true" className="size-3 shrink-0" />
+            <span className="truncate font-bold">Withdrawn</span>
           </span>
-        ) : null}
-        <RankBadge side="B" rank={a.buyerRank} topN={mutualTopN} className="h-4 px-0.5 text-[11px]" />
-        <RankBadge side="S" rank={a.supplierRank} topN={mutualTopN} className="h-4 px-0.5 text-[11px]" />
-        {a.pinned ? <Pin aria-hidden="true" className="size-3 shrink-0" /> : null}
-        {a.source === "manual" ? <PencilLine aria-hidden="true" className="size-3 shrink-0" /> : null}
-      </span>
+          <span className="truncate">{name}</span>
+        </>
+      ) : (
+        <>
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate font-bold">{name}</span>
+          </span>
+          <span className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap">
+            {a.strength === "mutual" ? <MutualIcon /> : null}
+            {laneType === "buyer" && desk != null ? (
+              <span className="rounded-[2px] px-0.5 font-bold tabular-nums ring-1 ring-current ring-inset" title={`Desk ${desk}`}>
+                {desk}
+              </span>
+            ) : null}
+            <RankBadge side="B" rank={a.buyerRank} topN={mutualTopN} className="h-4 px-0.5 text-[11px]" />
+            <RankBadge side="S" rank={a.supplierRank} topN={mutualTopN} className="h-4 px-0.5 text-[11px]" />
+            {a.pinned ? <Pin aria-hidden="true" className="size-3 shrink-0" /> : null}
+            {a.source === "manual" ? <PencilLine aria-hidden="true" className="size-3 shrink-0" /> : null}
+          </span>
+        </>
+      )}
     </button>
   );
 }

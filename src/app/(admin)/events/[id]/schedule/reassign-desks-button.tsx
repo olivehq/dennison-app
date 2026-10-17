@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { ArmchairIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
@@ -12,10 +11,23 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { reassignDesksAction } from "@/server/schedule/actions";
 import type { DeskAssignment } from "@/server/schedule/lock";
 
-/** "Reassign desks" (D17 while unlocked): confirm, run, then show the resulting desk list. */
-export function ReassignDesksButton({ eventId }: { eventId: string }) {
+/**
+ * "Reassign desks" (D17 while unlocked): confirm, run, then show the resulting desk list.
+ * Opened from the header's More menu, so the confirm step is controlled by the caller.
+ */
+export function ReassignDesksDialog({
+  eventId,
+  open,
+  onOpenChange,
+}: {
+  eventId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const router = useRouter();
   const [desks, setDesks] = React.useState<DeskAssignment[] | null>(null);
+  // Withdrawn suppliers come back with no desk; the list shows the desks handed out.
+  const assigned = (desks ?? []).filter((d) => d.desk !== null).sort((a, b) => (a.desk ?? 0) - (b.desk ?? 0));
 
   const reassign = async () => {
     const result = await reassignDesksAction(eventId);
@@ -24,30 +36,28 @@ export function ReassignDesksButton({ eventId }: { eventId: string }) {
       router.refresh();
       return;
     }
+    // The action revalidates the event, so its response already carries the new desks.
     setDesks(result.data.desks);
-    router.refresh();
   };
 
   return (
     <>
       <ConfirmDialog
         title="Reassign desks?"
-        description="Desks are numbered alphabetically by supplier name, starting at 1. Suppliers with a desk override keep their number, and that number is skipped for everyone else. Withdrawn suppliers get no desk. Locking does this again, so use it to preview or to fix numbers after a roster change."
+        description="Desks are numbered alphabetically by supplier name, starting at 1. Suppliers with a desk override keep their number, and that number is skipped for everyone else. Withdrawn suppliers get no desk, and lose any override. Locking does this again, so use it to preview or to fix numbers after a roster change."
         confirmLabel="Reassign desks"
         onConfirm={reassign}
-        trigger={
-          <Button variant="outline" size="lg">
-            <ArmchairIcon data-icon="inline-start" />
-            Reassign desks
-          </Button>
-        }
+        open={open}
+        onOpenChange={onOpenChange}
       />
       <Dialog open={desks !== null} onOpenChange={(open) => !open && setDesks(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-lg font-bold">Desks reassigned</DialogTitle>
             <DialogDescription>
-              {desks ? `${desks.filter((d) => d.desk !== null).length} desks assigned. The change is in the activity log.` : null}
+              {desks
+                ? `${assigned.length === 1 ? "1 desk" : `${assigned.length} desks`} assigned. The change is in the activity log.`
+                : null}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60dvh] overflow-y-auto rounded-lg border">
@@ -59,19 +69,17 @@ export function ReassignDesksButton({ eventId }: { eventId: string }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {[...(desks ?? [])]
-                  .sort((a, b) => (a.desk ?? Infinity) - (b.desk ?? Infinity))
-                  .map((d) => (
-                    <TableRow key={d.supplierId}>
-                      <TableCell className="pl-4 font-semibold tabular-nums">{d.desk ?? "–"}</TableCell>
-                      <TableCell className="pr-4 whitespace-normal">
-                        <span className="flex flex-wrap items-center gap-2">
-                          {d.name}
-                          {d.override ? <Badge variant="outline">Override</Badge> : null}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                {assigned.map((d) => (
+                  <TableRow key={d.supplierId}>
+                    <TableCell className="pl-4 font-semibold tabular-nums">{d.desk}</TableCell>
+                    <TableCell className="pr-4 whitespace-normal">
+                      <span className="flex flex-wrap items-center gap-2">
+                        {d.name}
+                        {d.override ? <Badge variant="outline">Override</Badge> : null}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </div>

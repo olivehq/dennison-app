@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { defaultEventSettings, eventSchema, eventSettingsSchema, participantSchema, passwordSchema, supplierSchema } from ".";
+import {
+  changePasswordSchema,
+  defaultEventSettings,
+  eventSchema,
+  eventSettingsSchema,
+  participantSchema,
+  passwordSchema,
+  profileNameSchema,
+  supplierSchema,
+} from ".";
 
 describe("eventSettingsSchema", () => {
   it("accepts the defaults", () => {
@@ -36,6 +45,14 @@ describe("eventSchema", () => {
     expect(eventSchema.safeParse({ ...base, timezone: "Mars/Olympus" }).success).toBe(false);
     expect(eventSchema.safeParse({ ...base, timezone: "UTC", eventDate: "10/11/2026" }).success).toBe(false);
   });
+
+  it("asks for a date when none is picked, and for the format when it is malformed", () => {
+    const message = (eventDate: string) =>
+      eventSchema.safeParse({ name: "AW 2026", timezone: "America/Los_Angeles", eventDate }).error?.issues[0]?.message;
+    expect(message("")).toBe("Pick a show date.");
+    expect(message("10/11/2026")).toBe("Use the format YYYY-MM-DD.");
+    expect(message("2026-11-10")).toBeUndefined();
+  });
 });
 
 describe("roster schemas", () => {
@@ -66,5 +83,37 @@ describe("passwordSchema", () => {
   it("needs at least 10 characters", () => {
     expect(passwordSchema.safeParse("short1234").success).toBe(false);
     expect(passwordSchema.safeParse("long-enough-1").success).toBe(true);
+  });
+});
+
+describe("profileNameSchema", () => {
+  it("trims the name and needs one", () => {
+    expect(profileNameSchema.parse({ name: "  Dana Lee  " })).toEqual({ name: "Dana Lee" });
+    expect(profileNameSchema.safeParse({ name: "   " }).success).toBe(false);
+    expect(profileNameSchema.safeParse({ name: "x".repeat(121) }).success).toBe(false);
+  });
+});
+
+describe("changePasswordSchema", () => {
+  const valid = {
+    currentPassword: "old-password-1",
+    newPassword: "new-password-12",
+    confirmPassword: "new-password-12",
+    revokeOtherSessions: true,
+  };
+
+  it("accepts a valid change", () => {
+    expect(changePasswordSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("uses the password rules, and needs the repeat to match and the password to change", () => {
+    const issues = (input: object) =>
+      changePasswordSchema.safeParse({ ...valid, ...input }).error?.issues.map((i) => [i.path.join("."), i.message]);
+    expect(issues({ newPassword: "short", confirmPassword: "short" })).toEqual([["newPassword", "Use at least 10 characters."]]);
+    expect(issues({ confirmPassword: "something-else" })).toEqual([["confirmPassword", "The two passwords don't match."]]);
+    expect(issues({ newPassword: valid.currentPassword, confirmPassword: valid.currentPassword })).toEqual([
+      ["newPassword", "Choose a password that's different from the current one."],
+    ]);
+    expect(issues({ currentPassword: "" })?.[0]).toEqual(["currentPassword", "Enter your current password."]);
   });
 });

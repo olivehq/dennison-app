@@ -58,11 +58,11 @@ Set per environment (Production and Preview) in Vercel. `.env.example` has the s
 | `RESEND_API_KEY` | Resend, an API key with send access |
 | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret |
 | `EMAIL_FROM` | `Name <address@verified-domain>` |
-| `CRON_SECRET` | `openssl rand -base64 32`. Vercel Cron sends it; without it the cron route answers 503 |
+| `CRON_SECRET` | `openssl rand -base64 32`. Vercel Cron sends it. Required in production; without it the cron route answers 503 |
 | `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` | Sentry project settings |
 | `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | Sentry integration (build only) |
 
-A production deployment (Preview included) refuses to start without `DATABASE_URL`, `APP_URL` (not `http://localhost`), `BLOB_READ_WRITE_TOKEN`, `BETTER_AUTH_SECRET`, and `TOKEN_PEPPER` (D78). Without `RESEND_API_KEY` it runs, but campaigns refuse to send.
+A production deployment (Preview included) refuses to start without `DATABASE_URL`, `APP_URL` (not `http://localhost`), `BLOB_READ_WRITE_TOKEN`, `BETTER_AUTH_SECRET`, `TOKEN_PEPPER`, and `CRON_SECRET` (D78). Without `RESEND_API_KEY` it runs, but campaigns refuse to send.
 
 `LOCAL_DATA_DIR` is for local runs only; leave it unset on Vercel. `ADMIN_PASSWORD` and `SEED_ALLOW_REMOTE` are for the scripts and never go on Vercel.
 

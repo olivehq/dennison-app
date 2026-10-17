@@ -23,8 +23,8 @@ export const entityTypeSchema = z.enum(["buyer", "supplier"]);
 
 /**
  * Derived from `imports.status` plus the validation report. The database enum
- * only distinguishes validated from applied and failed; the UI needs finer
- * states to pick the right card.
+ * only distinguishes validated from applied, failed, and ignored; the UI needs
+ * finer states to pick the right card.
  */
 export const importStateSchema = z.enum([
   "failed",
@@ -32,6 +32,7 @@ export const importStateSchema = z.enum([
   "needs_fixes",
   "ready",
   "applied",
+  "ignored",
 ]);
 
 const rowMessageSchema = z.object({
@@ -52,6 +53,12 @@ export const unknownNameSchema = z.object({
   role: z.enum(["ranker", "target"]),
   rows: z.array(z.number().int()),
   suggestions: z.array(nameSuggestionSchema),
+  /**
+   * The text matches several people on the roster (a shared name or
+   * organization); `suggestions` lists all of them. A mapping for it applies
+   * to every row with this text, so it is never saved in bulk.
+   */
+  ambiguous: z.boolean().optional(),
 });
 
 const duplicateValueSchema = z.object({
@@ -88,6 +95,12 @@ export const importValidationReportSchema = z.object({
   rowsWithZeroRankings: z.array(z.object({ row: z.number().int(), name: z.string() })),
   rankedByNobody: z.array(namedEntitySchema),
   rankedNobody: z.array(namedEntitySchema),
+  /**
+   * Ranking kinds: ids of the rankers the file has a row for. Applying the
+   * file replaces only their rankings of this kind. Reports written before
+   * this field existed read as empty.
+   */
+  rankersInFile: z.array(z.string()).default([]),
 });
 
 export const uploadImportSchema = z.object({

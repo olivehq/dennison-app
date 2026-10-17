@@ -34,3 +34,26 @@ export type AdminInviteInput = z.infer<typeof adminInviteSchema>;
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+
+export const profileNameSchema = z.object({
+  name: z.string().trim().min(1, "Enter your name.").max(120, "Use at most 120 characters."),
+});
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Enter your current password.").max(128, "Use at most 128 characters."),
+    newPassword: passwordSchema,
+    confirmPassword: z.string(),
+    revokeOtherSessions: z.boolean(),
+  })
+  .refine((values) => values.newPassword === values.confirmPassword, {
+    message: "The two passwords don't match.",
+    path: ["confirmPassword"],
+  })
+  .refine((values) => values.newPassword !== values.currentPassword, {
+    message: "Choose a password that's different from the current one.",
+    path: ["newPassword"],
+  });
+
+export type ProfileNameInput = z.infer<typeof profileNameSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;

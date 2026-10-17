@@ -3,7 +3,7 @@
 import * as React from "react";
 import { PlusIcon } from "lucide-react";
 import Link from "next/link";
-import { createDataTableColumnHelper, DataTable } from "@/components/app/data-table";
+import { ACTIONS_COLUMN_CLASS, createDataTableColumnHelper, DataTable, NAME_COLUMN } from "@/components/app/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,12 +12,22 @@ import {
   AppointmentCount,
   EmailChangeBadge,
   LinkBadge,
+  LinkFilterSelect,
   RosterRowActions,
+  replaceSearchParam,
   RosterStatusBadge,
   StatusFilterToggle,
   useUrlFilter,
 } from "../_roster/roster-ui";
-import type { BiztechFilter, EmailChange, Health, LinkInfo, StatusFilter } from "../_roster/types";
+import {
+  matchesLinkFilter,
+  type BiztechFilter,
+  type EmailChange,
+  type Health,
+  type LinkFilter,
+  type LinkInfo,
+  type StatusFilter,
+} from "../_roster/types";
 import { ParticipantDialog, type ParticipantFormData } from "./participant-dialog";
 
 export type ParticipantTableRow = ParticipantFormData & {
@@ -51,21 +61,28 @@ type ParticipantsTableProps = {
   eventId: string;
   rows: ParticipantTableRow[];
   lockedReason: string | null;
+  linksBlockedReason: string | null;
   importsHref: string;
   initialStatus: StatusFilter;
   initialBiztech: BiztechFilter;
+  initialLink: LinkFilter;
+  initialQuery: string;
 };
 
 export function ParticipantsTable({
   eventId,
   rows,
   lockedReason,
+  linksBlockedReason,
   importsHref,
   initialStatus,
   initialBiztech,
+  initialLink,
+  initialQuery,
 }: ParticipantsTableProps) {
   const [status, setStatus] = useUrlFilter<StatusFilter>("status", initialStatus, "active");
   const [biztech, setBiztech] = useUrlFilter<BiztechFilter>("biztech", initialBiztech, "all");
+  const [link, setLink] = useUrlFilter<LinkFilter>("link", initialLink, "all");
   const [editing, setEditing] = React.useState<ParticipantTableRow | null>(null);
 
   const visible = React.useMemo(
@@ -73,9 +90,10 @@ export function ParticipantsTable({
       rows.filter(
         (row) =>
           (status === "all" || row.status === status) &&
-          (biztech === "all" || row.biztechOptIn === (biztech === "in")),
+          (biztech === "all" || row.biztechOptIn === (biztech === "in")) &&
+          matchesLinkFilter(link, [row.link]),
       ),
-    [rows, status, biztech],
+    [rows, status, biztech, link],
   );
 
   const columns = React.useMemo(
@@ -84,8 +102,10 @@ export function ParticipantsTable({
         helper.accessor((row) => `${row.displayLabel} ${row.secondary}`, {
           id: "name",
           header: "Name",
+          sortFn: "name",
+          ...NAME_COLUMN,
           cell: ({ row }) => (
-            <div className="flex min-w-48 flex-col">
+            <div className="flex flex-col wrap-anywhere">
               <span className="font-medium">{row.original.displayLabel}</span>
               {row.original.secondary ? (
                 <span className="text-xs text-muted-foreground">{row.original.secondary}</span>
@@ -122,6 +142,8 @@ export function ParticipantsTable({
         helper.accessor((row) => row.emailChange ?? "", {
           id: "emailChange",
           header: "Changed since last email",
+          // The long header wraps instead of widening the table.
+          meta: { className: "whitespace-normal" },
           cell: ({ row }) => <EmailChangeBadge state={row.original.emailChange} />,
         }),
         helper.accessor("status", {
@@ -132,6 +154,7 @@ export function ParticipantsTable({
           id: "actions",
           header: () => <span className="sr-only">Actions</span>,
           enableSorting: false,
+          meta: { className: ACTIONS_COLUMN_CLASS },
           cell: ({ row }) => {
             const item = row.original;
             return (
@@ -139,6 +162,7 @@ export function ParticipantsTable({
                 name={item.displayLabel}
                 withdrawn={item.status === "withdrawn"}
                 lockedReason={lockedReason}
+                linksBlockedReason={linksBlockedReason}
                 onEdit={() => setEditing(item)}
                 withdraw={() => withdrawParticipantAction(item.id)}
                 restore={() => restoreParticipantAction(item.id)}
@@ -148,7 +172,7 @@ export function ParticipantsTable({
           },
         }),
       ]),
-    [lockedReason],
+    [lockedReason, linksBlockedReason],
   );
 
   const hasRows = rows.length > 0;
@@ -159,12 +183,14 @@ export function ParticipantsTable({
         data={visible}
         searchColumns={["name", "email"]}
         searchPlaceholder="Search by name, organization, or email"
+        initialSearch={initialQuery}
+        onSearchChange={replaceSearchParam}
         getRowId={(row) => row.id}
         rowClassName={(row) => (row.status === "withdrawn" ? "text-muted-foreground" : undefined)}
         emptyTitle={hasRows ? "No participants match these filters" : "No participants yet"}
         emptyDescription={
           hasRows
-            ? "Change the status or biztech filter to see more."
+            ? "Clear the search or change the status, biztech, or link filter to see more."
             : "Upload the participants file on the Imports page, or add people one at a time."
         }
         emptyAction={
@@ -188,6 +214,7 @@ export function ParticipantsTable({
             </SelectGroup>
           </SelectContent>
         </Select>
+        <LinkFilterSelect value={link} onChange={setLink} />
       </DataTable>
       <ParticipantDialog
         eventId={eventId}

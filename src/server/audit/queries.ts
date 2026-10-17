@@ -1,16 +1,16 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type Db } from "@/db/client";
 import { admins, auditEvents, participants, suppliers, type AuditEvent, type Event } from "@/db/schema";
 import { compareNames } from "@/lib/names";
-import { endOfDayInTimezone, formatTimestamp } from "@/lib/time";
+import { endOfDayInTimezone, formatTimeOfDay, formatTimestamp, isoDateInTimezone } from "@/lib/time";
 import { isEventEditable } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { displayNameFor } from "@/server/roster/display-name";
 import { UNDOABLE_ACTIONS, undoNote } from "@/server/schedule/edits";
-import { DEFAULT_AUDIT_PAGE_SIZE, listAudit, type AuditFilters } from "./audit";
-import { AUDIT_ACTION_GROUPS, describeAudit, isAuditActionGroup, type AuditActionGroup } from "./describe";
+import { DEFAULT_AUDIT_PAGE_SIZE, countAudit, listAudit, type AuditFilters } from "./audit";
+import { AUDIT_ACTION_GROUPS, auditActionGroupOf, describeAudit, isAuditActionGroup, type AuditActionGroup } from "./describe";
 
 /** The activity page's filters, as they sit in the URL. Bad values are dropped, not errors. */
 export type ActivityParams = {
@@ -52,7 +52,14 @@ export type ActivityUndo = { available: true } | { available: false; reason: str
 
 export type ActivityRow = {
   id: string;
+  action: string;
+  /** The filter group the action belongs to, null for actions no group lists. */
+  area: AuditActionGroup | null;
   when: string;
+  /** The calendar date in the event's timezone, "2026-11-10", for grouping by day. */
+  day: string;
+  /** The time of day in the event's timezone, "3:10 PM". */
+  time: string;
   who: string;
   sentence: string;
   note: string | null;
@@ -63,9 +70,27 @@ export type ActivityRow = {
 
 export type ActivityOption = { value: string; label: string; group: "Buyers" | "Suppliers" };
 
+/**
+ * Today's numbers above the log, today being the event timezone's calendar
+ * day. Each count uses the same filter its shortcut applies, so the number
+ * and the filtered log never disagree.
+ */
+export type ActivitySummary = {
+  /** Today in the event's timezone, "2026-11-10". */
+  today: string;
+  /** The day before, for the "Yesterday" heading. */
+  yesterday: string;
+  changes: number;
+  scheduleEdits: number;
+  imports: number;
+  /** Admins with at least one change today, sorted by name. */
+  admins: { id: string; name: string }[];
+};
+
 export type ActivityPage = {
   event: Pick<Event, "id" | "timezone" | "status">;
   params: ActivityParams;
+  summary: ActivitySummary;
   rows: ActivityRow[];
   total: number;
   page: number;
@@ -132,23 +157,64 @@ function runIdOf(row: AuditEvent): string | null {
   return null;
 }
 
+/** Today's total and the schedule and import counts, in one query with the same filters the shortcuts use. */
+async function countToday(eventId: string, timezone: string, today: string, db: Db) {
+  const filters = filtersFor({ from: today, to: today, page: 1 }, timezone);
+  const { total, subsets } = await countAudit(
+    {
+      eventId,
+      filters,
+      subsets: { schedule: AUDIT_ACTION_GROUPS.schedule.actions, imports: AUDIT_ACTION_GROUPS.imports.actions },
+    },
+    db,
+  );
+  return { changes: total, scheduleEdits: subsets.schedule, imports: subsets.imports };
+}
+
+async function adminIdsActiveToday(eventId: string, timezone: string, today: string, db: Db): Promise<string[]> {
+  const { from, to } = filtersFor({ from: today, to: today, page: 1 }, timezone);
+  const rows = await db
+    .selectDistinct({ adminId: auditEvents.adminId })
+    .from(auditEvents)
+    .where(
+      and(eq(auditEvents.eventId, eventId), gte(auditEvents.createdAt, from!), lt(auditEvents.createdAt, to!), isNotNull(auditEvents.adminId)),
+    );
+  return rows.map((r) => r.adminId!);
+}
+
+/** `now` is injectable for tests; it decides what "today" is. */
 export async function getActivityPage(
   eventId: string,
   params: ActivityParams,
   db: Db = getDb(),
+  now: Date = new Date(),
 ): Promise<ActivityPage | null> {
   const event = await getEvent(eventId, db);
   if (!event) return null;
+  const today = isoDateInTimezone(now, event.timezone);
+  const yesterday = isoDateInTimezone(endOfDayInTimezone(today, event.timezone, -1), event.timezone);
 
-  const [list, buyerRows, supplierRows, adminRows, activeRun] = await Promise.all([
+  const [list, buyerRows, supplierRows, adminRows, activeRun, todayCounts, activeAdminIds] = await Promise.all([
     listAudit(
       { eventId, filters: filtersFor(params, event.timezone), page: params.page, pageSize: DEFAULT_AUDIT_PAGE_SIZE },
       db,
     ),
-    db.select().from(participants).where(eq(participants.eventId, eventId)),
-    db.select().from(suppliers).where(eq(suppliers.eventId, eventId)),
+    db
+      .select({
+        id: participants.id,
+        firstName: participants.firstName,
+        lastName: participants.lastName,
+        organization: participants.organization,
+        title: participants.title,
+        displayName: participants.displayName,
+      })
+      .from(participants)
+      .where(eq(participants.eventId, eventId)),
+    db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(eq(suppliers.eventId, eventId)),
     db.select({ id: admins.id, name: admins.name }).from(admins),
     findActiveRun(db, eventId),
+    countToday(eventId, event.timezone, today, db),
+    adminIdsActiveToday(eventId, event.timezone, today, db),
   ]);
 
   const names = new Map<string, string>();
@@ -205,13 +271,25 @@ export async function getActivityPage(
   return {
     event: { id: event.id, timezone: event.timezone, status: event.status },
     params,
+    summary: {
+      today,
+      yesterday,
+      ...todayCounts,
+      admins: activeAdminIds
+        .map((id) => ({ id, name: adminNames.get(id) ?? "A former admin" }))
+        .sort((a, b) => compareNames(a.name, b.name)),
+    },
     rows: list.rows.map((row) => {
       const sentence = describeAudit(row, names);
       // Undo notes are bookkeeping (D32); other notes show unless the sentence already quotes them.
       const note = row.note && row.action !== "appointment.undo" && !sentence.includes(row.note) ? row.note : null;
       return {
         id: row.id,
+        action: row.action,
+        area: auditActionGroupOf(row.action),
         when: formatTimestamp(row.createdAt, event.timezone),
+        day: isoDateInTimezone(row.createdAt, event.timezone),
+        time: formatTimeOfDay(row.createdAt, event.timezone),
         who: row.adminId ? (adminNames.get(row.adminId) ?? "A former admin") : "System",
         sentence,
         note,

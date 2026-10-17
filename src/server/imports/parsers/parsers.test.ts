@@ -70,6 +70,20 @@ describe("parseSuppliers", () => {
     ]);
     expect(result.errors.map((e) => e.row)).toEqual([4, 5, 6]);
   });
+
+  it("refuses type words that are only names on Object.prototype", () => {
+    const sheet = sheetOf(
+      writeSheet(["Name", "Type"], [["A", "constructor"], ["B", "__proto__"], ["C", "toString"], ["D", "hasOwnProperty"]]),
+    );
+    const result = parseSuppliers(sheet);
+    expect(result.rows).toEqual([]);
+    expect(result.errors.map((e) => e.message)).toEqual([
+      'A: type must be business or hotel, got "constructor".',
+      'B: type must be business or hotel, got "__proto__".',
+      'C: type must be business or hotel, got "toString".',
+      'D: type must be business or hotel, got "hasOwnProperty".',
+    ]);
+  });
 });
 
 describe("parseRankingList", () => {
@@ -110,6 +124,21 @@ describe("parseRankingList", () => {
     expect(result.rows[1].choices).toEqual([]);
     expect(result.errors).toEqual([{ row: 4, message: '"bad" is not a valid email address.' }]);
   });
+
+  it("accepts CHOICE #10000 and refuses a column numbered 0 or past it as a file-level error", () => {
+    const fits = parseRankingList(sheetOf(writeSheet(["FULL_NAME", "CHOICE #10000"], [["Ann Lee", "A"]])));
+    expect(fits.rows[0].choices).toEqual([{ rank: 10_000, targetName: "A" }]);
+
+    for (const header of ["CHOICE #10001", "CHOICE #2147483648", "CHOICE #0"]) {
+      const result = parseRankingList(sheetOf(writeSheet(["FULL_NAME", "CHOICE #1", header], [["Ann Lee", "A", "B"]])));
+      expect(result.rows).toEqual([]);
+      expect(result.errors).toEqual([
+        { row: null, message: `Choice columns must be numbered 1 to 10,000. Rename or remove "${header}" and upload the file again.` },
+      ]);
+    }
+    const parsed = parseImportFile("buyer_hotel_rankings", writeSheet(["FULL_NAME", "CHOICE #99999"], [["Ann Lee", "A"]]));
+    expect(parsed.ok && isStructuralFailure(parsed.parsed)).toBe(true);
+  });
 });
 
 describe("parseRankingMatrix", () => {
@@ -139,6 +168,49 @@ describe("parseRankingMatrix", () => {
     expect(result.errors[0].row).toBe(3);
     expect(result.errors[0].message).toContain('eShow="soon"');
   });
+
+  it("accepts ranks up to 10,000 written as plain digits and refuses anything else", () => {
+    const sheet = sheetOf(
+      writeSheet(
+        ["", "Hotel A", "Hotel B"],
+        [
+          ["Fits", "10000", "007"],
+          ["Too big", "2147483648", "1"],
+          ["Exponent", "1e3", "1"],
+          ["Hex", "0x10", "1"],
+          ["Zero", "0", "1"],
+          ["Fraction", "2.5", "1"],
+          ["Signed", "+3", "1"],
+          ["Over", "10001", "1"],
+        ],
+      ),
+    );
+    const result = parseRankingMatrix(sheet);
+    expect(result.rows).toEqual([
+      {
+        row: 2,
+        rankerName: "Fits",
+        cells: [
+          { targetName: "Hotel A", rank: 10_000, isRejection: false },
+          { targetName: "Hotel B", rank: 7, isRejection: false },
+        ],
+      },
+    ]);
+    expect(result.errors.map((e) => e.row)).toEqual([3, 4, 5, 6, 7, 8, 9]);
+    expect(result.errors[0].message).toBe(
+      'Too big: cells must be a whole number from 1 to 10,000, N/A, or blank (Hotel A="2147483648").',
+    );
+  });
+
+  it("reads a \"__proto__\" or \"constructor\" column like any other name", () => {
+    const sheet = sheetOf(writeSheet(["", "__proto__", "constructor"], [["Ann Lee", 1, "N/A"]]));
+    const result = parseRankingMatrix(sheet);
+    expect(result.errors).toEqual([]);
+    expect(result.rows[0].cells).toEqual([
+      { targetName: "__proto__", rank: 1, isRejection: false },
+      { targetName: "constructor", rank: null, isRejection: true },
+    ]);
+  });
 });
 
 describe("parseImportFile", () => {
@@ -150,8 +222,10 @@ describe("parseImportFile", () => {
     const unknown = parseImportFile("buyer_hotel_rankings", writeSheet(["Email", "First name"], [["a@b.co", "A"]]));
     expect(unknown.ok).toBe(false);
     // SheetJS reads arbitrary bytes as a one-cell csv; the parser then finds no usable columns.
-    const garbage = parseImportFile("participants", Buffer.from([1, 2, 3]));
+    const garbage = parseImportFile("participants", Buffer.from("not a spreadsheet"));
     expect(garbage.ok && isStructuralFailure(garbage.parsed)).toBe(true);
+    // Control bytes alone are stripped from the cell (so they can be stored), which leaves an empty file.
+    expect(parseImportFile("participants", Buffer.from([1, 2, 3]))).toEqual({ ok: false, message: "The file has no rows." });
     const empty = parseImportFile("participants", writeSheet([], []));
     expect(empty).toEqual({ ok: false, message: "The file has no rows." });
   });

@@ -1,16 +1,27 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { admins, emailCampaigns, events, participants } from "@/db/schema";
+import { admins, emailCampaigns, events, imports, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
-import { defaultEventSettings } from "@/lib/schemas/event-settings";
+import { defaultEventSettings, type EventSettings } from "@/lib/schemas/event-settings";
+import { getFile, importFileKey, putFile, useMemoryStorageForTests } from "@/lib/storage";
 import { listAudit } from "@/server/audit/audit";
 import { assertEventEditable } from "./editable";
-import { archiveEvent, createEvent, deleteEvent, setRetainData, updateEvent, updateEventSettings } from "./events";
+import {
+  archiveEvent,
+  createEvent,
+  deleteEvent,
+  saveEventForm,
+  scheduleResetMessage,
+  setRetainData,
+  updateEvent,
+  updateEventSettings,
+} from "./events";
 import { EVENT_CHANGED_MESSAGE } from "./editable";
 import { raceBeforeTransaction } from "./test-race";
 import { getEvent, getEventCounts, listEvents } from "./queries";
-import { startRun } from "@/server/matching/runs";
+import { getActiveRun, getRun, listRuns } from "@/server/matching/queries";
+import { activateRun, startRun } from "@/server/matching/runs";
 import { seedEvent } from "@/server/matching/test-seed";
 import { SEND_IN_PROGRESS_MESSAGE } from "./status";
 
@@ -19,6 +30,7 @@ let db: Db;
 
 beforeAll(async () => {
   db = await createTestDb();
+  useMemoryStorageForTests();
   await db.insert(admins).values({ id: ACTOR, name: "Tester", email: "tester@example.com" });
 });
 
@@ -167,6 +179,24 @@ describe("deleteEvent", () => {
     expect(audit.rows.some((r) => r.entityId === id)).toBe(true);
   });
 
+  it("deletes the draft's uploaded import files after the rows, and reports keys it couldn't delete", async () => {
+    const id = await makeEvent("Has uploads");
+    const [upload] = await db
+      .insert(imports)
+      .values({ eventId: id, kind: "participants", fileKey: "pending", fileName: "Buyers.csv", status: "uploaded" })
+      .returning();
+    const fileKey = importFileKey(id, upload.id, "Buyers.csv");
+    await putFile({ key: fileKey, body: Buffer.from("email"), contentType: "text/csv" });
+    await db.update(imports).set({ fileKey }).where(eq(imports.id, upload.id));
+    // A key storage refuses stands in for a delete that fails.
+    await db.insert(imports).values({ eventId: id, kind: "suppliers", fileKey: "../broken", fileName: "Suppliers.csv", status: "uploaded" });
+
+    const result = await deleteEvent(db, id, ACTOR);
+    expect(result).toEqual({ ok: true, data: { id, fileErrors: ["../broken"] } });
+    expect(await getFile(fileKey)).toBeNull();
+    expect(await db.select().from(imports).where(eq(imports.eventId, id))).toHaveLength(0);
+  });
+
   it("refuses when the event has participants", async () => {
     const id = await makeEvent("Has people");
     await db.insert(participants).values({ eventId: id, email: "a@example.com", firstName: "A", lastName: "B" });
@@ -285,33 +315,128 @@ describe("settings writes merge into the stored settings (D95)", () => {
     expect((await getEvent(id, db))?.settings).toMatchObject({ retainData: true, buyerMin: 5 });
   });
 
-  it("refuses fewer slots than the active run uses, naming the highest used slot", async () => {
+  it("asks before saving fewer slots than the active run uses, naming the highest used slot", async () => {
+    const seeded = await seedEvent(db, { buyers: 6 });
+    const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
+    if (!run.ok) throw new Error(run.error.message);
+    const settings = (await getEvent(seeded.eventId, db))!.settings;
+    const result = await updateEventSettings(db, seeded.eventId, fewerSlots(settings), ACTOR);
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "needs_schedule_reset",
+        message: scheduleResetMessage(settings.slotCount),
+        fieldErrors: {
+          slotCount: [`The active schedule uses slot ${settings.slotCount}. Keep at least ${settings.slotCount} slots, or save and clear the schedule.`],
+        },
+      },
+    });
+    expect((await getEvent(seeded.eventId, db))?.settings.slotCount).toBe(settings.slotCount);
+    expect((await getActiveRun(seeded.eventId, db))?.id).toBe(run.data.runId);
+    // The same count still saves.
+    expect((await updateEventSettings(db, seeded.eventId, settings, ACTOR)).ok).toBe(true);
+  });
+});
+
+/** The event's settings with one slot fewer, every other number kept valid. */
+function fewerSlots(settings: EventSettings): EventSettings {
+  const slotCount = settings.slotCount - 1;
+  const buyerMax = Math.min(settings.buyerMax, slotCount);
+  const buyerIdeal = Math.min(settings.buyerIdeal, buyerMax);
+  return {
+    ...settings,
+    slotCount,
+    slots: settings.slots.slice(0, -1),
+    supplierTarget: Math.min(settings.supplierTarget, slotCount),
+    buyerMax,
+    buyerIdeal,
+    buyerMin: Math.min(settings.buyerMin, buyerIdeal),
+  };
+}
+
+describe("saveEventForm", () => {
+  async function matchedEvent() {
     const seeded = await seedEvent(db, { buyers: 6 });
     const run = await startRun(db, { eventId: seeded.eventId, adminId: seeded.adminId, keepExisting: false });
     if (!run.ok) throw new Error(run.error.message);
     const event = (await getEvent(seeded.eventId, db))!;
-    const settings = event.settings;
-    const fewer = {
-      ...settings,
-      slotCount: settings.slotCount - 1,
-      slots: settings.slots.slice(0, -1),
-      supplierTarget: Math.min(settings.supplierTarget, settings.slotCount - 1),
-      buyerMax: Math.min(settings.buyerMax, settings.slotCount - 1),
-    };
-    fewer.buyerIdeal = Math.min(fewer.buyerIdeal, fewer.buyerMax);
-    fewer.buyerMin = Math.min(fewer.buyerMin, fewer.buyerIdeal);
-    const result = await updateEventSettings(db, seeded.eventId, fewer, ACTOR);
-    expect(result).toEqual({
+    expect(event.status).toBe("matched");
+    return { ...seeded, event, runId: run.data.runId };
+  }
+  const details = { name: "Renamed show", eventDate: "2026-11-11", timezone: "America/Los_Angeles" };
+
+  it("saves details and settings together", async () => {
+    const { event } = await matchedEvent();
+    const result = await saveEventForm(db, event.id, { details, settings: { ...event.settings, buyerMin: 2 } }, ACTOR);
+    expect(result).toEqual({ ok: true, data: { id: event.id, clearedRunId: null } });
+    expect(await getEvent(event.id, db)).toMatchObject({ name: "Renamed show", settings: { buyerMin: 2 } });
+  });
+
+  it("saves nothing when either part fails, with field errors keyed by form path", async () => {
+    const { event } = await matchedEvent();
+    const invalid = await saveEventForm(db, event.id, { details: { ...details, name: "" }, settings: { ...event.settings, mutualTopN: 0 } }, ACTOR);
+    expect(!invalid.ok && Object.keys(invalid.error.fieldErrors ?? {}).sort()).toEqual(["name", "settings.mutualTopN"]);
+
+    // Valid details with fewer slots: the settings refusal rolls the details back too.
+    const refused = await saveEventForm(db, event.id, { details, settings: fewerSlots(event.settings) }, ACTOR);
+    expect(!refused.ok && refused.error.code).toBe("needs_schedule_reset");
+    expect(!refused.ok && Object.keys(refused.error.fieldErrors ?? {})).toEqual(["settings.slotCount"]);
+    expect(await getEvent(event.id, db)).toMatchObject({ name: event.name, settings: { slotCount: event.settings.slotCount } });
+    expect((await listAudit({ eventId: event.id, filters: { action: "event.update" } }, db)).total).toBe(0);
+  });
+
+  it("with clearSchedule saves fewer slots, clears the active run, and moves the event back to imported", async () => {
+    const { event, runId, adminId } = await matchedEvent();
+    const fewer = fewerSlots(event.settings);
+    const result = await saveEventForm(db, event.id, { details, settings: fewer, clearSchedule: true }, ACTOR);
+    expect(result).toEqual({ ok: true, data: { id: event.id, clearedRunId: runId } });
+
+    const after = (await getEvent(event.id, db))!;
+    expect(after).toMatchObject({ name: "Renamed show", status: "imported", settings: { slotCount: fewer.slotCount } });
+    expect(await getActiveRun(event.id, db)).toBeNull();
+    // The earlier run stays in the list, completed and inactive.
+    expect((await listRuns(event.id, db)).map((r) => [r.id, r.status, r.isActive])).toEqual([[runId, "completed", false]]);
+    const clear = await listAudit({ eventId: event.id, filters: { action: "matching.clear" } }, db);
+    expect(clear.rows).toMatchObject([
+      { entityId: runId, before: { activeRunId: runId, highestSlot: event.settings.slotCount }, after: { activeRunId: null, slotCount: fewer.slotCount } },
+    ]);
+    expect((await listAudit({ eventId: event.id, filters: { action: "event.settings" } }, db)).total).toBe(1);
+
+    // The old run uses a slot that no longer exists, so it can't come back.
+    const activate = await activateRun(db, { runId, adminId });
+    expect(activate).toEqual({
       ok: false,
       error: {
         code: "validation",
-        message: `The active schedule uses slot ${settings.slotCount}. Keep at least ${settings.slotCount} slots, or remove those appointments first.`,
-        fieldErrors: { slotCount: [`The active schedule uses slot ${settings.slotCount}.`] },
+        message: `This run uses slot ${event.settings.slotCount}, but the event now has ${fewer.slotCount} slots. Run matching again with the current settings, or add the slots back in Settings.`,
       },
     });
-    expect((await getEvent(seeded.eventId, db))?.settings.slotCount).toBe(settings.slotCount);
-    // The same count still saves.
-    expect((await updateEventSettings(db, seeded.eventId, settings, ACTOR)).ok).toBe(true);
+    expect(await getActiveRun(event.id, db)).toBeNull();
+
+    // A new run uses the saved settings and becomes the schedule.
+    const rerun = await startRun(db, { eventId: event.id, adminId, keepExisting: false });
+    if (!rerun.ok) throw new Error(rerun.error.message);
+    expect(rerun.data.isActive).toBe(true);
+    expect((await getRun(rerun.data.runId, db))?.settingsSnapshot.slotCount).toBe(fewer.slotCount);
+    expect((await getEvent(event.id, db))?.status).toBe("matched");
+  });
+
+  it("clears nothing when the new slot count still fits, even with clearSchedule", async () => {
+    const { event, runId } = await matchedEvent();
+    const result = await saveEventForm(db, event.id, { settings: { ...event.settings, buyerMin: 2 }, clearSchedule: true }, ACTOR);
+    expect(result).toEqual({ ok: true, data: { id: event.id, clearedRunId: null } });
+    expect((await getActiveRun(event.id, db))?.id).toBe(runId);
+  });
+
+  it("still refuses locked events, and a lock that lands first, without clearing anything", async () => {
+    const { event, runId } = await matchedEvent();
+    const raced = raceBeforeTransaction(db, () => db.update(events).set({ status: "locked" }).where(eq(events.id, event.id)));
+    const conflict = await saveEventForm(raced, event.id, { settings: fewerSlots(event.settings), clearSchedule: true }, ACTOR);
+    expect(conflict).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    const locked = await saveEventForm(db, event.id, { settings: fewerSlots(event.settings), clearSchedule: true }, ACTOR);
+    expect(!locked.ok && locked.error.code).toBe("locked");
+    expect((await getActiveRun(event.id, db))?.id).toBe(runId);
+    expect((await listAudit({ eventId: event.id, filters: { action: "matching.clear" } }, db)).total).toBe(0);
   });
 });
 

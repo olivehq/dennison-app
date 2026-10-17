@@ -9,7 +9,14 @@ import { createDataTableColumnHelper, DataTable } from "@/components/app/data-ta
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { resendToBouncedAction } from "@/server/email/actions";
-import { MESSAGE_STATUS_LABELS, MessageStatusBadge, recipients, type MessageStatus } from "../labels";
+import {
+  MESSAGE_STATUS_LABELS,
+  MessageStatusBadge,
+  recipients,
+  sentMessage,
+  skippedRevokedMessage,
+  type MessageStatus,
+} from "../labels";
 
 export type DeliveryTableRow = {
   id: string;
@@ -32,6 +39,7 @@ export function DeliveryTable({ rows }: { rows: DeliveryTableRow[] }) {
       helper.columns([
         helper.accessor("name", {
           header: "Recipient",
+          sortFn: "name",
           cell: ({ row }) => (
             <div className="flex max-w-md min-w-48 flex-col whitespace-normal">
               <span className="font-medium">{row.original.name}</span>
@@ -130,9 +138,10 @@ export function ResendBouncedButton({
           router.refresh();
           return;
         }
-        toast.success(`Sent to ${recipients(result.data.sent)}`);
+        const notify = result.data.delivered ? toast.success : toast.warning;
+        notify(sentMessage(result.data.sent, result.data.delivered));
         if (result.data.failed > 0) toast.error(`${recipients(result.data.failed)} could not be sent.`);
-        router.refresh();
+        if (result.data.skippedRevoked > 0) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
       }}
       trigger={trigger}
     />

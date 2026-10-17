@@ -8,17 +8,24 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import type { ImportKind, ImportState } from "@/lib/schemas/import";
 import { applyImportAction } from "@/server/imports/actions";
 import type { ApplySummary } from "@/server/imports/imports";
+import { setImportIgnored } from "../ignore-toggle";
 import { KIND_LABELS, plural } from "../import-labels";
 
 type ApplyPanelProps = {
   importId: string;
+  fileName: string;
   kind: ImportKind;
   state: ImportState;
   rows: number;
   rankings: number;
+  /** Ranking kinds: the people with a row in the file. */
+  rankers: number;
+  /** Ranking kinds: their current rankings an apply replaces, or null when the report can't tell. */
+  replacing: number | null;
   /** The event opts people in from the biztech file (D1). */
   biztechFromFile: boolean;
   eventIsDraft: boolean;
@@ -30,7 +37,27 @@ type ApplyPanelProps = {
   matchingHref: string;
 };
 
-function whatChanges({ kind, rows, rankings, biztechFromFile, eventIsDraft }: ApplyPanelProps): string[] {
+function rankerNoun(kind: ImportKind): string {
+  return kind === "supplier_rankings" ? "supplier" : "participant";
+}
+
+function rankingChanges({ kind, rankers, rankings, replacing }: ApplyPanelProps): string[] {
+  const lines = [`This file changes the rankings of ${plural(rankers, rankerNoun(kind))}.`];
+  if (replacing === null) {
+    lines.push(`Their rankings from earlier files of this kind are replaced with ${plural(rankings, "ranking")} from this file.`);
+  } else if (replacing > 0) {
+    lines.push(
+      `Their ${plural(replacing, "current ranking")} from earlier files of this kind ${replacing === 1 ? "is" : "are"} replaced with ${plural(rankings, "ranking")} from this file.`,
+    );
+  } else {
+    lines.push(`Adds ${plural(rankings, "ranking")} for them. They have none from earlier files of this kind.`);
+  }
+  lines.push("Everyone else keeps their current rankings.");
+  return lines;
+}
+
+function whatChanges(props: ApplyPanelProps): string[] {
+  const { kind, rows, biztechFromFile, eventIsDraft } = props;
   const lines: string[] = [];
   switch (kind) {
     case "participants":
@@ -46,13 +73,11 @@ function whatChanges({ kind, rows, rankings, biztechFromFile, eventIsDraft }: Ap
       );
       break;
     default:
-      lines.push(
-        `Replaces the ${KIND_LABELS[kind].toLowerCase()} from earlier files with this file's ${plural(rankings, "ranking")}.`,
-      );
+      lines.push(...rankingChanges(props));
       if (kind === "buyer_biztech_rankings") {
         lines.push(
           biztechFromFile
-            ? "Updates biztech opt-in: participants with at least one choice are opted in, every other active participant is opted out."
+            ? "Biztech opt-in changes only for the participants in this file. Those with at least one choice are opted in, the rest are opted out."
             : "Opt-in flags don't change, because this event opts everyone in to biztech.",
         );
       }
@@ -72,6 +97,8 @@ function blockedReason(props: ApplyPanelProps): string | null {
       return "Fix the errors listed below in the file, then upload it again.";
     case "applied":
       return props.appliedLabel ? `Applied ${props.appliedLabel}.` : "This file is applied.";
+    case "ignored":
+      return "This file is ignored, so it doesn't block matching. Stop ignoring it to check it again and apply it.";
     case "ready":
       return null;
   }
@@ -82,7 +109,9 @@ function summaryLines(summary: ApplySummary): string[] {
   if (summary.kind === "participants" || summary.kind === "suppliers") {
     lines.push(`${summary.created} added, ${summary.updated} updated.`);
   } else {
-    lines.push(`${plural(summary.rankingsWritten, "ranking")} written, ${summary.rankingsDeleted} from earlier files removed.`);
+    lines.push(
+      `${plural(summary.rankingsWritten, "ranking")} written for ${plural(summary.rankers, rankerNoun(summary.kind))}, replacing ${plural(summary.rankingsDeleted, "earlier ranking")}. Everyone else kept their rankings.`,
+    );
     if (summary.kind === "buyer_biztech_rankings") {
       lines.push(`${summary.optedIn} opted in to biztech, ${summary.optedOut} opted out.`);
     }
@@ -97,7 +126,15 @@ function summaryLines(summary: ApplySummary): string[] {
 export function ApplyPanel(props: ApplyPanelProps) {
   const router = useRouter();
   const [summary, setSummary] = React.useState<ApplySummary | null>(null);
+  const [ignoring, startIgnoring] = React.useTransition();
   const blocked = blockedReason(props);
+  const ignored = props.state === "ignored";
+
+  const toggleIgnored = () => {
+    startIgnoring(async () => {
+      await setImportIgnored(props.importId, props.fileName, !ignored);
+    });
+  };
 
   const apply = async () => {
     const result = await applyImportAction(props.importId);
@@ -108,7 +145,6 @@ export function ApplyPanel(props: ApplyPanelProps) {
     }
     setSummary(result.data.summary);
     toast.success(`${KIND_LABELS[props.kind]} applied.`);
-    router.refresh();
   };
 
   if (summary) {
@@ -136,7 +172,7 @@ export function ApplyPanel(props: ApplyPanelProps) {
   }
 
   return (
-    <div className="flex flex-col items-start gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <ConfirmDialog
         title={`Apply ${KIND_LABELS[props.kind].toLowerCase()}?`}
         description={
@@ -153,7 +189,18 @@ export function ApplyPanel(props: ApplyPanelProps) {
         onConfirm={apply}
         trigger={<Button disabled={blocked !== null}>Apply import</Button>}
       />
-      {blocked ? <p className="text-sm text-muted-foreground">{blocked}</p> : null}
+      {props.state !== "applied" ? (
+        <Button variant="outline" onClick={toggleIgnored} disabled={props.lockedReason !== null || ignoring}>
+          {ignoring ? <Spinner data-icon="inline-start" /> : null}
+          {ignored ? "Stop ignoring" : "Ignore file"}
+        </Button>
+      ) : null}
+      {blocked ? <p className="w-full text-sm text-muted-foreground">{blocked}</p> : null}
+      {props.state !== "applied" && !ignored && !props.lockedReason ? (
+        <p className="w-full text-sm text-muted-foreground">
+          Not using this file? Ignore it to keep it in history without blocking matching.
+        </p>
+      ) : null}
     </div>
   );
 }

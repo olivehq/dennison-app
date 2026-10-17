@@ -9,18 +9,19 @@ import {
 } from "./shared";
 import type { ParsedRows, ParsedSupplier } from "./types";
 
-const TYPE_WORDS: Record<string, "business" | "hotel"> = {
-  business: "business",
-  biztech: "business",
-  "business/tech": "business",
-  tech: "business",
-  hotel: "hotel",
-  destination: "hotel",
-  "hotel/destination": "hotel",
-};
+// A Map, so a cell like "constructor" or "__proto__" is not found on Object.prototype.
+const TYPE_WORDS = new Map<string, "business" | "hotel">([
+  ["business", "business"],
+  ["biztech", "business"],
+  ["business/tech", "business"],
+  ["tech", "business"],
+  ["hotel", "hotel"],
+  ["destination", "hotel"],
+  ["hotel/destination", "hotel"],
+]);
 
 function parseType(value: string): "business" | "hotel" | null {
-  return TYPE_WORDS[value.trim().toLowerCase()] ?? null;
+  return TYPE_WORDS.get(value.trim().toLowerCase()) ?? null;
 }
 
 type ContactResult = { name: string | null; email: string | null } | { error: string };

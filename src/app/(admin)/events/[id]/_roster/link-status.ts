@@ -1,24 +1,14 @@
-import type { TokenListItem } from "@/server/tokens/queries";
+import type { ContactType } from "@/db/schema";
+import { contactKey } from "@/server/tokens/tokens";
+import type { ReadLink } from "@/server/tokens/queries";
 import type { LinkInfo } from "./types";
 
-type ContactType = TokenListItem["contactType"];
-type TokenLike = Pick<TokenListItem, "id" | "contactType" | "entityId" | "status" | "createdAt">;
-
-/** The newest token per contact, keyed by contact type and entity. Older tokens were replaced. */
-export function latestLinks(tokens: TokenLike[]): Map<string, LinkInfo> {
-  const newest = new Map<string, TokenLike>();
-  for (const token of tokens) {
-    const key = `${token.contactType}:${token.entityId}`;
-    const current = newest.get(key);
-    const newer =
-      !current ||
-      token.createdAt > current.createdAt ||
-      (token.createdAt.getTime() === current.createdAt.getTime() && token.status === "active");
-    if (newer) newest.set(key, token);
-  }
-  return new Map([...newest].map(([key, token]) => [key, { tokenId: token.id, state: token.status }]));
-}
-
-export function linkOf(links: Map<string, LinkInfo>, contactType: ContactType, entityId: string): LinkInfo {
-  return links.get(`${contactType}:${entityId}`) ?? null;
+/**
+ * One contact's newest link for the roster tables. `links` comes from
+ * `readContactLinks`, which keeps the newest token per contact by the tokens
+ * module's rule, the same one the exports use.
+ */
+export function linkOf(links: ReadonlyMap<string, ReadLink>, contactType: ContactType, entityId: string): LinkInfo {
+  const link = links.get(contactKey({ contactType, entityId }));
+  return link ? { tokenId: link.tokenId, state: link.status } : null;
 }

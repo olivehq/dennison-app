@@ -22,12 +22,21 @@ export const AUDIT_ACTION_GROUPS = {
   lock: { label: "Lock and unlock", actions: ["schedule.lock", "schedule.unlock"] },
   emails: { label: "Emails", actions: ["email."] },
   exports: { label: "Exports", actions: ["export."] },
+  settings: { label: "Settings", actions: ["event."] },
 } as const satisfies Record<string, { label: string; actions: readonly string[] }>;
 
 export type AuditActionGroup = keyof typeof AUDIT_ACTION_GROUPS;
 
 export function isAuditActionGroup(value: unknown): value is AuditActionGroup {
   return typeof value === "string" && Object.hasOwn(AUDIT_ACTION_GROUPS, value);
+}
+
+/** The filter group an action belongs to, by the same patterns the filter uses. Null for actions no group lists. */
+export function auditActionGroupOf(action: string): AuditActionGroup | null {
+  for (const [group, { actions }] of Object.entries(AUDIT_ACTION_GROUPS) as [AuditActionGroup, { actions: readonly string[] }][]) {
+    if (actions.some((pattern) => (pattern.endsWith(".") ? action.startsWith(pattern) : action === pattern))) return group;
+  }
+  return null;
 }
 
 type Bag = Record<string, unknown>;
@@ -61,6 +70,8 @@ const EXPORTS: Record<string, string> = {
   schedules: "the schedules ZIP",
   report: "the quality report",
   access_list: "the participant access list",
+  participants_full: "the full participants list",
+  suppliers_full: "the full suppliers list",
 };
 
 const SETTING_LABELS: Record<string, string> = {
@@ -98,7 +109,7 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
   const buyer = (s: Bag) => name(s.buyerId, "a buyer");
   switch (row.action) {
     case "appointment.replace":
-      return `Replaced ${buyer(before)} with ${buyer(after)} at ${where(after.slot ? after : before)}${after.pinKept ? ". The pin stays" : ""}`;
+      return `Replaced ${buyer(before)} with ${buyer(after)} at ${where(after.slot ? after : before)}${after.pinKept ? ". The pin stays" : after.pinDropped ? ". The pin was removed" : ""}`;
     case "appointment.add":
       return `Added ${buyer(after)} at ${where(after)}`;
     case "appointment.remove":
@@ -130,7 +141,8 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
     }
     case "matching.run": {
       if (after.status === "failed") return `Matching failed${str(after.error) ? `: ${after.error}` : ""}`;
-      const kept = num(after.pinnedCount);
+      // Rows written before Oct 16 call the kept count pinnedCount.
+      const kept = num(after.keptCount) ?? num(after.pinnedCount);
       const count = num(after.appointments);
       const warnings = num(after.warningCount);
       const parts = [after.keepExisting ? `Re-ran matching keeping ${plural(kept ?? 0, "existing appointment")}` : "Ran matching"];
@@ -140,6 +152,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
     }
     case "matching.activate":
       return "Made a different run the active schedule";
+    case "matching.clear": {
+      const slots = num(after.slotCount);
+      return `Cleared the active schedule${slots !== null ? ` when the slot count went down to ${slots}` : ""}. No run is active`;
+    }
   }
 
   // Roster.
@@ -191,6 +207,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
       }
       case "delete":
         return `Deleted the import ${file ?? ""}`.trim();
+      case "ignore":
+        return `Ignored ${file ?? `a ${kind} file`}. Matching skips it`;
+      case "unignore":
+        return `Stopped ignoring ${file ?? `a ${kind} file`}`;
     }
   }
   if (row.action === "alias.save") {
@@ -220,6 +240,29 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
         num(counts.suppliers) !== null ? plural(num(counts.suppliers)!, "supplier") : null,
       ].filter((p): p is string => p !== null);
       return `Deleted participant data 90 days after the event${parts.length ? `: ${list(parts)} and their schedules` : ""}`;
+    }
+  }
+
+  // Team.
+  if (row.action === "admin.invite_revoke") {
+    const email = str(before.email) ?? str(after.email);
+    return `Revoked the invite to ${email ?? "a new admin"}. Its link stopped working`;
+  }
+  switch (row.action) {
+    case "admin.profile_update": {
+      const from = str(before.name);
+      const to = str(after.name);
+      return from && to ? `Changed their name from "${from}" to "${to}"` : "Changed their name";
+    }
+    case "admin.password_change":
+      return after.otherSessionsSignedOut === true
+        ? "Changed their password and signed out their other sessions"
+        : "Changed their password";
+    case "admin.sessions_sign_out": {
+      const count = num(after.count) ?? 0;
+      const devices = Array.isArray(after.devices) ? after.devices.map(str).filter((d): d is string => d !== null) : [];
+      if (count === 1 && devices.length === 1) return `Signed out their ${devices[0]} session`;
+      return count > 0 ? `Signed out ${plural(count, "other session")}` : "Signed out their other sessions";
     }
   }
 

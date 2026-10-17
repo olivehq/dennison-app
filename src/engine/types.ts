@@ -68,7 +68,11 @@ export type MatchInput = {
   buyers: Buyer[];
   suppliers: Supplier[];
   rankings: Ranking[];
-  /** Kept exactly as placed. The engine fills only the remaining gaps. */
+  /**
+   * Rows kept exactly as placed: the engine never moves them and fills only
+   * the remaining gaps. Each row keeps its own `pinned` flag in the output,
+   * so "keep existing" can carry unpinned rows without pinning them (D10).
+   */
   pinned: Appointment[];
 };
 

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, like } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { accessTokens, admins, appointments, auditEvents, events, matchRuns, rankings, suppliers } from "@/db/schema";
@@ -6,6 +6,8 @@ import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
+import { decryptToken } from "@/lib/tokens";
+import { contactKey, issueTokenForContact, linksForContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
 import { displayNameFor, getParticipant, getSupplier, listParticipants, listSuppliers } from "./queries";
 import {
   restoreParticipant,
@@ -65,7 +67,7 @@ describe("participants", () => {
 
     const rows = await listParticipants(eventId, {}, db);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ email: "ann@example.com", displayLabel: "HelmsBriscoe - Director", appointmentCount: 0, hasPendingToken: false });
+    expect(rows[0]).toMatchObject({ email: "ann@example.com", displayLabel: "HelmsBriscoe - Director", appointmentCount: 0 });
 
     const audit = await db.select().from(auditEvents).where(eq(auditEvents.entityId, annId));
     expect(audit.map((a) => a.action)).toEqual(["participant.create"]);
@@ -91,18 +93,18 @@ describe("participants", () => {
       tokenHash: "hash-ann",
       expiresAt: new Date(Date.now() + 86_400_000),
     });
-    expect((await getParticipant(annId, db))?.hasPendingToken).toBe(true);
-
     const sameEmail = await upsertParticipant(db, { eventId, id: annId, data: { ...ann, title: "VP" }, adminId });
     expect(sameEmail.ok).toBe(true);
-    expect((await getParticipant(annId, db))?.hasPendingToken).toBe(true);
+    expect((await getParticipant(annId, db))?.title).toBe("VP");
+    const [kept] = await db.select().from(accessTokens).where(eq(accessTokens.tokenHash, "hash-ann"));
+    expect(kept.revokedAt).toBeNull();
 
     const newEmail = await upsertParticipant(db, { eventId, id: annId, data: { ...ann, email: "ann.lee@example.com" }, adminId });
     expect(newEmail.ok).toBe(true);
     const after = await getParticipant(annId, db);
     expect(after?.email).toBe("ann.lee@example.com");
-    expect(after?.hasPendingToken).toBe(false);
-    const [token] = await db.select().from(accessTokens).where(eq(accessTokens.entityId, annId));
+    // The old link is revoked and the new address already has its own (see the reissue tests below).
+    const [token] = await db.select().from(accessTokens).where(eq(accessTokens.tokenHash, "hash-ann"));
     expect(token.revokedAt).not.toBeNull();
 
     const audit = await db.select().from(auditEvents).where(eq(auditEvents.entityId, annId));
@@ -174,7 +176,7 @@ describe("suppliers", () => {
     if (!created.ok) return;
     hyattId = created.data.id;
     const row = await getSupplier(hyattId, db);
-    expect(row).toMatchObject({ adminContactEmail: "pat@hyatt.com", attendeeContactName: "Sam", appointmentCount: 0, hasPendingToken: false });
+    expect(row).toMatchObject({ adminContactEmail: "pat@hyatt.com", attendeeContactName: "Sam", appointmentCount: 0 });
 
     const duplicate = await upsertSupplier(db, { eventId, data: hyatt, adminId });
     expect(duplicate).toMatchObject({ ok: false, error: { code: "conflict", fieldErrors: { name: expect.any(Array) } } });
@@ -194,9 +196,8 @@ describe("suppliers", () => {
     });
     expect(result.ok).toBe(true);
     const tokens = await db.select().from(accessTokens).where(eq(accessTokens.entityId, hyattId));
-    expect(tokens.find((t) => t.contactType === "supplier_admin")?.revokedAt).toBeNull();
-    expect(tokens.find((t) => t.contactType === "supplier_attendee")?.revokedAt).not.toBeNull();
-    expect((await getSupplier(hyattId, db))?.hasPendingToken).toBe(true);
+    expect(tokens.find((t) => t.tokenHash === "hash-admin")?.revokedAt).toBeNull();
+    expect(tokens.find((t) => t.tokenHash === "hash-attendee")?.revokedAt).not.toBeNull();
   });
 
   it("sets and clears a desk override and refuses a taken desk", async () => {
@@ -308,5 +309,364 @@ describe("restoring a supplier whose desk was taken", () => {
     await withdrawSupplier(db, { id: kept.id, adminId });
     expect(await restoreSupplier(db, { id: kept.id, adminId })).toEqual({ ok: true, data: { id: kept.id } });
     expect(await getSupplier(kept.id, db)).toMatchObject({ deskNumber: 8, deskOverride: true });
+  });
+});
+
+describe("a save that read the row before another save landed", () => {
+  const expiresAt = () => new Date(Date.now() + 86_400_000);
+
+  it("compares a participant's email with the row as it is now, so the new contact's link is revoked", async () => {
+    const event = await createEvent("Stale participant save");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+
+    // Another admin changes A to B and issues B a link after this save read A.
+    const between = async () => {
+      const moved = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "b@example.com" }, adminId });
+      if (!moved.ok) throw new Error("setup");
+      await db.insert(accessTokens).values({ eventId: event, contactType: "buyer", entityId: id, tokenHash: "hash-stale-b", expiresAt: expiresAt() });
+    };
+    const stale = await upsertParticipant(raceBeforeTransaction(db, between), { eventId: event, id, data: ann, adminId });
+    expect(stale.ok).toBe(true);
+
+    expect((await getParticipant(id, db))?.email).toBe("ann@example.com");
+    const [token] = await db.select().from(accessTokens).where(eq(accessTokens.tokenHash, "hash-stale-b"));
+    expect(token.revokedAt).not.toBeNull();
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, id), like(auditEvents.note, "Email changed; 1 link revoked.%")));
+    expect(audit.before).toMatchObject({ email: "b@example.com" });
+    expect(audit.after).toMatchObject({ email: "ann@example.com" });
+  });
+
+  it("compares supplier contact emails with the row as it is now, so the new contact's link is revoked", async () => {
+    const event = await createEvent("Stale supplier save");
+    const inn = {
+      name: "Stale Inn",
+      type: "hotel" as const,
+      deskOverride: false,
+      adminContact: { name: "Pat", email: "a@inn.com" },
+      attendeeContact: { name: "Sam", email: "sam@inn.com" },
+    };
+    const created = await upsertSupplier(db, { eventId: event, data: inn, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+
+    const between = async () => {
+      const moved = await upsertSupplier(db, { eventId: event, id, data: { ...inn, adminContact: { name: "Pat", email: "b@inn.com" } }, adminId });
+      if (!moved.ok) throw new Error("setup");
+      await db.insert(accessTokens).values([
+        { eventId: event, contactType: "supplier_admin", entityId: id, tokenHash: "hash-stale-admin-b", expiresAt: expiresAt() },
+        { eventId: event, contactType: "supplier_attendee", entityId: id, tokenHash: "hash-stale-attendee", expiresAt: expiresAt() },
+      ]);
+    };
+    const stale = await upsertSupplier(raceBeforeTransaction(db, between), { eventId: event, id, data: inn, adminId });
+    expect(stale.ok).toBe(true);
+
+    expect((await getSupplier(id, db))?.adminContactEmail).toBe("a@inn.com");
+    const tokens = await db.select().from(accessTokens).where(eq(accessTokens.entityId, id));
+    expect(tokens.find((t) => t.tokenHash === "hash-stale-admin-b")?.revokedAt).not.toBeNull();
+    expect(tokens.find((t) => t.tokenHash === "hash-stale-attendee")?.revokedAt).toBeNull();
+    const [audit] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, id), like(auditEvents.note, "Contact email changed; 1 link revoked.%")));
+    expect(audit.before).toMatchObject({ adminContactEmail: "b@inn.com" });
+  });
+});
+
+describe("supplier names that differ only in case", () => {
+  const inn = { name: "Audit Supplier", type: "hotel" as const, deskOverride: false };
+  const nameConflict = {
+    ok: false,
+    error: {
+      code: "conflict",
+      message: "Another supplier in this event already has that name.",
+      fieldErrors: { name: ["Already used by another supplier."] },
+    },
+  };
+
+  it("are refused on add and on edit, but a supplier can recase its own name", async () => {
+    const event = await createEvent("Supplier name case");
+    const first = await upsertSupplier(db, { eventId: event, data: inn, adminId });
+    const second = await upsertSupplier(db, { eventId: event, data: { ...inn, name: "Other Supplier" }, adminId });
+    if (!first.ok || !second.ok) throw new Error("setup");
+
+    expect(await upsertSupplier(db, { eventId: event, data: { ...inn, name: "audit supplier" }, adminId })).toEqual(nameConflict);
+    expect(await upsertSupplier(db, { eventId: event, id: second.data.id, data: { ...inn, name: "AUDIT SUPPLIER" }, adminId })).toEqual(
+      nameConflict,
+    );
+    expect((await getSupplier(second.data.id, db))?.name).toBe("Other Supplier");
+
+    expect((await upsertSupplier(db, { eventId: event, id: first.data.id, data: { ...inn, name: "Audit supplier" }, adminId })).ok).toBe(true);
+    expect((await getSupplier(first.data.id, db))?.name).toBe("Audit supplier");
+    expect(await listSuppliers(event, {}, db)).toHaveLength(2);
+
+    // Another event may use the same name.
+    expect((await upsertSupplier(db, { eventId: await createEvent("Other event"), data: inn, adminId })).ok).toBe(true);
+  });
+
+  it("are checked under the event lock, so a supplier added meanwhile is seen", async () => {
+    const event = await createEvent("Supplier name race");
+    const between = async () => {
+      await db.insert(suppliers).values({ eventId: event, name: "Audit Supplier", type: "hotel" });
+    };
+    const result = await upsertSupplier(raceBeforeTransaction(db, between), {
+      eventId: event,
+      data: { ...inn, name: "audit supplier" },
+      adminId,
+    });
+    expect(result).toEqual(nameConflict);
+    expect(await listSuppliers(event, {}, db)).toHaveLength(1);
+  });
+
+  it("are rejected by the database, past the code check", async () => {
+    const event = await createEvent("Supplier name index");
+    await db.insert(suppliers).values({ eventId: event, name: "Audit Supplier", type: "hotel" });
+    await expect(db.insert(suppliers).values({ eventId: event, name: "AUDIT supplier", type: "business" })).rejects.toThrow();
+    expect(await listSuppliers(event, {}, db)).toHaveLength(1);
+  });
+});
+
+describe("changing a contact's email while their link is live", () => {
+  const expiresAt = () => new Date(Date.now() + 86_400_000);
+  const pastDate = () => new Date(Date.now() - 86_400_000);
+  const inn = {
+    name: "Reissue Inn",
+    type: "hotel" as const,
+    deskOverride: false,
+    adminContact: { name: "Pat", email: "pat@inn.com" },
+    attendeeContact: { name: "Sam", email: "sam@inn.com" },
+  };
+
+  async function liveTokens(entityId: string) {
+    return db.select().from(accessTokens).where(and(eq(accessTokens.entityId, entityId), isNull(accessTokens.revokedAt)));
+  }
+
+  function plainToken(row: { tokenCiphertext: string | null } | undefined): string {
+    const plain = row?.tokenCiphertext ? decryptToken(row.tokenCiphertext) : null;
+    if (!plain) throw new Error("expected a stored token");
+    return plain;
+  }
+
+  async function updateAudit(entityId: string, action: "participant.update" | "supplier.update") {
+    const [row] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, entityId), eq(auditEvents.action, action)))
+      .orderBy(desc(auditEvents.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  it("revokes a participant's old link and issues one for the new address", async () => {
+    const event = await createEvent("Participant email reissue");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const old = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
+
+    const result = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "ann.new@example.com" }, adminId });
+    expect(result.ok).toBe(true);
+
+    expect(await verifyToken(db, old.token)).toBeNull();
+    const [fresh] = await liveTokens(id);
+    expect(fresh.id).not.toBe(old.tokenId);
+    expect(await verifyToken(db, plainToken(fresh))).toMatchObject({ contactType: "buyer", entityId: id });
+    expect(await updateAudit(id, "participant.update")).toMatchObject({
+      after: { email: "ann.new@example.com", linksReissued: ["buyer"] },
+      note: "Email changed; 1 link revoked. A new link was issued for the new address.",
+    });
+  });
+
+  it("does the same for a supplier admin contact and leaves the other contact's link", async () => {
+    const event = await createEvent("Supplier email reissue");
+    const created = await upsertSupplier(db, { eventId: event, data: inn, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const admin = await issueTokenForContact(db, { eventId: event, contactType: "supplier_admin", entityId: id, expiresAt: expiresAt() });
+    const attendee = await issueTokenForContact(db, { eventId: event, contactType: "supplier_attendee", entityId: id, expiresAt: expiresAt() });
+
+    const result = await upsertSupplier(db, { eventId: event, id, data: { ...inn, adminContact: { name: "Pat", email: "pat.new@inn.com" } }, adminId });
+    expect(result.ok).toBe(true);
+
+    expect(await verifyToken(db, admin.token)).toBeNull();
+    expect(await verifyToken(db, attendee.token)).toMatchObject({ contactType: "supplier_attendee" });
+    const live = await liveTokens(id);
+    expect(live).toHaveLength(2);
+    const fresh = live.find((t) => t.contactType === "supplier_admin");
+    expect(fresh?.id).not.toBe(admin.tokenId);
+    expect(await verifyToken(db, plainToken(fresh))).toMatchObject({ contactType: "supplier_admin", entityId: id });
+    expect(await updateAudit(id, "supplier.update")).toMatchObject({
+      after: { adminContactEmail: "pat.new@inn.com", linksReissued: ["supplier_admin"] },
+      note: "Contact email changed; 1 link revoked. A new link was issued for the new address.",
+    });
+  });
+
+  it("does not issue a link when an admin had already revoked the old one", async () => {
+    const event = await createEvent("Revoked before email edit");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const old = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
+    expect((await revokeToken(db, old.tokenId, adminId)).ok).toBe(true);
+
+    const result = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "ann.new@example.com" }, adminId });
+    expect(result.ok).toBe(true);
+
+    expect(await liveTokens(id)).toHaveLength(0);
+    const audit = await updateAudit(id, "participant.update");
+    expect(audit.after).not.toHaveProperty("linksReissued");
+    expect(audit.note).toBe("Email changed; 0 links revoked.");
+  });
+
+  it("does not issue a link when the old one had expired", async () => {
+    const event = await createEvent("Expired before email edit");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    await db.insert(accessTokens).values({ eventId: event, contactType: "buyer", entityId: id, tokenHash: "hash-expired", expiresAt: pastDate() });
+
+    const result = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "ann.new@example.com" }, adminId });
+    expect(result.ok).toBe(true);
+    expect(await liveTokens(id)).toHaveLength(1);
+    // Still expired, not revoked, so a send or the access list can give the new address a link.
+    const [row] = await db.select().from(accessTokens).where(eq(accessTokens.entityId, id));
+    expect(row.revokedAt).toBeNull();
+    expect(row.expiresAt.getTime()).toBeLessThan(Date.now());
+  });
+
+  it("ends a cleared contact's link without revoking it, so a later address can get a link", async () => {
+    const event = await createEvent("Cleared contact email");
+    const created = await upsertSupplier(db, { eventId: event, data: inn, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const old = await issueTokenForContact(db, { eventId: event, contactType: "supplier_attendee", entityId: id, expiresAt: expiresAt() });
+
+    const cleared = await upsertSupplier(db, { eventId: event, id, data: { ...inn, attendeeContact: undefined }, adminId });
+    expect(cleared.ok).toBe(true);
+
+    expect(await verifyToken(db, old.token)).toBeNull();
+    const [ended] = await db.select().from(accessTokens).where(eq(accessTokens.id, old.tokenId));
+    expect(ended.revokedAt).toBeNull();
+    const audit = await updateAudit(id, "supplier.update");
+    expect(audit.after).not.toHaveProperty("linksReissued");
+    expect(audit.note).toBe("Contact email changed; 0 links revoked. 1 link expired because the email was removed.");
+
+    // A later save sets a new address: the contact is not treated as revoked (D137).
+    const reset = await upsertSupplier(db, { eventId: event, id, data: { ...inn, attendeeContact: { name: "Sam", email: "sam.new@inn.com" } }, adminId });
+    expect(reset.ok).toBe(true);
+    const contact = { contactType: "supplier_attendee" as const, entityId: id };
+    const links = await linksForContacts(db, event, [contact], { issueMissing: true });
+    if (!links.ok) throw new Error(links.error.message);
+    expect(links.data.revoked.size).toBe(0);
+    const link = links.data.links.get(contactKey(contact));
+    expect(link?.tokenId).not.toBe(old.tokenId);
+    expect(await verifyToken(db, link!.token)).toMatchObject({ contactType: "supplier_attendee", entityId: id });
+  });
+});
+
+describe("withdraw and restore leave links alone (D130)", () => {
+  const expiresAt = () => new Date(Date.now() + 86_400_000);
+
+  async function liveTokens(entityId: string) {
+    return db.select().from(accessTokens).where(and(eq(accessTokens.entityId, entityId), isNull(accessTokens.revokedAt)));
+  }
+
+  async function restoreAudit(entityId: string) {
+    const [row] = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.entityId, entityId), like(auditEvents.action, "%.restore")))
+      .orderBy(desc(auditEvents.createdAt))
+      .limit(1);
+    return row;
+  }
+
+  it("keeps a participant's live link through withdraw and restore", async () => {
+    const event = await createEvent("Restore keeps link");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const link = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
+
+    await withdrawParticipant(db, { id, adminId });
+    expect((await liveTokens(id)).map((t) => t.id)).toEqual([link.tokenId]);
+    expect((await restoreParticipant(db, { id, adminId })).ok).toBe(true);
+    expect((await liveTokens(id)).map((t) => t.id)).toEqual([link.tokenId]);
+    expect((await verifyToken(db, link.token))?.entityId).toBe(id);
+    expect(await restoreAudit(id)).toMatchObject({ after: { status: "active" }, note: null });
+  });
+
+  it("keeps a link revoked while the participant was withdrawn revoked after restore", async () => {
+    const event = await createEvent("Restore keeps revoke");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const link = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
+
+    await withdrawParticipant(db, { id, adminId });
+    expect((await revokeToken(db, link.tokenId, adminId)).ok).toBe(true);
+    expect((await restoreParticipant(db, { id, adminId })).ok).toBe(true);
+
+    expect(await liveTokens(id)).toHaveLength(0);
+    expect(await verifyToken(db, link.token)).toBeNull();
+    const audit = await restoreAudit(id);
+    expect(audit).toMatchObject({ after: { status: "active" }, note: null });
+    expect(audit.after).not.toHaveProperty("linksReissued");
+  });
+
+  it("leaves a link revoked before the withdrawal alone", async () => {
+    const event = await createEvent("Restore respects earlier revoke");
+    const created = await upsertParticipant(db, { eventId: event, data: ann, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+    const link = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
+
+    expect((await revokeToken(db, link.tokenId, adminId)).ok).toBe(true);
+    await withdrawParticipant(db, { id, adminId });
+    expect((await restoreParticipant(db, { id, adminId })).ok).toBe(true);
+    expect(await liveTokens(id)).toHaveLength(0);
+    expect(await restoreAudit(id)).toMatchObject({ after: { status: "active" }, note: null });
+  });
+
+  it("restores a supplier without reissuing a contact link revoked while withdrawn", async () => {
+    const event = await createEvent("Supplier restore keeps revoke");
+    const [inn] = await db
+      .insert(suppliers)
+      .values({
+        eventId: event,
+        name: "Relink Inn",
+        type: "hotel",
+        deskNumber: 3,
+        deskOverride: true,
+        adminContactEmail: "pat@relink.com",
+        attendeeContactEmail: "sam@relink.com",
+      })
+      .returning();
+    const admin = await issueTokenForContact(db, { eventId: event, contactType: "supplier_admin", entityId: inn.id, expiresAt: expiresAt() });
+    const attendee = await issueTokenForContact(db, {
+      eventId: event,
+      contactType: "supplier_attendee",
+      entityId: inn.id,
+      expiresAt: expiresAt(),
+    });
+
+    await withdrawSupplier(db, { id: inn.id, adminId });
+    expect((await revokeToken(db, admin.tokenId, adminId)).ok).toBe(true);
+    const [taker] = await db.insert(suppliers).values({ eventId: event, name: "Taker Inn", type: "hotel" }).returning();
+    expect((await setSupplierDesk(db, { id: taker.id, deskNumber: 3, adminId })).ok).toBe(true);
+    const restored = await restoreSupplier(db, { id: inn.id, adminId });
+    expect(restored.ok).toBe(true);
+
+    expect((await liveTokens(inn.id)).map((t) => t.id)).toEqual([attendee.tokenId]);
+    const audit = await restoreAudit(inn.id);
+    expect(audit).toMatchObject({
+      after: { status: "active", deskNumber: null },
+      note: "Desk 3 is now assigned to Taker Inn, so the desk was cleared. Reassign desks or set one by hand.",
+    });
+    expect(audit.after).not.toHaveProperty("linksReissued");
   });
 });

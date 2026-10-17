@@ -65,13 +65,16 @@ export function buildSlots(input: {
   return slots;
 }
 
-/** "2026-11-10", "America/Los_Angeles" -> "Tuesday, November 10, 2026". */
-export function formatEventDate(date: string, timezone: string): string {
+/**
+ * "2026-11-10", "America/Los_Angeles" -> "Tuesday, November 10, 2026".
+ * `short` gives "Nov 10, 2026" for tight spots such as the sidebar.
+ */
+export function formatEventDate(date: string, timezone: string, style: "long" | "short" = "long"): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   if (!match) throw new RangeError(`Expected an ISO date (YYYY-MM-DD), got "${date}"`);
   const [, year, month, day] = match;
   const local = new TZDate(Number(year), Number(month) - 1, Number(day), timezone);
-  return format(local, "EEEE, MMMM d, yyyy");
+  return format(local, style === "short" ? "MMM d, yyyy" : "EEEE, MMMM d, yyyy");
 }
 
 /** Minutes from midnight right now in the given timezone. `now` is injectable for tests. */
@@ -83,6 +86,16 @@ export function nowInTimezone(timezone: string, now: Date = new Date()): number 
 /** A stored instant shown in the event's timezone: "Nov 10, 2026, 3:10 PM". */
 export function formatTimestamp(instant: Date, timezone: string): string {
   return format(new TZDate(instant, timezone), "MMM d, yyyy, h:mm a");
+}
+
+/** A stored instant's time of day in the event's timezone: "3:10 PM". */
+export function formatTimeOfDay(instant: Date, timezone: string): string {
+  return format(new TZDate(instant, timezone), "h:mm a");
+}
+
+/** The calendar date an instant falls on in the given timezone: "2026-11-10". */
+export function isoDateInTimezone(instant: Date, timezone: string): string {
+  return format(new TZDate(instant, timezone), "yyyy-MM-dd");
 }
 
 /**

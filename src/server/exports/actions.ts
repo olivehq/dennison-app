@@ -13,19 +13,21 @@ export type RecordExportInput = {
   eventId: string;
   adminId: string;
   kind: ExportKind;
-  runId: string;
-  runVersion: number;
+  /** The active run the file was built from. Omit both for exports that need no run (`needsRun`). */
+  runId?: string;
+  runVersion?: number;
   /** Extra facts for the log, e.g. how many links an access list rotated. */
   details?: Record<string, unknown>;
 };
 
 export async function recordExport(input: RecordExportInput, db: Db = getDb()): Promise<void> {
+  const hasRun = input.runId !== undefined;
   await recordAudit(db, {
     eventId: input.eventId,
     adminId: input.adminId,
     action: exportAuditAction(input.kind),
-    entityType: "match_run",
-    entityId: input.runId,
-    after: { runId: input.runId, runVersion: input.runVersion, ...input.details },
+    entityType: hasRun ? "match_run" : "event",
+    entityId: hasRun ? input.runId : input.eventId,
+    after: hasRun ? { runId: input.runId, runVersion: input.runVersion, ...input.details } : { ...input.details },
   });
 }

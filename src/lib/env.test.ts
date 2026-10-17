@@ -12,7 +12,7 @@ const complete = {
   RESEND_API_KEY: undefined,
   RESEND_WEBHOOK_SECRET: undefined,
   EMAIL_FROM: "AW <schedule@example.com>",
-  CRON_SECRET: undefined,
+  CRON_SECRET: "cron",
   SENTRY_DSN: undefined,
   NEXT_PUBLIC_SENTRY_DSN: undefined,
 };
@@ -30,8 +30,15 @@ describe("productionEnvProblems", () => {
       BLOB_READ_WRITE_TOKEN: undefined,
       BETTER_AUTH_SECRET: undefined,
       TOKEN_PEPPER: undefined,
+      CRON_SECRET: undefined,
     });
-    expect(problems.join(" ")).toMatch(/DATABASE_URL.*APP_URL.*BLOB_READ_WRITE_TOKEN.*BETTER_AUTH_SECRET.*TOKEN_PEPPER/);
-    expect(problems).toHaveLength(5);
+    expect(problems.join(" ")).toMatch(/DATABASE_URL.*APP_URL.*BLOB_READ_WRITE_TOKEN.*BETTER_AUTH_SECRET.*TOKEN_PEPPER.*CRON_SECRET/);
+    expect(problems).toHaveLength(6);
+  });
+
+  it("needs CRON_SECRET so the retention cron can run", () => {
+    expect(productionEnvProblems({ ...complete, CRON_SECRET: undefined })).toEqual([
+      "CRON_SECRET must be set in production, or the retention cron can't run.",
+    ]);
   });
 });

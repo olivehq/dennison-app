@@ -1,4 +1,5 @@
 import type { SheetRows } from "@/lib/xlsx";
+import { MAX_RANK, parseRank } from "./shared";
 import type { MatrixCell, ParsedRankingMatrixRow, ParsedRows } from "./types";
 
 const REJECTION = new Set(["n/a", "na", "n.a.", "x", "no", "never"]);
@@ -9,9 +10,8 @@ function parseCell(value: string): CellValue {
   const text = value.trim();
   if (text === "") return { rank: null, isRejection: false };
   if (REJECTION.has(text.toLowerCase())) return { rank: null, isRejection: true };
-  const number = Number(text);
-  if (Number.isInteger(number) && number >= 1) return { rank: number, isRejection: false };
-  return null;
+  const rank = parseRank(text);
+  return rank === null ? null : { rank, isRejection: false };
 }
 
 /**
@@ -45,7 +45,7 @@ export function parseRankingMatrix(sheet: SheetRows): ParsedRows<ParsedRankingMa
     if (bad.length > 0) {
       errors.push({
         row,
-        message: `${rankerName}: cells must be a number, N/A, or blank (${bad.join(", ")}).`,
+        message: `${rankerName}: cells must be a whole number from 1 to ${MAX_RANK.toLocaleString("en")}, N/A, or blank (${bad.join(", ")}).`,
       });
       return;
     }

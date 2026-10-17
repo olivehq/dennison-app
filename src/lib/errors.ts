@@ -7,6 +7,8 @@ export type ErrorCode =
   | "conflict"
   | "locked"
   | "rate_limited"
+  /** Saving settings would cut into the active schedule; the caller can confirm and resend with clearSchedule. */
+  | "needs_schedule_reset"
   | "internal";
 
 export type ActionError = {

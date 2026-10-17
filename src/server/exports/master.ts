@@ -1,4 +1,5 @@
 import { compareNames } from "@/lib/names";
+import { isLive } from "@/server/schedule/snapshot";
 import { deskLabel, toCsv, type ExportView } from "./common";
 
 /** Output spec section 2, columns in this order. */
@@ -27,16 +28,16 @@ export type MasterRow = {
 
 /**
  * Every appointment of the view, sorted by slot then buyer name. Appointments
- * that involve a withdrawn person are left out, matching the ZIP (D42): the
- * schedule still holds them until it is re-run, but nobody should be told to
- * meet someone who cancelled.
+ * that involve a withdrawn person are left out (`isLive`), matching the ZIP
+ * and the participant page (D87): the schedule still holds them until it is
+ * re-run, but nobody should be told to meet someone who cancelled.
  */
 export function masterScheduleRows(view: ExportView): MasterRow[] {
   const slots = new Map(view.slots.map((s) => [s.slot, s]));
   const buyers = new Map(view.buyers.map((b) => [b.id, b]));
   const suppliers = new Map(view.suppliers.map((s) => [s.id, s]));
   return view.appointments
-    .filter((a) => !buyers.get(a.buyerId)?.withdrawn && !suppliers.get(a.supplierId)?.withdrawn)
+    .filter((a) => isLive(view, a))
     .map((a) => {
       const supplier = suppliers.get(a.supplierId);
       const supplierName = supplier?.name ?? "Unknown supplier";

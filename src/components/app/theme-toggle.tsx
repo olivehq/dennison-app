@@ -4,11 +4,11 @@ import { cn } from "cn";
 import { MoonIcon, SunIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
-import { SidebarMenuButton } from "@/components/ui/sidebar";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type ThemeToggleProps = {
-  /** `icon` is a small ghost button. `menu` renders a sidebar menu row and must sit inside a SidebarMenuItem. */
+  /** `icon` is a small ghost button. `menu` renders a dropdown menu item and must sit inside a DropdownMenuContent. */
   variant?: "icon" | "menu";
   className?: string;
 };
@@ -29,10 +29,10 @@ export function ThemeToggle({ variant = "icon", className }: ThemeToggleProps) {
 
   if (variant === "menu") {
     return (
-      <SidebarMenuButton onClick={toggle} tooltip="Switch theme" className={className}>
+      <DropdownMenuItem onSelect={toggle} className={className}>
         <ThemeIcons />
-        <span>Switch theme</span>
-      </SidebarMenuButton>
+        Switch theme
+      </DropdownMenuItem>
     );
   }
 

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { buildSlots, endOfDayInTimezone, formatEventDate, formatMinutes, formatTimestamp, nowInTimezone, parseClock } from "./time";
+import {
+  buildSlots,
+  endOfDayInTimezone,
+  formatEventDate,
+  formatMinutes,
+  formatTimeOfDay,
+  formatTimestamp,
+  isoDateInTimezone,
+  nowInTimezone,
+  parseClock,
+} from "./time";
 
 describe("formatMinutes", () => {
   it("formats afternoon and morning times on a 12-hour clock", () => {
@@ -66,6 +76,10 @@ describe("formatEventDate", () => {
     expect(formatEventDate("2026-11-10", "Pacific/Auckland")).toBe("Tuesday, November 10, 2026");
   });
 
+  it("has a short form for tight spots", () => {
+    expect(formatEventDate("2026-11-10", "Pacific/Auckland", "short")).toBe("Nov 10, 2026");
+  });
+
   it("rejects non-ISO input", () => {
     expect(() => formatEventDate("11/10/2026", "UTC")).toThrow(RangeError);
   });
@@ -85,6 +99,16 @@ describe("formatTimestamp", () => {
     const instant = new Date("2026-11-10T23:10:00Z");
     expect(formatTimestamp(instant, "America/Los_Angeles")).toBe("Nov 10, 2026, 3:10 PM");
     expect(formatTimestamp(instant, "America/New_York")).toBe("Nov 10, 2026, 6:10 PM");
+  });
+});
+
+describe("formatTimeOfDay and isoDateInTimezone", () => {
+  it("read the clock and the calendar date in the event timezone", () => {
+    const instant = new Date("2026-11-11T02:30:00Z");
+    expect(formatTimeOfDay(instant, "America/Los_Angeles")).toBe("6:30 PM");
+    expect(isoDateInTimezone(instant, "America/Los_Angeles")).toBe("2026-11-10");
+    expect(isoDateInTimezone(instant, "America/New_York")).toBe("2026-11-10");
+    expect(isoDateInTimezone(instant, "Europe/London")).toBe("2026-11-11");
   });
 });
 

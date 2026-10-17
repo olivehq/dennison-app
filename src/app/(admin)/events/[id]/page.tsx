@@ -5,10 +5,12 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventStatus } from "@/lib/schemas/event";
+import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEmailSummary } from "@/server/email/queries";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { EVENT_STATUS_LABELS } from "../event-status-badge";
+import { NEXT_ACTION } from "../next-action";
 import { ArchiveEventButton } from "./archive-event-button";
 import { DeleteEventButton } from "./delete-event-button";
 import { SendUpdateButton } from "./emails/campaign-buttons";
@@ -16,45 +18,6 @@ import { people } from "./emails/labels";
 import { eventSectionHref } from "./event-sections";
 
 const STEPS: EventStatus[] = ["draft", "imported", "matched", "locked", "sent"];
-
-const NEXT_ACTION: Record<EventStatus, { title: string; description: string; segment: string; label: string }> = {
-  draft: {
-    title: "Import the files",
-    description: "Upload participants, suppliers, and the three ranking files from eShow.",
-    segment: "imports",
-    label: "Go to imports",
-  },
-  imported: {
-    title: "Run matching",
-    description: "The engine builds a schedule from the rankings. You can re-run it as often as you like.",
-    segment: "matching",
-    label: "Go to matching",
-  },
-  matched: {
-    title: "Review and lock the schedule",
-    description: "Check counts, fix problems by hand, then lock it so desks and times stop changing.",
-    segment: "schedule",
-    label: "Go to schedule",
-  },
-  locked: {
-    title: "Send schedules",
-    description: "Email every buyer and supplier their private schedule link.",
-    segment: "emails",
-    label: "Go to emails",
-  },
-  sent: {
-    title: "Run the show",
-    description: "Follow the live timeline. Changes after sending go out as update emails.",
-    segment: "schedule",
-    label: "Open the schedule",
-  },
-  archived: {
-    title: "Download the records",
-    description: "This event is finished. Exports stay available until the retention date.",
-    segment: "exports",
-    label: "Go to exports",
-  },
-};
 
 function StatusStepper({ status }: { status: EventStatus }) {
   const current = status === "archived" ? STEPS.length : STEPS.indexOf(status);
@@ -87,12 +50,13 @@ function StatusStepper({ status }: { status: EventStatus }) {
   );
 }
 
-function CountCard({ label, value, href }: { label: string; value: number; href: string }) {
+function CountCard({ label, value, note, href }: { label: string; value: number; note?: string; href: string }) {
   return (
     <Card size="sm" className="min-w-0">
       <CardHeader>
         <CardDescription>{label}</CardDescription>
         <CardTitle className="font-display text-3xl font-bold tabular-nums">{value}</CardTitle>
+        {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
       </CardHeader>
       <CardContent>
         <Button variant="link" size="sm" className="h-auto p-0" asChild>
@@ -129,7 +93,16 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
         <CountCard label="Participants" value={counts.participants} href={eventSectionHref(event.id, "participants")} />
         <CountCard label="Suppliers" value={counts.suppliers} href={eventSectionHref(event.id, "suppliers")} />
         <CountCard label="Appointments" value={counts.appointments} href={eventSectionHref(event.id, "schedule")} />
-        <CountCard label="Changed since last email" value={email.changed} href={eventSectionHref(event.id, "emails")} />
+        <CountCard
+          label="Changed since last email"
+          value={email.changed}
+          note={
+            email.lastSentAt
+              ? `Last email sent ${formatTimestamp(email.lastSentAt, event.timezone)}`
+              : "No email sent yet"
+          }
+          href={eventSectionHref(event.id, "emails")}
+        />
       </div>
       <Card className="max-w-xl">
         <CardHeader>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIT_ACTION_GROUPS, describeAudit, isAuditActionGroup, type DescribableAudit } from "./describe";
+import { AUDIT_ACTION_GROUPS, auditActionGroupOf, describeAudit, isAuditActionGroup, type DescribableAudit } from "./describe";
 
 const BUYER = "b0000000-0000-4000-8000-000000000001";
 const OTHER_BUYER = "b0000000-0000-4000-8000-000000000002";
@@ -36,6 +36,9 @@ describe("describeAudit", () => {
     expect(
       describeAudit(row("appointment.replace", { before: snap(BUYER), after: snap(OTHER_BUYER, { pinned: true, pinKept: true }) }), names),
     ).toBe("Replaced CA Medical Association with Visit Berkeley at Hyatt Regency Monterey, slot 4. The pin stays");
+    expect(
+      describeAudit(row("appointment.replace", { before: snap(BUYER), after: snap(OTHER_BUYER, { pinDropped: true }) }), names),
+    ).toBe("Replaced CA Medical Association with Visit Berkeley at Hyatt Regency Monterey, slot 4. The pin was removed");
     expect(describeAudit(row("appointment.add", { after: snap(BUYER) }), names)).toBe(
       "Added CA Medical Association at Hyatt Regency Monterey, slot 4",
     );
@@ -88,10 +91,19 @@ describe("describeAudit", () => {
         names,
       ),
     ).toBe("Re-ran matching keeping 500 existing appointments, 504 appointments, 1 warning");
+    expect(
+      describeAudit(
+        row("matching.run", { after: { status: "completed", keepExisting: true, keptCount: 3, keptPinnedCount: 1, appointments: 9, warningCount: 0, isActive: false } }),
+        names,
+      ),
+    ).toBe("Re-ran matching keeping 3 existing appointments, 9 appointments");
     expect(describeAudit(row("matching.run", { after: { status: "completed", appointments: 504, warningCount: 0, isActive: true } }), names)).toBe(
       "Ran matching, 504 appointments. It became the active run",
     );
     expect(describeAudit(row("matching.run", { after: { status: "failed", error: "boom" } }), names)).toBe("Matching failed: boom");
+    expect(describeAudit(row("matching.clear", { after: { activeRunId: null, slotCount: 8 } }), names)).toBe(
+      "Cleared the active schedule when the slot count went down to 8. No run is active",
+    );
   });
 
   it("describes roster, links, imports, and settings", () => {
@@ -114,6 +126,12 @@ describe("describeAudit", () => {
     expect(describeAudit(row("import.apply", { after: { status: "applied", kind: "buyer_hotel_rankings", rankingsWritten: 900 } }), names)).toBe(
       "Applied the buyer hotel rankings import, 900 rankings written",
     );
+    expect(describeAudit(row("import.ignore", { after: { kind: "buyer_biztech_rankings", fileName: "biztech.xlsx" } }), names)).toBe(
+      "Ignored biztech.xlsx. Matching skips it",
+    );
+    expect(describeAudit(row("import.unignore", { after: { kind: "buyer_biztech_rankings", fileName: "biztech.xlsx" } }), names)).toBe(
+      "Stopped ignoring biztech.xlsx",
+    );
     expect(describeAudit(row("alias.save", { after: { raw: "Hyatt Monterey", entityId: SUPPLIER } }), names)).toBe(
       'Matched the name "Hyatt Monterey" to Hyatt Regency Monterey',
     );
@@ -130,6 +148,7 @@ describe("describeAudit", () => {
 
   it("describes exports and email, and humanises anything unknown", () => {
     expect(describeAudit(row("export.access_list", { after: { runId: RUN } }), names)).toBe("Downloaded the participant access list");
+    expect(describeAudit(row("export.suppliers_full", { after: {} }), names)).toBe("Downloaded the full suppliers list");
     expect(describeAudit(row("email.send", { after: { name: "Your schedule", sent: 120, failed: 1 } }), names)).toBe(
       'Sent "Your schedule" to 120 recipients, 1 failed',
     );
@@ -138,12 +157,49 @@ describe("describeAudit", () => {
     );
     expect(describeAudit(row("something.new_thing"), names)).toBe("Something new thing");
   });
+
+  it("describes a revoked admin invite", () => {
+    expect(describeAudit(row("admin.invite_revoke", { before: { email: "new@example.com" } }), names)).toBe(
+      "Revoked the invite to new@example.com. Its link stopped working",
+    );
+    expect(describeAudit(row("admin.invite_revoke"), names)).toBe("Revoked the invite to a new admin. Its link stopped working");
+  });
+
+  it("describes changes to your own account", () => {
+    expect(
+      describeAudit(row("admin.profile_update", { before: { name: "Dana Lee" }, after: { name: "Dana Okafor" } }), names),
+    ).toBe('Changed their name from "Dana Lee" to "Dana Okafor"');
+    expect(describeAudit(row("admin.password_change", { after: { otherSessionsSignedOut: true } }), names)).toBe(
+      "Changed their password and signed out their other sessions",
+    );
+    expect(describeAudit(row("admin.password_change", { after: { otherSessionsSignedOut: false } }), names)).toBe(
+      "Changed their password",
+    );
+    expect(
+      describeAudit(row("admin.sessions_sign_out", { after: { count: 1, devices: ["Safari on iPhone"] } }), names),
+    ).toBe("Signed out their Safari on iPhone session");
+    expect(
+      describeAudit(row("admin.sessions_sign_out", { after: { count: 3, devices: ["A", "B", "C"] } }), names),
+    ).toBe("Signed out 3 other sessions");
+  });
 });
 
 describe("AUDIT_ACTION_GROUPS", () => {
   it("covers each group the activity filter offers", () => {
-    expect(Object.keys(AUDIT_ACTION_GROUPS)).toEqual(["schedule", "roster", "imports", "matching", "lock", "emails", "exports"]);
+    expect(Object.keys(AUDIT_ACTION_GROUPS)).toEqual(["schedule", "roster", "imports", "matching", "lock", "emails", "exports", "settings"]);
     expect(isAuditActionGroup("lock")).toBe(true);
     expect(isAuditActionGroup("toString")).toBe(false);
+  });
+});
+
+describe("auditActionGroupOf", () => {
+  it("puts each action in the group whose filter finds it", () => {
+    expect(auditActionGroupOf("appointment.replace")).toBe("schedule");
+    expect(auditActionGroupOf("schedule.reassign_desks")).toBe("schedule");
+    expect(auditActionGroupOf("schedule.lock")).toBe("lock");
+    expect(auditActionGroupOf("token.regenerate")).toBe("roster");
+    expect(auditActionGroupOf("alias.save")).toBe("imports");
+    expect(auditActionGroupOf("event.settings")).toBe("settings");
+    expect(auditActionGroupOf("admin.invite_revoke")).toBeNull();
   });
 });

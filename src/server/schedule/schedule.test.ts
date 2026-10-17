@@ -1,7 +1,17 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens, appointments, emailCampaigns, events, matchRuns, participants, suppliers, type Appointment } from "@/db/schema";
+import {
+  accessTokens,
+  appointments,
+  emailCampaigns,
+  events,
+  matchRuns,
+  participants,
+  rankings,
+  suppliers,
+  type Appointment,
+} from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { NOT_ACTIVE_RUN_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
@@ -17,11 +27,13 @@ import {
   replaceAppointment,
   swapCandidates,
   undoAudit,
+  UNDO_CONFLICT_HINT,
   VERSION_CONFLICT_MESSAGE,
   type SwapCandidate,
 } from "./edits";
 import { lockSchedule, planDesks, reassignDesks, unlockSchedule } from "./lock";
-import { getPersonSchedule, getScheduleView } from "./queries";
+import { getScheduleView } from "./queries";
+import { loadPersonSchedule } from "./snapshot";
 
 let db: Db;
 let seeded: Seeded;
@@ -119,22 +131,14 @@ describe("getScheduleView", () => {
     expect(Array.isArray(view.health.buyersBelowMin)).toBe(true);
   });
 
-  it("getPersonSchedule shows OPEN gaps and hides ranks for participants", async () => {
+  it("loadPersonSchedule shows OPEN gaps and no ranks", async () => {
     const buyer = seeded.buyers[0];
     const mine = (await rows()).filter((a) => a.buyerId === buyer.id);
-    const admin = await getPersonSchedule(seeded.eventId, { type: "buyer", id: buyer.id }, db);
-    expect(admin?.slots).toHaveLength(9);
-    expect(admin?.slots.filter((s) => s.appointment !== null)).toHaveLength(mine.length);
-    expect(admin?.slots.filter((s) => s.appointment === null).length).toBe(9 - mine.length);
-    const booked = admin?.slots.find((s) => s.appointment !== null);
-    expect(booked?.appointment).toHaveProperty("buyerRank");
-
-    const participant = await getPersonSchedule(
-      seeded.eventId,
-      { type: "buyer", id: buyer.id, forParticipant: true },
-      db,
-    );
-    for (const slot of participant?.slots ?? []) {
+    const schedule = await loadPersonSchedule(db, seeded.eventId, { type: "buyer", id: buyer.id });
+    expect(schedule?.slots).toHaveLength(9);
+    expect(schedule?.slots.filter((s) => s.appointment !== null)).toHaveLength(mine.length);
+    expect(schedule?.slots.filter((s) => s.appointment === null).length).toBe(9 - mine.length);
+    for (const slot of schedule?.slots ?? []) {
       if (!slot.appointment) continue;
       expect(slot.appointment).not.toHaveProperty("buyerRank");
       expect(slot.appointment).not.toHaveProperty("supplierRank");
@@ -142,9 +146,9 @@ describe("getScheduleView", () => {
       expect(slot.appointment.counterpartName).not.toBe("");
     }
 
-    const supplier = await getPersonSchedule(seeded.eventId, { type: "supplier", id: seeded.suppliers[0].id }, db);
+    const supplier = await loadPersonSchedule(db, seeded.eventId, { type: "supplier", id: seeded.suppliers[0].id });
     expect(supplier?.slots.every((s) => s.appointment !== null)).toBe(true);
-    expect(await getPersonSchedule(seeded.eventId, { type: "buyer", id: seeded.suppliers[0].id }, db)).toBeNull();
+    expect(await loadPersonSchedule(db, seeded.eventId, { type: "buyer", id: seeded.suppliers[0].id })).toBeNull();
   });
 });
 
@@ -336,6 +340,84 @@ describe("edits", () => {
     }
   });
 
+  /** Removes every appointment in `slot` for the given suppliers, so they are free then. */
+  async function freeSuppliersIn(slot: number, supplierIds: string[]): Promise<Appointment[]> {
+    const removed: Appointment[] = [];
+    for (const a of (await rows()).filter((r) => r.slot === slot && supplierIds.includes(r.supplierId))) {
+      const result = await removeAppointment(
+        db,
+        { runId, version: await version(), slot, supplierId: a.supplierId, buyerId: a.buyerId },
+        seeded.adminId,
+      );
+      if (!result.ok) throw new Error(result.error.message);
+      removed.push(a);
+    }
+    return removed;
+  }
+
+  it("swapCandidates for a buyer's slot lists only free, unpaired, eligible suppliers, and the pick saves", async () => {
+    // Every supplier is booked in every slot in the fixture, so free two of them in slot 1.
+    const hyatt = supplierNamed("Hyatt Regency Monterey");
+    const carmel = supplierNamed("Carmel Valley Ranch");
+    const [first] = await freeSuppliersIn(1, [hyatt.id, carmel.id]);
+    const buyerId = first.buyerId; // now free in slot 1
+    const now = await rows();
+    const result = await swapCandidates(db, { runId, buyerId, slot: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const paired = new Set(now.filter((a) => a.buyerId === buyerId).map((a) => a.supplierId));
+    const ids = result.data.map((c) => c.supplierId);
+    expect(ids.length).toBeGreaterThan(0);
+    // Only the two freed suppliers can be free in slot 1, and never one the buyer already meets.
+    for (const id of ids) expect([hyatt.id, carmel.id]).toContain(id);
+    for (const c of result.data) {
+      expect(c.kind).toBe("supplier");
+      expect(c.buyerId).toBe(buyerId);
+      expect(paired.has(c.supplierId)).toBe(false);
+      expect(c.count).toBe(now.filter((a) => a.supplierId === c.supplierId).length);
+      expect(c.countAfter).toBe(c.count + 1);
+    }
+    // The supplier the buyer just lost is free and eligible again.
+    expect(ids).toContain(first.supplierId);
+
+    const pick = result.data[0];
+    const added = await addAppointment(
+      db,
+      { runId, version: await version(), slot: 1, supplierId: pick.supplierId, buyerId },
+      seeded.adminId,
+    );
+    expect(added.ok).toBe(true);
+    const row = (await rows()).find((a) => a.slot === 1 && a.buyerId === buyerId);
+    expect(row).toMatchObject({ supplierId: pick.supplierId, source: "manual", pinned: false });
+  });
+
+  it("swapCandidates for a buyer's slot applies biztech eligibility and refuses a withdrawn buyer", async () => {
+    const delta = supplierNamed("Delta Staging");
+    const hyatt = supplierNamed("Hyatt Regency Monterey");
+    const optedOut = seeded.buyers.find((b) => !b.biztechOptIn);
+    if (!optedOut) throw new Error("fixture needs a buyer not opted in to biztech");
+    // Free Delta (business) and Hyatt (hotel) in slot 1, and the opted-out buyer too.
+    await freeSuppliersIn(1, [delta.id, hyatt.id]);
+    for (const a of (await rows()).filter((r) => r.buyerId === optedOut.id && r.slot === 1)) {
+      const removed = await removeAppointment(
+        db,
+        { runId, version: await version(), slot: 1, supplierId: a.supplierId, buyerId: a.buyerId },
+        seeded.adminId,
+      );
+      if (!removed.ok) throw new Error(removed.error.message);
+    }
+    const result = await swapCandidates(db, { runId, buyerId: optedOut.id, slot: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const ids = result.data.map((c) => c.supplierId);
+    expect(ids).not.toContain(delta.id);
+    expect(result.data.every((c) => c.kind === "supplier" && c.supplierType === "hotel")).toBe(true);
+
+    await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, optedOut.id));
+    const refused = await swapCandidates(db, { runId, buyerId: optedOut.id, slot: 1 });
+    expect(!refused.ok && refused.error.code).toBe("conflict");
+  });
+
   it("replace swaps the buyer and undo restores it, each bumping the version", async () => {
     const { target, pick } = await replaceableRow();
     const v = await version();
@@ -389,7 +471,7 @@ describe("edits", () => {
     expect(notUndoable.ok).toBe(true);
   });
 
-  it("replace keeps the slot's pin and says so in the audit row", async () => {
+  it("a replacement starts unpinned, the audit row says the pin was dropped, and undo puts the pin back", async () => {
     const { target, pick } = await replaceableRow();
     await db.update(appointments).set({ pinned: true }).where(eq(appointments.id, target.id));
     const replaced = await replaceAppointment(
@@ -407,10 +489,11 @@ describe("edits", () => {
     expect(replaced.ok).toBe(true);
     if (!replaced.ok) return;
     const row = (await rows()).find((a) => a.slot === target.slot && a.supplierId === target.supplierId);
-    expect(row).toMatchObject({ buyerId: pick.buyerId, pinned: true });
+    expect(row).toMatchObject({ buyerId: pick.buyerId, pinned: false, source: "manual" });
     const audit = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.replace" } }, db);
     expect(audit.rows[0].before).toMatchObject({ pinned: true });
-    expect(audit.rows[0].after).toMatchObject({ buyerId: pick.buyerId, pinned: true, pinKept: true });
+    expect(audit.rows[0].after).toMatchObject({ buyerId: pick.buyerId, pinned: false, pinDropped: true });
+    expect(audit.rows[0].after).not.toHaveProperty("pinKept");
 
     const undone = await undoAudit(db, { auditEventId: replaced.data.auditEventId, adminId: seeded.adminId });
     expect(undone.ok).toBe(true);
@@ -455,6 +538,39 @@ describe("desks (D17)", () => {
       ["Hyatt Regency Monterey", 6],
       ["Monterey Plaza Hotel", 2],
     ]);
+  });
+});
+
+describe("desks for withdrawn suppliers", () => {
+  it("planDesks gives a withdrawn supplier no desk, an override included, and frees its number", () => {
+    const plan = planDesks(
+      seeded.suppliers.map((s) =>
+        s.name === "Alpha Audio" ? { ...s, status: "withdrawn" as const, deskOverride: true, deskNumber: 2 } : s,
+      ),
+    );
+    expect(plan.map((p) => [p.name, p.desk, p.override])).toEqual([
+      ["Alpha Audio", null, false],
+      ["Bravo Lighting", 1, false],
+      ["Carmel Valley Ranch", 2, false],
+      ["Delta Staging", 3, false],
+      ["Hyatt Regency Monterey", 4, false],
+      ["Monterey Plaza Hotel", 5, false],
+    ]);
+  });
+
+  it("reassignDesks clears a withdrawn supplier's override and counts only active desks", async () => {
+    const alpha = supplierNamed("Alpha Audio");
+    await db
+      .update(suppliers)
+      .set({ status: "withdrawn", deskOverride: true, deskNumber: 57 })
+      .where(eq(suppliers.id, alpha.id));
+    const result = await reassignDesks(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.desks.filter((d) => d.desk !== null)).toHaveLength(5);
+    expect(result.data.desks.find((d) => d.supplierId === alpha.id)).toMatchObject({ desk: null, override: false });
+    const [row] = await db.select().from(suppliers).where(eq(suppliers.id, alpha.id));
+    expect(row).toMatchObject({ deskNumber: null, deskOverride: false });
   });
 });
 
@@ -551,18 +667,11 @@ describe("withdrawn people still on the schedule", () => {
     expect(view.appointments.filter((a) => a.buyerId !== first.buyerId).every((a) => !a.counterpartWithdrawn)).toBe(true);
   });
 
-  it("getPersonSchedule flags the row for staff and shows OPEN to the participant", async () => {
+  it("loadPersonSchedule shows the participant an OPEN slot", async () => {
     const first = await withdrawFirstBuyer();
-    const ref = { type: "supplier" as const, id: first.supplierId };
-    const admin = (await getPersonSchedule(seeded.eventId, ref, db))!;
-    const adminSlot = admin.slots.find((s) => s.slot === first.slot)!;
-    expect(adminSlot.appointment?.counterpartId).toBe(first.buyerId);
-    expect(adminSlot.appointment?.counterpartWithdrawn).toBe(true);
-
-    const participant = (await getPersonSchedule(seeded.eventId, { ...ref, forParticipant: true }, db))!;
-    expect(participant.slots.find((s) => s.slot === first.slot)!.appointment).toBeNull();
-    const others = participant.slots.filter((s) => s.appointment);
-    expect(others.every((s) => s.appointment!.counterpartWithdrawn === undefined)).toBe(true);
+    const schedule = (await loadPersonSchedule(db, seeded.eventId, { type: "supplier", id: first.supplierId }))!;
+    expect(schedule.slots.find((s) => s.slot === first.slot)!.appointment).toBeNull();
+    expect(schedule.slots.some((s) => s.appointment?.counterpartId === first.buyerId)).toBe(false);
   });
 
   it("lockSchedule refuses until the appointments are gone, and writes nothing", async () => {
@@ -660,9 +769,11 @@ describe("only the active run is edited (D33)", () => {
       seeded.adminId,
     );
     expect(!added.ok && added.error.message).toBe(NOT_ACTIVE_RUN_MESSAGE);
+    // Any buyer but the one in the slot: replacing a buyer with itself is refused before the run is checked.
+    const other = seeded.buyers.find((b) => b.id !== a.buyerId)!;
     const replaced = await replaceAppointment(
       db,
-      { runId, version: staleVersion, slot: a.slot, supplierId: a.supplierId, removeBuyerId: a.buyerId, addBuyerId: seeded.buyers[0].id },
+      { runId, version: staleVersion, slot: a.slot, supplierId: a.supplierId, removeBuyerId: a.buyerId, addBuyerId: other.id },
       seeded.adminId,
     );
     expect(!replaced.ok && replaced.error.message).toBe(NOT_ACTIVE_RUN_MESSAGE);
@@ -686,6 +797,202 @@ describe("only the active run is edited (D33)", () => {
       seeded.adminId,
     );
     expect(result).toEqual({ ok: false, error: { code: "conflict", message: NOT_ACTIVE_RUN_MESSAGE } });
+  });
+});
+
+describe("changes that land between an edit's read and its write", () => {
+  /** A replace that is valid when read: an engine row and its best candidate. */
+  async function replaceInput() {
+    const { target, pick } = await replaceableRow();
+    return {
+      target,
+      pick,
+      input: {
+        runId,
+        version: await version(),
+        slot: target.slot,
+        supplierId: target.supplierId,
+        removeBuyerId: target.buyerId,
+        addBuyerId: pick.buyerId,
+      },
+    };
+  }
+
+  async function expectNothingWritten(before: Appointment[], v: number) {
+    expect((await rows()).map((r) => r.id).sort()).toEqual(before.map((r) => r.id).sort());
+    expect(await version()).toBe(v);
+  }
+
+  it("a settings save that drops the slot refuses the add", async () => {
+    const [last] = (await rows()).filter((r) => r.slot === 9);
+    const cleared = await removeAppointment(
+      db,
+      { runId, version: await version(), slot: 9, supplierId: last.supplierId, buyerId: last.buyerId },
+      seeded.adminId,
+    );
+    if (!cleared.ok) throw new Error(cleared.error.message);
+    const before = await rows();
+    const v = await version();
+    const [event] = await db.select().from(events).where(eq(events.id, seeded.eventId));
+    const shrink = () =>
+      db
+        .update(events)
+        .set({ settings: { ...event.settings, slotCount: 8, slots: event.settings.slots.slice(0, 8), supplierTarget: 8 } })
+        .where(eq(events.id, seeded.eventId));
+    const result = await addAppointment(
+      raceBeforeTransaction(db, shrink),
+      { runId, version: v, slot: 9, supplierId: last.supplierId, buyerId: last.buyerId },
+      seeded.adminId,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "validation", message: "Slot 9 does not exist. This event has 8 slots." },
+    });
+    await expectNothingWritten(before, v);
+  });
+
+  it("a withdrawal of the buyer being booked refuses the replace", async () => {
+    const { pick, input } = await replaceInput();
+    const before = await rows();
+    const withdraw = () => db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, pick.buyerId));
+    const result = await replaceAppointment(raceBeforeTransaction(db, withdraw), input, seeded.adminId);
+    expect(result).toEqual({ ok: false, error: { code: "conflict", message: `${pick.name} has withdrawn.` } });
+    await expectNothingWritten(before, input.version);
+  });
+
+  it("a withdrawal of the supplier refuses the replace", async () => {
+    const { target, input } = await replaceInput();
+    const before = await rows();
+    const withdraw = () => db.update(suppliers).set({ status: "withdrawn" }).where(eq(suppliers.id, target.supplierId));
+    const result = await replaceAppointment(raceBeforeTransaction(db, withdraw), input, seeded.adminId);
+    expect(!result.ok && result.error.message).toMatch(/has withdrawn\.$/);
+    await expectNothingWritten(before, input.version);
+  });
+
+  it("an import that marks the pair N/A refuses the replace", async () => {
+    const { target, pick, input } = await replaceInput();
+    const before = await rows();
+    const reject = () =>
+      db.transaction(async (tx) => {
+        await tx
+          .delete(rankings)
+          .where(
+            and(
+              eq(rankings.eventId, seeded.eventId),
+              eq(rankings.rankerId, pick.buyerId),
+              eq(rankings.targetId, target.supplierId),
+            ),
+          );
+        await tx.insert(rankings).values({
+          eventId: seeded.eventId,
+          rankerType: "buyer",
+          rankerId: pick.buyerId,
+          targetType: "supplier",
+          targetId: target.supplierId,
+          rank: null,
+          isRejection: true,
+        });
+      });
+    const result = await replaceAppointment(raceBeforeTransaction(db, reject), input, seeded.adminId);
+    expect(!result.ok && result.error.code).toBe("conflict");
+    expect(!result.ok && result.error.message).toMatch(/ marked .* as N\/A\.$/);
+    await expectNothingWritten(before, input.version);
+  });
+
+  it("the saved row and stats use what was committed at the write", async () => {
+    // A buyer who withdrew in between and is not part of the edit still counts in the stats as withdrawn.
+    const { input } = await replaceInput();
+    const bystander = seeded.buyers.find((b) => b.id !== input.removeBuyerId && b.id !== input.addBuyerId)!;
+    const withdraw = () => db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, bystander.id));
+    const result = await replaceAppointment(raceBeforeTransaction(db, withdraw), input, seeded.adminId);
+    expect(result.ok).toBe(true);
+    const run = await getActiveRun(seeded.eventId, db);
+    expect(run?.stats?.totalBuyers).toBe(seeded.buyers.length - 1);
+  });
+});
+
+describe("undo refused because someone withdrew", () => {
+  it("says the change can't be undone and where to restore the buyer", async () => {
+    const removed = await removeOne();
+    const audit = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.remove" } }, db);
+    await db.update(participants).set({ status: "withdrawn" }).where(eq(participants.id, removed.buyerId));
+    const view = (await getScheduleView(seeded.eventId, db))!;
+    const name = view.buyers.find((b) => b.id === removed.buyerId)!.name;
+    const result = await undoAudit(db, { auditEventId: audit.rows[0].id, adminId: seeded.adminId });
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: `${name} has withdrawn, so this change can't be undone. Restore them on the Participants page first, or leave the slot as it is.`,
+      },
+    });
+  });
+
+  it("points to the Suppliers page for a supplier", async () => {
+    const removed = await removeOne();
+    const audit = await listAudit({ eventId: seeded.eventId, filters: { action: "appointment.remove" } }, db);
+    await db.update(suppliers).set({ status: "withdrawn" }).where(eq(suppliers.id, removed.supplierId));
+    const supplier = seeded.suppliers.find((x) => x.id === removed.supplierId)!;
+    const result = await undoAudit(db, { auditEventId: audit.rows[0].id, adminId: seeded.adminId });
+    expect(!result.ok && result.error.message).toBe(
+      `${supplier.name} has withdrawn, so this change can't be undone. Restore them on the Suppliers page first, or leave the slot as it is.`,
+    );
+  });
+});
+
+describe("undo blocked by a later edit", () => {
+  it("says what is in the way and what to do", async () => {
+    // A meeting to remove, and a hotel desk in the same slot its buyer could take instead.
+    // The first and last seeded buyers are left out: one has an N/A, the other no biztech.
+    const all = (await rows()).sort((a, b) => a.slot - b.slot || a.id.localeCompare(b.id));
+    const plain = new Set(seeded.buyers.slice(1, -1).map((b) => b.id));
+    const hotels = new Set(seeded.suppliers.filter((x) => x.type === "hotel").map((x) => x.id));
+    const meets = (buyerId: string, supplierId: string) => all.some((r) => r.buyerId === buyerId && r.supplierId === supplierId);
+    let pair: { removed: Appointment; other: Appointment } | null = null;
+    for (const removed of all.filter((r) => plain.has(r.buyerId))) {
+      const other = all.find(
+        (r) => r.slot === removed.slot && hotels.has(r.supplierId) && !meets(removed.buyerId, r.supplierId),
+      );
+      if (other) {
+        pair = { removed, other };
+        break;
+      }
+    }
+    if (!pair) throw new Error("the fixture has no buyer who can move desks");
+    const { removed, other } = pair;
+
+    const removal = await removeAppointment(
+      db,
+      { runId, version: await version(), slot: removed.slot, supplierId: removed.supplierId, buyerId: removed.buyerId },
+      seeded.adminId,
+    );
+    if (!removal.ok) throw new Error(removal.error.message);
+    // Before the removal is undone, the buyer is booked at the other desk in that slot.
+    const moved = await replaceAppointment(
+      db,
+      {
+        runId,
+        version: await version(),
+        slot: other.slot,
+        supplierId: other.supplierId,
+        removeBuyerId: other.buyerId,
+        addBuyerId: removed.buyerId,
+      },
+      seeded.adminId,
+    );
+    if (!moved.ok) throw new Error(moved.error.message);
+
+    const result = await undoAudit(db, { auditEventId: removal.data.auditEventId, adminId: seeded.adminId });
+    const view = (await getScheduleView(seeded.eventId, db))!;
+    const buyer = view.buyers.find((b) => b.id === removed.buyerId)!;
+    const supplier = view.suppliers.find((x) => x.id === other.supplierId)!;
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "conflict",
+        message: `${buyer.name} is already booked in slot ${removed.slot} with ${supplier.name}. ${UNDO_CONFLICT_HINT}`,
+      },
+    });
   });
 });
 

@@ -16,6 +16,8 @@ const ROUTE_SEGMENT: Record<ExportKind, string> = {
   schedules: "schedules",
   report: "report",
   access_list: "access",
+  participants_full: "participants",
+  suppliers_full: "suppliers",
 };
 
 function copyFor(kind: ExportKind, slotCount: number): { title: string; description: string; action: string } {
@@ -29,7 +31,7 @@ function copyFor(kind: ExportKind, slotCount: number): { title: string; descript
     case "schedules":
       return {
         title: "Individual schedules",
-        description: `A ZIP with one CSV per buyer and supplier, all ${slotCount} slots with OPEN gaps, and no ranks.`,
+        description: `A ZIP with one CSV per buyer and supplier, all ${slotCount} slots with OPEN gaps, no ranks, and the person's schedule link under the slots.`,
         action: "Download ZIP",
       };
     case "report":
@@ -44,7 +46,29 @@ function copyFor(kind: ExportKind, slotCount: number): { title: string; descript
         description: "Each contact's name, email, and private schedule link, for sending by hand if email fails.",
         action: "Download access list",
       };
+    case "participants_full":
+      return {
+        title: "Participants (full list)",
+        description:
+          "Every participant, withdrawn people included, with contact details, biztech opt-in, appointment count, and link status.",
+        action: "Download CSV",
+      };
+    case "suppliers_full":
+      return {
+        title: "Suppliers (full list)",
+        description:
+          "Every supplier, withdrawn ones included, with desk, both contacts, appointment count, and link status for each contact.",
+        action: "Download CSV",
+      };
   }
+}
+
+/** What downloading the access list does to links (D31, D59, D43). Shown beside the button instead of a confirm. */
+function accessListNote(archived: boolean): string {
+  if (archived) {
+    return "This event is archived, so downloading issues no links. The file shows each person's current link, or why they don't have one.";
+  }
+  return "Downloading reuses each person's current link, so links you've already sent keep working. People who never had a link, or whose link expired or can't be read back, get a new one. Revoked links stay revoked; use Regenerate on the roster to give someone a new link.";
 }
 
 function LastGenerated({ state }: { state: ExportState }) {
@@ -66,11 +90,11 @@ export default async function ExportsPage({ params }: { params: Promise<{ id: st
   const availability = await exportAvailability(event.id);
   if (!availability) notFound();
 
-  const kinds: ExportKind[] = ["master", "schedules", "report", "access_list"];
+  const kinds: ExportKind[] = ["master", "schedules", "report", "access_list", "participants_full", "suppliers_full"];
 
   return (
     <>
-      <PageHeader title="Exports" description="Files for D&A staff and participants, built from the active schedule." />
+      <PageHeader title="Exports" description="Files for D&A staff and participants. Schedule files come from the active schedule." />
       <div className="grid gap-4 md:grid-cols-2">
         {kinds.map((kind) => {
           const state = availability.exports[kind];
@@ -91,6 +115,9 @@ export default async function ExportsPage({ params }: { params: Promise<{ id: st
                   </Badge>
                 ) : null}
                 {state.reason ? <p className="text-sm text-muted-foreground">{state.reason}</p> : null}
+                {kind === "access_list" && state.available ? (
+                  <p className="text-sm text-muted-foreground">{accessListNote(event.status === "archived")}</p>
+                ) : null}
               </CardContent>
               <CardFooter className="mt-auto">
                 {kind === "access_list" ? (

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
 import { imports, participants, rankings, type ImportValidation } from "@/db/schema";
@@ -28,6 +28,7 @@ function report(errors: { row: number | null; message: string }[] = []): ImportV
     rowsWithZeroRankings: [],
     rankedByNobody: [],
     rankedNobody: [],
+    rankersInFile: [],
   };
 }
 
@@ -47,6 +48,35 @@ describe("matchingReadiness (scope 2.3)", () => {
       "Add at least one active buyer.",
       "Load the buyer rankings.",
       "Load the supplier rankings.",
+    ]);
+  });
+
+  it("gives one reason per cause: a waiting file of a kind replaces 'Load the ...' for that kind", async () => {
+    const seeded = await seedEvent(db, { buyers: 4 });
+    await db.delete(rankings).where(eq(rankings.eventId, seeded.eventId));
+    const base = { eventId: seeded.eventId, fileKey: "k", fileName: "f.csv", createdBy: seeded.adminId };
+    await db.insert(imports).values({
+      ...base,
+      kind: "supplier_rankings",
+      status: "validated",
+      validation: report() as unknown as ImportValidation,
+    });
+    const readiness = await matchingReadiness(db, seeded.eventId);
+    expect(readiness.reasons).toEqual([
+      "Load the buyer rankings.",
+      "The supplier rankings file is checked but not applied. Apply it.",
+    ]);
+
+    // Either buyer ranking file covers the buyer side.
+    await db.insert(imports).values({
+      ...base,
+      kind: "buyer_hotel_rankings",
+      status: "validated",
+      validation: report() as unknown as ImportValidation,
+    });
+    expect((await matchingReadiness(db, seeded.eventId)).reasons).toEqual([
+      "The buyer hotel rankings file is checked but not applied. Apply it.",
+      "The supplier rankings file is checked but not applied. Apply it.",
     ]);
   });
 
@@ -87,6 +117,29 @@ describe("matchingReadiness (scope 2.3)", () => {
       ready: false,
       reasons: ["The latest supplier rankings upload failed validation. Fix or delete it."],
     });
+  });
+
+  it("skips ignored imports, so the file before an ignored one counts again", async () => {
+    const seeded = await seedEvent(db, { buyers: 4 });
+    const base = { eventId: seeded.eventId, fileKey: "k", fileName: "f.csv", createdBy: seeded.adminId };
+    const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+    await db.insert(imports).values([
+      // An applied biztech file, then a newer one checked but never applied, then ignored.
+      { ...base, kind: "buyer_biztech_rankings", status: "applied", createdAt: minutesAgo(3) },
+      { ...base, kind: "buyer_biztech_rankings", status: "ignored", validation: report() as unknown as ImportValidation, createdAt: minutesAgo(2) },
+      // The only supplier file is ignored, and it had failed: nothing of that kind blocks.
+      { ...base, kind: "supplier_rankings", status: "ignored", validation: report([{ row: null, message: "Bad" }]) as unknown as ImportValidation },
+    ]);
+    expect(await matchingReadiness(db, seeded.eventId)).toMatchObject({ ready: true, reasons: [] });
+
+    // The same file not ignored blocks, as before.
+    await db
+      .update(imports)
+      .set({ status: "validated" })
+      .where(and(eq(imports.eventId, seeded.eventId), eq(imports.kind, "buyer_biztech_rankings"), eq(imports.status, "ignored")));
+    expect((await matchingReadiness(db, seeded.eventId)).reasons).toEqual([
+      "The buyer biztech rankings file is checked but not applied. Apply it.",
+    ]);
   });
 });
 

@@ -78,6 +78,9 @@ export const previewCampaignInput = z.object({
   /** Unsaved editor content, so the preview follows the editor. */
   subject: z.string().max(200).optional(),
   htmlBody: z.string().max(100_000).optional(),
+  /** The editor's unsaved audience, so "First in the audience" follows it. */
+  audience: emailAudienceSchema.optional(),
+  selectedRecipients: z.array(recipientKeySchema).max(2000).optional(),
 });
 
 export const sendTestInput = z.object({

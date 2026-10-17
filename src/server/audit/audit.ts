@@ -55,6 +55,11 @@ function actionMatches(pattern: string): SQL {
     : eq(auditEvents.action, pattern);
 }
 
+/** Any of the actions. An empty list matches nothing rather than everything. */
+function actionsMatch(actions: readonly string[]): SQL {
+  return actions.length ? or(...actions.map(actionMatches))! : sql`false`;
+}
+
 function mentionsPerson(personId: string): SQL {
   return or(
     eq(auditEvents.entityId, personId),
@@ -83,29 +88,28 @@ export type AuditPage = {
 
 export const DEFAULT_AUDIT_PAGE_SIZE = 50;
 
-export async function listAudit(input: ListAuditInput, db: Db = getDb()): Promise<AuditPage> {
-  const page = Math.max(1, input.page ?? 1);
-  const pageSize = Math.min(200, Math.max(1, input.pageSize ?? DEFAULT_AUDIT_PAGE_SIZE));
-  const filters = input.filters ?? {};
-
+function auditWhere(eventId: string | null, filters: AuditFilters): SQL {
   const conditions: SQL[] = [];
-  if (input.eventId === null) {
+  if (eventId === null) {
     conditions.push(isNull(auditEvents.eventId));
   } else {
-    conditions.push(eq(auditEvents.eventId, input.eventId));
+    conditions.push(eq(auditEvents.eventId, eventId));
   }
   if (filters.adminId) conditions.push(eq(auditEvents.adminId, filters.adminId));
   if (filters.action) conditions.push(eq(auditEvents.action, filters.action));
   if (filters.entityType) conditions.push(eq(auditEvents.entityType, filters.entityType));
   if (filters.entityId) conditions.push(eq(auditEvents.entityId, filters.entityId));
-  if (filters.actions) {
-    // An empty list matches nothing rather than everything.
-    conditions.push(filters.actions.length ? or(...filters.actions.map(actionMatches))! : sql`false`);
-  }
+  if (filters.actions) conditions.push(actionsMatch(filters.actions));
   if (filters.personId) conditions.push(mentionsPerson(filters.personId));
   if (filters.from) conditions.push(gte(auditEvents.createdAt, filters.from));
   if (filters.to) conditions.push(lt(auditEvents.createdAt, filters.to));
-  const where = and(...conditions);
+  return and(...conditions)!;
+}
+
+export async function listAudit(input: ListAuditInput, db: Db = getDb()): Promise<AuditPage> {
+  const page = Math.max(1, input.page ?? 1);
+  const pageSize = Math.min(200, Math.max(1, input.pageSize ?? DEFAULT_AUDIT_PAGE_SIZE));
+  const where = auditWhere(input.eventId, input.filters ?? {});
 
   const [rows, [{ total }]] = await Promise.all([
     db
@@ -119,4 +123,25 @@ export async function listAudit(input: ListAuditInput, db: Db = getDb()): Promis
   ]);
 
   return { rows, total, page, pageSize };
+}
+
+/**
+ * One query for a total and several sub-counts. `total` is every row matching
+ * `filters`; each `subsets` entry counts the rows among them whose action is in
+ * its list. Both use `listAudit`'s conditions, so a count equals the total of
+ * the same list filtered by those actions.
+ */
+export async function countAudit<K extends string>(
+  input: { eventId: string | null; filters?: AuditFilters; subsets: Record<K, readonly string[]> },
+  db: Db = getDb(),
+): Promise<{ total: number; subsets: Record<K, number> }> {
+  const keys = Object.keys(input.subsets) as K[];
+  const selection: Record<string, SQL<number>> = { total: sql<number>`count(*)::int` };
+  for (const key of keys) {
+    selection[key] = sql<number>`(count(*) filter (where ${actionsMatch(input.subsets[key])}))::int`;
+  }
+  const [row] = await db.select(selection).from(auditEvents).where(auditWhere(input.eventId, input.filters ?? {}));
+  const subsets = {} as Record<K, number>;
+  for (const key of keys) subsets[key] = row[key];
+  return { total: row.total, subsets };
 }

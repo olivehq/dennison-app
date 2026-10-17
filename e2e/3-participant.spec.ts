@@ -1,16 +1,16 @@
 import { expect, openDemoEvent, signIn, test } from "./helpers";
 
-/** Columns of the access CSV: Name, Email, Contact type, Link. Names may be quoted and hold commas. */
+/** Reads the Type and Link columns of the access CSV by header. Names may be quoted and hold commas. */
 function linksFrom(csv: string): { type: string; link: string }[] {
-  return csv
-    .replace(/^﻿/, "")
+  const rows = csv
+    .replace(/^\uFEFF/, "")
     .trim()
     .split(/\r?\n/)
-    .slice(1)
-    .map((line) => {
-      const cells = line.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!.map((c) => c.replace(/,$/, ""));
-      return { type: cells[2], link: cells[3] };
-    });
+    .map((line) => line.match(/("([^"]|"")*"|[^,]*)(,|$)/g)!.map((c) => c.replace(/,$/, "")));
+  const [header, ...body] = rows;
+  const type = header.indexOf("Type");
+  const link = header.indexOf("Link");
+  return body.map((cells) => ({ type: cells[type], link: cells[link] }));
 }
 
 test("lock the demo event, then a buyer's link shows nine slots", async ({ page }) => {
@@ -24,7 +24,7 @@ test("lock the demo event, then a buyer's link shows nine slots", async ({ page 
   await dialog.getByRole("button", { name: "Lock schedule" }).click();
   await expect(page.getByText("Locked", { exact: true }).first()).toBeVisible();
 
-  // The access list rotates links (D31), so it is a POST from the signed-in page.
+  // The access list reuses each person's current link and leaves revoked links revoked (D59), so it is a POST from the signed-in page.
   const eventId = new URL(page.url()).pathname.split("/")[2];
   const response = await page.request.post(`/api/exports/${eventId}/access`, {
     headers: { Origin: new URL(page.url()).origin },

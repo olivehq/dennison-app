@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { formatEventDate } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { isEventEditable } from "@/server/events/editable";
-import { getEvent } from "@/server/events/queries";
+import { getEvent, wasParticipantDataDeleted } from "@/server/events/queries";
 import { retentionDeadline, retentionDeleteDate } from "@/server/events/retention";
 import { EventSettingsForm } from "./event-settings-form";
 import { RetentionCard } from "./retention-card";
@@ -12,6 +12,8 @@ export default async function EventSettingsPage({ params }: { params: Promise<{ 
   const { id } = await params;
   const event = await getEvent(id);
   if (!event) notFound();
+  const archived = event.status === "archived";
+  const purged = archived && (await wasParticipantDataDeleted(event.id));
 
   const readOnlyReason = isEventEditable(event)
     ? null
@@ -36,7 +38,8 @@ export default async function EventSettingsPage({ params }: { params: Promise<{ 
         eventId={event.id}
         retainData={event.settings.retainData ?? false}
         deleteOn={formatEventDate(retentionDeleteDate(event.eventDate), event.timezone)}
-        archived={event.status === "archived"}
+        archived={archived}
+        purged={purged}
         overdue={retentionDeadline(event) <= new Date()}
       />
     </>
