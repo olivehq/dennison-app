@@ -1,5 +1,5 @@
 {
-  "id": "3121f649-a2af-453d-8bca-c10cf0bbb513",
+  "id": "913b8702-4d4f-4cbb-ae86-cdceeb5a1a3f",
   "prevId": "97effef9-4f1f-4f7d-8e30-0f6959fcadc5",
   "version": "7",
   "dialect": "postgresql",
@@ -318,6 +318,12 @@
         },
         "accepted_at": {
           "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -766,6 +772,27 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_events_event_action_idx": {
+          "name": "audit_events_event_action_idx",
+          "columns": [
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "action",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2313,8 +2340,8 @@
         }
       },
       "indexes": {
-        "suppliers_event_name_key": {
-          "name": "suppliers_event_name_key",
+        "suppliers_event_lower_name_key": {
+          "name": "suppliers_event_lower_name_key",
           "columns": [
             {
               "expression": "event_id",
@@ -2323,9 +2350,9 @@
               "nulls": "last"
             },
             {
-              "expression": "name",
-              "isExpression": false,
+              "expression": "lower(\"name\")",
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
