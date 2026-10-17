@@ -4,6 +4,7 @@ import type { Db } from "@/db/client";
 import { accessTokens, auditEvents, events, participants } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
+import { recipientKey } from "@/lib/schemas/email";
 import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { startRun } from "@/server/matching/runs";
@@ -11,7 +12,6 @@ import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
 import { issueAccessList, listTokens, readContactLinks } from "./queries";
 import {
-  contactKey,
   issueTokenForContact,
   issueTokensForEvent,
   linkFor,
@@ -225,7 +225,7 @@ describe("issue and verify", () => {
     await db.insert(accessTokens).values(row("older", { createdAt: new Date(at.getTime() - 1000), revokedAt: at }));
 
     const links = await readContactLinks(db, fresh.eventId, { withUrls: false });
-    const link = links.get(contactKey({ contactType: "buyer", entityId: buyer }));
+    const link = links.get(recipientKey("buyer", buyer));
     expect(link).toEqual({ tokenId: live.id, status: "active", url: null });
     expect(link?.tokenId).not.toBe(retired.id);
     expect(links.size).toBe(1);

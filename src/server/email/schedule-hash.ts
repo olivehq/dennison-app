@@ -115,7 +115,7 @@ export async function scheduleChangeState(db: Db, eventId: string): Promise<Sche
   if (baselines.length === 0) return { emailed, changed };
 
   const [hashes, contacts] = await Promise.all([scheduleHashesForEvent(db, eventId), listContacts(db, eventId)]);
-  const reachable = new Set(contacts.map((c) => recipientKey(c.contactType, c.entityId)));
+  const reachable = new Set(contacts.map((c) => c.key));
   for (const b of baselines) {
     const key = recipientKey(b.contactType, b.entityId);
     if (!reachable.has(key)) continue;

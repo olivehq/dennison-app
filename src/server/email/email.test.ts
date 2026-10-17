@@ -25,7 +25,8 @@ import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { replaceAppointment, swapCandidates } from "@/server/schedule/edits";
 import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
 import { decryptToken } from "@/lib/tokens";
-import { revokeToken, verifyToken } from "@/server/tokens/tokens";
+import { issueAccessList } from "@/server/tokens/queries";
+import { listContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
 import {
   createCampaign,
   duplicateCampaign,
@@ -43,7 +44,7 @@ import {
   updateCampaign,
 } from "./campaigns";
 import { campaignStats, getAudienceOptions, getCampaign, getEmailSummary, listCampaigns } from "./queries";
-import { resolveAudience } from "./recipients";
+import { listAudienceContacts, resolveAudience } from "./recipients";
 import {
   changedSinceLastSend,
   countChangedSinceLastSend,
@@ -375,6 +376,24 @@ describe("audiences and links", () => {
     const keys = [recipientKey("buyer", seeded.buyers[0].id), recipientKey("buyer", withdrawnId)];
     const selected = await resolveAudience(db, seeded.eventId, "selected", keys);
     expect(selected.ok && selected.data.map((r) => r.entityId)).toEqual([seeded.buyers[0].id]);
+  });
+
+  it("lists the same contacts, keys, and names as the access list", async () => {
+    const [contacts, audience, access] = await Promise.all([
+      listContacts(db, seeded.eventId),
+      listAudienceContacts(db, seeded.eventId),
+      issueAccessList(db, seeded.eventId),
+    ]);
+    if (!audience || !access.ok) throw new Error("expected an audience and an access list");
+    expect(audience.map((c) => c.key).sort()).toEqual(contacts.map((c) => recipientKey(c.contactType, c.entityId)).sort());
+    const byKey = (a: { key: string }, b: { key: string }) => a.key.localeCompare(b.key);
+    expect(
+      [...audience].sort(byKey).map(({ key, name, email, contactType }) => ({ key, name, email, contactType })),
+    ).toEqual([...contacts].sort(byKey).map(({ key, name, email, contactType }) => ({ key, name, email, contactType })));
+    // The CSV rows and the audience agree on name and email for every contact.
+    const pairs = (rows: { name: string; email: string }[]) => rows.map((r) => `${r.name}|${r.email}`).sort();
+    expect(pairs(access.data.rows)).toEqual(pairs(audience));
+    expect(audience.some((c) => c.contactType === "supplier_admin" && /\(.+\)$/.test(c.name))).toBe(true);
   });
 
   it("uses each contact's existing link, so a second resolve hands out the same one", async () => {

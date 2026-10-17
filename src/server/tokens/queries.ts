@@ -2,11 +2,12 @@ import { asc, eq, sql } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import { accessTokens, participants, suppliers, type ContactType } from "@/db/schema";
 import { ok, type ActionResult } from "@/lib/errors";
+import { recipientKey } from "@/lib/schemas/email";
 import { compareNames } from "@/lib/names";
 import { decryptToken } from "@/lib/tokens";
 import { displayNameFor } from "@/server/roster/display-name";
 import { claimUnarchivedEvent } from "@/server/events/editable";
-import { contactKey, isNewerToken, linkFor, linksForContacts, listContacts } from "./tokens";
+import { isNewerToken, linkFor, linksForContacts, listContacts, supplierContactName } from "./tokens";
 
 export type TokenStatus = "active" | "revoked" | "expired";
 
@@ -52,7 +53,7 @@ export async function listTokens(eventId: string, db: Db = getDb()): Promise<Tok
       if (supplier) {
         const isAdmin = row.contactType === "supplier_admin";
         const contactName = isAdmin ? supplier.adminContactName : supplier.attendeeContactName;
-        name = contactName ? `${supplier.name} (${contactName})` : supplier.name;
+        name = supplierContactName(supplier.name, contactName);
         email = isAdmin ? supplier.adminContactEmail : supplier.attendeeContactEmail;
       }
     }
@@ -109,25 +110,16 @@ export async function issueAccessList(db: Db, eventId: string): Promise<ActionRe
     return linksForContacts(tx, eventId, contacts, { issueMissing: true });
   });
   if (!issued.ok) return issued;
-  const [links, buyers, supplierRows] = await Promise.all([
-    readContactLinks(db, eventId, { withUrls: true }),
-    db.select().from(participants).where(eq(participants.eventId, eventId)),
-    db.select().from(suppliers).where(eq(suppliers.eventId, eventId)),
-  ]);
-  const buyerById = new Map(buyers.map((b) => [b.id, b]));
-  const supplierById = new Map(supplierRows.map((s) => [s.id, s]));
+  const links = await readContactLinks(db, eventId, { withUrls: true });
   const rows = contacts
-    .map((c) => {
-      const buyer = c.contactType === "buyer" ? buyerById.get(c.entityId) : undefined;
-      return {
-        name: c.name,
-        email: c.email,
-        contactType: c.contactType,
-        company: buyer ? (buyer.organization ?? "") : (supplierById.get(c.entityId)?.name ?? ""),
-        title: buyer?.title ?? null,
-        link: links.get(contactKey(c)),
-      };
-    })
+    .map((c) => ({
+      name: c.name,
+      email: c.email,
+      contactType: c.contactType,
+      company: c.buyer ? (c.buyer.organization ?? "") : (c.supplier?.name ?? ""),
+      title: c.buyer?.title ?? null,
+      link: links.get(c.key),
+    }))
     .sort((a, b) => compareNames(a.name, b.name) || a.contactType.localeCompare(b.contactType));
   return ok({ rows, linksIssued: issued.data?.issued ?? 0 });
 }
@@ -136,7 +128,7 @@ export async function issueAccessList(db: Db, eventId: string): Promise<ActionRe
 export type ReadLink = { tokenId: string; status: TokenStatus; url: string | null };
 
 /**
- * The newest token of every contact of the event, keyed by `contactKey`. Never
+ * The newest token of every contact of the event, keyed by `recipientKey`. Never
  * writes. With `withUrls`, a live token's ciphertext is decrypted the same way
  * `linksForContacts` does, so exports can print the link people already hold;
  * a live token from before D59 (no ciphertext) comes back with `url: null`.
@@ -163,7 +155,7 @@ export async function readContactLinks(
     .where(eq(accessTokens.eventId, eventId));
   const newest = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
-    const key = contactKey(row);
+    const key = recipientKey(row.contactType, row.entityId);
     // At an equal timestamp a live token beats a retired one, as on the roster pages.
     if (isNewerToken(row, newest.get(key))) newest.set(key, row);
   }

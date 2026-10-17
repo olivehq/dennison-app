@@ -254,8 +254,8 @@ describe("schedule link rows read from the database", () => {
     const hyatt = linkSeed.suppliers[0];
     const hyattRows = links.get(personLinkKey("supplier", hyatt.id))!;
     expect(hyattRows.map((r) => r.label)).toEqual([
-      "Admin schedule link (Hyatt Regency Monterey admin)",
-      "Attendee schedule link (Hyatt Regency Monterey attendee)",
+      "Admin schedule link (Hyatt Regency Monterey (Hyatt Regency Monterey admin))",
+      "Attendee schedule link (Hyatt Regency Monterey (Hyatt Regency Monterey attendee))",
     ]);
     expect(hyattRows[0].value).toBe(list.data.rows.find((r) => r.email === hyatt.adminContactEmail)!.link?.url);
     // A supplier with only an admin contact has one row.

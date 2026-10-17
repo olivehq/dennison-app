@@ -1,18 +1,16 @@
-import { and, eq, gt, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
-  accessTokens,
   participants,
   suppliers,
   type ContactType,
-  type Event,
   type Participant,
   type Supplier,
 } from "@/db/schema";
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
-import { issueTokenForContact, tokenExpiry } from "@/server/tokens/tokens";
+import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 import { inEditableTransaction, loadEditableEvent, Refused } from "./editable";
 
 type Actor = { adminId: string };
@@ -31,49 +29,6 @@ export type UpsertSupplierInput = Actor & {
 };
 
 export type ByIdInput = Actor & { id: string };
-
-/**
- * After a contact's email changed (D129). Only a live link is touched: one an
- * admin revoked, or one that expired, stays as it is. When an email is still
- * set, the live link is revoked and a link for the new address is issued in
- * the same transaction, so "respect revoke" (D137) can't leave the person with
- * no link. When the email was cleared, the live link is ended by expiring it,
- * not revoking it: nobody chose to cut this person off, so once an address is
- * set again the next lock, access list, or send gives them a link, as after
- * any expiry. A revoke would hold until Regenerate. Also used by supplier
- * imports.
- */
-export async function replaceLinksForChangedEmail(
-  tx: Db,
-  event: Pick<Event, "id" | "eventDate" | "timezone">,
-  input: { entityId: string; contacts: { contactType: ContactType; hasEmail: boolean }[] },
-): Promise<{ revoked: number; expired: number; reissued: ContactType[] }> {
-  let revoked = 0;
-  let expired = 0;
-  const reissued: ContactType[] = [];
-  const expiresAt = tokenExpiry(event.eventDate, event.timezone);
-  for (const { contactType, hasEmail } of input.contacts) {
-    const now = new Date();
-    const liveLink = and(
-      eq(accessTokens.eventId, event.id),
-      eq(accessTokens.contactType, contactType),
-      eq(accessTokens.entityId, input.entityId),
-      isNull(accessTokens.revokedAt),
-      gt(accessTokens.expiresAt, now),
-    );
-    if (!hasEmail) {
-      const ended = await tx.update(accessTokens).set({ expiresAt: now }).where(liveLink).returning({ id: accessTokens.id });
-      expired += ended.length;
-      continue;
-    }
-    const ended = await tx.update(accessTokens).set({ revokedAt: now }).where(liveLink).returning({ id: accessTokens.id });
-    revoked += ended.length;
-    if (ended.length === 0) continue;
-    await issueTokenForContact(tx, { eventId: event.id, contactType, entityId: input.entityId, expiresAt });
-    reissued.push(contactType);
-  }
-  return { revoked, expired, reissued };
-}
 
 function linkCount(count: number): string {
   return `${count} link${count === 1 ? "" : "s"}`;
@@ -325,14 +280,6 @@ function supplierValues(data: SupplierInput) {
   };
 }
 
-/** Contact types whose email changed, so their links must be revoked. */
-function changedContacts(before: Supplier, after: Supplier): ContactType[] {
-  const changed: ContactType[] = [];
-  if (before.adminContactEmail !== after.adminContactEmail) changed.push("supplier_admin");
-  if (before.attendeeContactEmail !== after.attendeeContactEmail) changed.push("supplier_attendee");
-  return changed;
-}
-
 export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promise<ActionResult<{ id: string }>> {
   const loaded = await loadEditableEvent(db, input.eventId);
   if (!loaded.ok) return loaded.error;
@@ -372,14 +319,8 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       return row;
     }
     const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, current.id)).returning();
-    const contactTypes = changedContacts(current, row);
-    const links = await replaceLinksForChangedEmail(tx, loaded.event, {
-      entityId: row.id,
-      contacts: contactTypes.map((contactType) => ({
-        contactType,
-        hasEmail: Boolean(contactType === "supplier_admin" ? row.adminContactEmail : row.attendeeContactEmail),
-      })),
-    });
+    const changed = changedSupplierContacts(current, row);
+    const links = await replaceLinksForChangedEmail(tx, loaded.event, { entityId: row.id, contacts: changed });
     await recordAudit(tx, {
       eventId: input.eventId,
       adminId: input.adminId,
@@ -388,7 +329,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       entityId: row.id,
       before: current,
       after: links.reissued.length ? { ...row, linksReissued: links.reissued } : row,
-      note: contactTypes.length ? emailChangeNote("Contact email changed", links) : null,
+      note: changed.length ? emailChangeNote("Contact email changed", links) : null,
     });
     return row;
   });

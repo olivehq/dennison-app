@@ -1,6 +1,7 @@
 import type { Db } from "@/db/client";
 import { readContactLinks, type ReadLink } from "@/server/tokens/queries";
-import { contactKey, listContacts, type ContactRef } from "@/server/tokens/tokens";
+import { recipientKey } from "@/lib/schemas/email";
+import { listContacts, type ContactRef } from "@/server/tokens/tokens";
 
 /**
  * The schedule link line(s) printed under each person's schedule in the
@@ -56,7 +57,7 @@ export function buildLinkRows(
   for (const contact of contacts) {
     const key = personLinkKey(contact.contactType === "buyer" ? "buyer" : "supplier", contact.entityId);
     const list = rows.get(key) ?? [];
-    list.push({ label: labelFor(contact), value: linkValue(links.get(contactKey(contact))) });
+    list.push({ label: labelFor(contact), value: linkValue(links.get(recipientKey(contact.contactType, contact.entityId))) });
     rows.set(key, list);
   }
   return rows;

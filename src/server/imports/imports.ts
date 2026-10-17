@@ -26,7 +26,7 @@ import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { fullNameFor } from "@/server/roster/display-name";
 import { inEditableTransaction, loadEditableEvent, Refused } from "@/server/roster/editable";
-import { replaceLinksForChangedEmail } from "@/server/roster/roster";
+import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 import {
   isStructuralFailure,
   parseImportFile,
@@ -454,13 +454,7 @@ async function applySuppliers(
       continue;
     }
     await db.update(suppliers).set(values).where(eq(suppliers.id, current.id));
-    const changed: { contactType: "supplier_admin" | "supplier_attendee"; hasEmail: boolean }[] = [];
-    if (current.adminContactEmail !== row.adminContactEmail) {
-      changed.push({ contactType: "supplier_admin", hasEmail: Boolean(row.adminContactEmail) });
-    }
-    if (current.attendeeContactEmail !== row.attendeeContactEmail) {
-      changed.push({ contactType: "supplier_attendee", hasEmail: Boolean(row.attendeeContactEmail) });
-    }
+    const changed = changedSupplierContacts(current, row);
     if (changed.length) await replaceLinksForChangedEmail(db, event, { entityId: current.id, contacts: changed });
     counts.updated += 1;
   }

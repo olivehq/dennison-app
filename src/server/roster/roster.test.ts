@@ -4,10 +4,11 @@ import type { Db } from "@/db/client";
 import { accessTokens, admins, appointments, auditEvents, events, matchRuns, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
+import { recipientKey } from "@/lib/schemas/email";
 import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { decryptToken } from "@/lib/tokens";
-import { contactKey, issueTokenForContact, linksForContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
+import { issueTokenForContact, linksForContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
 import { displayNameFor, getParticipant, getSupplier, listParticipants, listSuppliers } from "./queries";
 import {
   restoreParticipant,
@@ -562,7 +563,7 @@ describe("changing a contact's email while their link is live", () => {
     const links = await linksForContacts(db, event, [contact], { issueMissing: true });
     if (!links.ok) throw new Error(links.error.message);
     expect(links.data.revoked.size).toBe(0);
-    const link = links.data.links.get(contactKey(contact));
+    const link = links.data.links.get(recipientKey(contact.contactType, contact.entityId));
     expect(link?.tokenId).not.toBe(old.tokenId);
     expect(await verifyToken(db, link!.token)).toMatchObject({ contactType: "supplier_attendee", entityId: id });
   });
