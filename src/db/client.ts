@@ -29,8 +29,9 @@ let injectedDb: Db | undefined;
 function openConnection(): Connection {
   if (env.DATABASE_URL) {
     // One connection per serverless instance. `prepare: false` keeps the Neon
-    // pooler (transaction mode) happy.
-    const client = postgres(env.DATABASE_URL, { max: 1, prepare: false });
+    // pooler (transaction mode) happy. Idle and old connections are closed
+    // before Neon or a suspended instance drops them under us.
+    const client = postgres(env.DATABASE_URL, { max: 1, prepare: false, idle_timeout: 20, max_lifetime: 60 * 30 });
     return { kind: "postgres", client, db: drizzlePostgres({ client, schema }) };
   }
   // PGlite does not create parent directories itself.

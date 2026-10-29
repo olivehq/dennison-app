@@ -7,14 +7,12 @@ import { compareNames } from "@/lib/names";
 import { NOT_ACTIVE_RUN_MESSAGE, VERSION_CONFLICT_MESSAGE } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import {
-  assertEventEditable,
   claimEvent,
   EVENT_CHANGED_MESSAGE,
   EventChangedError,
   inEventTransaction,
   Refused,
 } from "@/server/events/editable";
-import { getEvent } from "@/server/events/queries";
 import { cachePerRender } from "@/server/render-cache";
 import { advanceStatus } from "@/server/events/status";
 import {
@@ -213,11 +211,6 @@ async function loadKeptFromActiveRun(db: Db, roster: Roster, activeRunId: string
  * wholly before or wholly after the inputs. The engine runs after it commits.
  */
 export async function startRun(db: Db, input: StartRunInput): Promise<ActionResult<StartRunResult>> {
-  const event = await getEvent(input.eventId, db);
-  if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(event);
-  if (locked) return locked;
-
   const setup = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
     const readiness = await matchingReadiness(tx, input.eventId);
     if (!readiness.ready) throw new Refused(fail("validation", readiness.reasons.join(" ")));
@@ -384,11 +377,6 @@ export async function activateRun(
   const run = await findRun(db, input.runId);
   if (!run) return fail("not_found", "That run no longer exists.");
   if (run.status !== "completed") return fail("validation", "Only a completed run can be activated.");
-  const event = await getEvent(run.eventId, db);
-  if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(event);
-  if (locked) return locked;
-  if (run.isActive) return ok({ runId: run.id });
 
   try {
     const done = await inEventTransaction(db, run.eventId, "edit", async (tx) => {
@@ -537,20 +525,16 @@ export async function setPinned(
 ): Promise<ActionResult<{ appointmentId: string; pinned: boolean; version: number }>> {
   const [row] = await db.select().from(appointments).where(eq(appointments.id, input.appointmentId)).limit(1);
   if (!row) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
-  const [run, event] = await Promise.all([findRun(db, row.runId), getEvent(row.eventId, db)]);
-  if (!run || !event) return fail("not_found", "That run no longer exists.");
-  const locked = assertEventEditable(event);
-  if (locked) return locked;
+  const run = await findRun(db, row.runId);
+  if (!run) return fail("not_found", "That run no longer exists.");
   if (!run.isActive) return fail("conflict", NOT_ACTIVE_RUN_MESSAGE);
   if (input.version !== undefined && input.version !== run.version) {
     return fail("conflict", VERSION_CONFLICT_MESSAGE);
   }
-  if (row.pinned === input.pinned) {
-    return ok({ appointmentId: row.id, pinned: row.pinned, version: run.version });
-  }
 
   try {
     const saved = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
+      if (row.pinned === input.pinned) return run.version;
       const roster = await loadRoster(tx, row.eventId);
       if (!roster) throw new EventChangedError();
       const rows = await tx.select().from(appointments).where(eq(appointments.runId, run.id));

@@ -47,7 +47,7 @@ src/app/            Routes only. Pages are thin: load data through src/server, r
   api/              Route handlers: auth, exports, webhooks, cron
 src/engine/         Pure matching engine. No imports from next, react, or src/db. Enforced by eslint.
 src/db/             Drizzle schema (schema.ts), client (client.ts), migrations/
-src/server/         Server-only code, one folder per module: auth, events, roster, imports, matching, schedule, exports, email, audit, tokens
+src/server/         Server-only code, one folder per module: auth, events, roster, imports, matching, schedule, exports, email, audit, tokens, files
   <module>/queries.ts   Reads used by pages
   <module>/actions.ts   'use server' mutations. Every action checks the session first.
   <module>/*.test.ts    Tests against PGlite
@@ -79,7 +79,7 @@ A change is done when `pnpm check` passes, new behavior has a test (engine and s
 
 ## Invariants that are easy to break
 
-- A locked event rejects every mutation except unlock, exports, email sends, and participant link actions (regenerate and revoke a link). An archived event rejects all of them except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`inEventTransaction`, `advanceStatus`).
+- Which statuses allow which writes is `EVENT_GATES` in `src/lib/event-gates.ts`; it is the source of truth. In short: a locked or sent event rejects roster, import, matching, schedule, and settings writes, but still allows unlock, exports, email drafts and sends, participant link actions, retention, branding, and archive. An archived event rejects everything except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`inEventTransaction`, `advanceStatus`).
 - Withdrawn people are excluded from matching input and from "free in slot" lists, but their rankings and past appointments stay in the database.
 - `match_runs.version` increments on every save. A save with a stale version returns the conflict error, never overwrites.
 - The engine must be deterministic for the same input. No `Math.random`, no `Date.now()` inside `src/engine`.

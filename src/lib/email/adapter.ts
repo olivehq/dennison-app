@@ -13,9 +13,29 @@ export type EmailMessage = {
 
 export type SentEmail = { id: string };
 
+export type BatchOptions = {
+  /**
+   * The same key on a retry makes the provider return the first answer
+   * instead of sending again. Resend keeps a key for 24 hours.
+   */
+  idempotencyKey: string;
+};
+
+/**
+ * The provider answered and refused the batch, so nothing was sent and a
+ * retry under a new key is safe. Any other error from `sendBatch` means the
+ * outcome is unknown: the batch may have been accepted.
+ */
+export class EmailRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EmailRejectedError";
+  }
+}
+
 type EmailAdapter = {
   send(message: EmailMessage): Promise<SentEmail>;
-  sendBatch(messages: EmailMessage[]): Promise<SentEmail[]>;
+  sendBatch(messages: EmailMessage[], options: BatchOptions): Promise<SentEmail[]>;
 };
 
 /** Resend's batch API takes at most 100 messages per call. Callers chunk to this size. */
@@ -45,14 +65,29 @@ function resendAdapter(apiKey: string): EmailAdapter {
       }
       return { id: data.id };
     },
-    async sendBatch(messages) {
-      const { data, error } = await resend.batch.send(messages.map(toResendPayload));
+    async sendBatch(messages, options) {
+      const { data, error } = await resend.batch.send(messages.map(toResendPayload), {
+        idempotencyKey: options.idempotencyKey,
+      });
       if (error || !data) {
-        throw new Error(`Resend rejected the batch: ${error?.message ?? "no ids returned"}`);
+        const message = `Resend rejected the batch: ${error?.message ?? "no ids returned"}`;
+        throw error && isProviderRefusal(error) ? new EmailRejectedError(message) : new Error(message);
       }
       return data.data.map((item) => ({ id: item.id }));
     },
   };
+}
+
+/**
+ * True when Resend answered with a 4xx that says it did not take the batch.
+ * No status (the request never got an answer), a 5xx, a 429 (a rate limit can
+ * be checked before the key, so an earlier attempt may have gone), and the two
+ * 409s about the idempotency key (the key is in use or was used for another
+ * payload) leave the outcome unknown.
+ */
+export function isProviderRefusal(error: { statusCode: number | null; name: string }): boolean {
+  if (error.statusCode === null || error.statusCode < 400 || error.statusCode >= 500 || error.statusCode === 429) return false;
+  return error.name !== "concurrent_idempotent_requests" && error.name !== "invalid_idempotent_request";
 }
 
 /** The part after the last "@", or "unknown". */
@@ -63,6 +98,8 @@ export function recipientDomain(address: string): string {
 
 const loggedEmails: EmailMessage[] = [];
 let loggedCounter = 0;
+/** Batch answers and payloads by idempotency key, so a retried batch is logged once, as Resend sends it once. */
+const loggedBatches = new Map<string, { payload: string; results: SentEmail[] }>();
 
 function loggerAdapter(): EmailAdapter {
   const send = async (message: EmailMessage): Promise<SentEmail> => {
@@ -76,9 +113,17 @@ function loggerAdapter(): EmailAdapter {
   };
   return {
     send,
-    async sendBatch(messages) {
+    async sendBatch(messages, options) {
+      const payload = JSON.stringify(messages);
+      const earlier = loggedBatches.get(options.idempotencyKey);
+      if (earlier) {
+        // As Resend does: a known key with another payload is a 409, outcome unknown.
+        if (earlier.payload !== payload) throw new Error("Resend rejected the batch: invalid_idempotent_request");
+        return earlier.results;
+      }
       const results: SentEmail[] = [];
       for (const message of messages) results.push(await send(message));
+      loggedBatches.set(options.idempotencyKey, { payload, results });
       return results;
     },
   };
@@ -101,12 +146,14 @@ export function sendEmail(message: EmailMessage): Promise<SentEmail> {
   return getAdapter().send(message);
 }
 
-export function sendBatch(messages: EmailMessage[]): Promise<SentEmail[]> {
+export function sendBatch(messages: EmailMessage[], options: BatchOptions): Promise<SentEmail[]> {
   if (messages.length === 0) return Promise.resolve([]);
   if (messages.length > RESEND_BATCH_LIMIT) {
-    return Promise.reject(new Error(`A batch holds at most ${RESEND_BATCH_LIMIT} messages, got ${messages.length}.`));
+    return Promise.reject(
+      new EmailRejectedError(`A batch holds at most ${RESEND_BATCH_LIMIT} messages, got ${messages.length}.`),
+    );
   }
-  return getAdapter().sendBatch(messages);
+  return getAdapter().sendBatch(messages, options);
 }
 
 /** Messages captured by the logger adapter (local dev and tests). */

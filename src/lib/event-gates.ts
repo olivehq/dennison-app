@@ -10,7 +10,7 @@ export const EVENT_GATES = {
   edit: ["draft", "imported", "matched"],
   /** Email sends and unlock. */
   locked: ["locked", "sent"],
-  /** Campaign drafts, test sends, participant links, the retention switch, and archive. */
+  /** Campaign drafts, test sends, participant links, the retention switch, schedule page branding, and archive. */
   unarchived: ["draft", "imported", "matched", "locked", "sent"],
   /** Deleting the event. */
   draft: ["draft"],

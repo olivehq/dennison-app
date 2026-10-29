@@ -3,8 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getDb } from "@/db/client";
-import { fromZod, type ActionResult } from "@/lib/errors";
+import { fail, fromZod, type ActionResult } from "@/lib/errors";
 import { requireAdmin } from "@/server/auth/session";
+import { saveBranding } from "./branding";
 import {
   archiveEvent as archiveEventRecord,
   createEvent as createEventRecord,
@@ -57,16 +58,34 @@ export async function setRetainData(id: unknown, retain: unknown): Promise<Actio
   return result;
 }
 
-export async function deleteEvent(id: unknown): Promise<ActionResult<{ id: string; fileErrors: string[] }>> {
+/**
+ * Expects FormData with `primaryColor`, `accentColor`, an optional `logo`
+ * file, and `removeLogo` ("true" to clear the current logo).
+ */
+export async function saveEventBranding(id: unknown, formData: FormData): Promise<ActionResult<{ id: string }>> {
+  const actor = await requireAdmin();
+  const parsedId = z.uuid().safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
+  const file = formData.get("logo");
+  const logo = file instanceof File && file.size > 0 ? Buffer.from(await file.arrayBuffer()) : null;
+  const result = await saveBranding(
+    getDb(),
+    parsedId.data,
+    {
+      colors: { primaryColor: formData.get("primaryColor") ?? "", accentColor: formData.get("accentColor") ?? "" },
+      logo,
+      removeLogo: formData.get("removeLogo") === "true",
+    },
+    actor.id,
+  );
+  if (result.ok) revalidateEvent(result.data.id);
+  return result;
+}
+
+export async function deleteEvent(id: unknown): Promise<ActionResult<{ id: string }>> {
   const actor = await requireAdmin();
   const result = await deleteEventRecord(getDb(), id, actor.id);
-  if (result.ok) {
-    if (result.data.fileErrors.length > 0) {
-      // Storage keys only, no names: enough to delete the files by hand.
-      console.error(`[events] event ${result.data.id} deleted, but these files were not: ${result.data.fileErrors.join(", ")}`);
-    }
-    revalidatePath(EVENTS_PATH);
-  }
+  if (result.ok) revalidatePath(EVENTS_PATH);
   return result;
 }
 

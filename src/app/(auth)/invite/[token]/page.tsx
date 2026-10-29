@@ -1,8 +1,8 @@
-import Link from "next/link";
+import { CircleAlertIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardContent } from "@/components/ui/card";
 import { getInviteByToken } from "@/server/auth/queries";
+import { AuthHeader, BackToSignIn } from "../../auth-shell";
 import { AcceptInviteForm } from "./accept-invite-form";
 
 export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
@@ -12,34 +12,30 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
   if (!invite) {
     return (
       <>
-        <CardHeader>
-          <CardTitle>This invite link doesn&apos;t work</CardTitle>
-        </CardHeader>
-        <CardContent>
+        <AuthHeader title="This invite link doesn't work" />
+        <CardContent className="flex flex-col gap-4">
           <Alert variant="destructive">
+            <CircleAlertIcon />
             <AlertTitle>Invalid or expired</AlertTitle>
             <AlertDescription>
               Invite links work for 7 days and only once. Ask a colleague to send a new one from the Team page.
             </AlertDescription>
           </Alert>
+          <BackToSignIn />
         </CardContent>
-        <CardFooter className="justify-center">
-          <Button variant="link" asChild>
-            <Link href="/login">Go to sign in</Link>
-          </Button>
-        </CardFooter>
       </>
     );
   }
 
   return (
     <>
-      <CardHeader>
-        <CardTitle>Create your admin account</CardTitle>
-        <CardDescription>Set a password to finish accepting the invitation for {invite.email}.</CardDescription>
-      </CardHeader>
-      <CardContent>
+      <AuthHeader
+        title="Create your admin account"
+        description={`Set a password to finish accepting the invitation for ${invite.email}.`}
+      />
+      <CardContent className="flex flex-col gap-4">
         <AcceptInviteForm token={token} email={invite.email} name={invite.name} />
+        <BackToSignIn />
       </CardContent>
     </>
   );

@@ -31,13 +31,7 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
             toast.error(result.error.message);
             return;
           }
-          if (result.data.fileErrors.length > 0) {
-            toast.warning(
-              `Event deleted, but ${result.data.fileErrors.length} uploaded file${result.data.fileErrors.length === 1 ? "" : "s"} couldn't be removed from storage. Tell Olive so they can delete them.`,
-            );
-          } else {
-            toast.success("Event deleted.");
-          }
+          toast.success("Event deleted.");
           router.push("/events");
         }}
       />

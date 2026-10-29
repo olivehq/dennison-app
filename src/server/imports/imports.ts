@@ -19,9 +19,10 @@ import {
   type ImportValidationReport,
   type RankingKind,
 } from "@/lib/schemas/import";
-import { deleteFile, getFile, importFileKey, putFile } from "@/lib/storage";
+import { getFile, importFileKey, putFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
 import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
+import { deleteQueuedFilesNow, discardStoredFiles, queueFileDeletions } from "@/server/files/cleanup";
 import { advanceStatus } from "@/server/events/status";
 import { fullNameFor } from "@/server/roster/display-name";
 import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
@@ -139,6 +140,7 @@ async function evaluate(db: Db, eventId: string, kind: ImportKind, buffer: Buffe
 
 /** Stores the file, parses and validates it, and records the import. Never throws for a bad file. */
 export async function createImport(db: Db, input: CreateImportInput): Promise<ActionResult<ImportOutcome>> {
+  // Refuse before uploading and parsing a file outside the transaction.
   const loaded = await loadEditableEvent(db, input.eventId);
   if (!loaded.ok) return loaded.error;
 
@@ -174,22 +176,11 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
     });
     if (saved.ok) return ok({ importId, state, report: evaluation.report });
     // Locked or archived while the file was parsed: the row was never written, so the file goes too.
-    await deleteStoredFile(importId, key);
+    await discardStoredFiles(db, [key]);
     return saved;
   } catch (error) {
-    await deleteStoredFile(importId, key);
+    await discardStoredFiles(db, [key]);
     throw error;
-  }
-}
-
-/** Deletes an import's stored file. A failure is logged with the key, never thrown: the database is already right. */
-async function deleteStoredFile(importId: string, key: string): Promise<void> {
-  try {
-    await deleteFile(key);
-  } catch (error) {
-    console.warn(
-      `[imports] import ${importId}: the stored file ${key} was not deleted: ${error instanceof Error ? error.message : String(error)}`,
-    );
   }
 }
 
@@ -321,8 +312,6 @@ export async function saveAliases(
   db: Db,
   input: SaveAliasesInput,
 ): Promise<ActionResult<{ aliasIds: string[]; imports: RevalidatedImport[] }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
   if (input.aliases.length === 0) return fail("validation", "Choose at least one name to map.");
   const aliases = input.aliases.map((alias) => ({ ...alias, raw: alias.raw.trim() }));
   if (aliases.some((alias) => alias.raw === "")) return fail("validation", "The raw name is empty.", { raw: ["Required."] });
@@ -550,6 +539,7 @@ export async function applyImport(
 ): Promise<ActionResult<{ importId: string; summary: ApplySummary }>> {
   const row = await findImport(db, input.importId);
   if (!row) return fail("not_found", "That import no longer exists.");
+  // Refuse before reading storage and parsing the file outside the transaction.
   const loaded = await loadEditableEvent(db, row.eventId);
   if (!loaded.ok) return loaded.error;
   if (row.status === "applied") return fail("conflict", "This import was already applied.");
@@ -576,7 +566,7 @@ export async function applyImport(
   }
 
   // Lock the event row while it is editable (D85): a lock or archive since the
-  // check above is a conflict, and applies of one event run one at a time.
+  // check above is refused, and applies of one event run one at a time.
   // `event` has the settings (the biztech rule) as they are under the lock.
   const applied = await inEventTransaction(db, row.eventId, "edit", async (tx, event) => {
     const result: ApplySummary = {
@@ -630,7 +620,8 @@ export async function applyImport(
 const STATUS_CHANGED_MESSAGE = "This import was applied or changed by someone else. Reload the page.";
 
 /**
- * Removes the import and the rankings it wrote, then its stored file. With
+ * Removes the import and the rankings it wrote, and queues its stored file for
+ * deletion in the same transaction (D184). With
  * replace per ranker, those are the rankings of the people in this file that
  * a later file hasn't replaced. Rankings it replaced when it was applied are
  * gone; deleting it doesn't bring them back.
@@ -641,12 +632,11 @@ export async function deleteImportRecord(
 ): Promise<ActionResult<{ importId: string; rankingsDeleted: number }>> {
   const row = await findImport(db, input.importId);
   if (!row) return fail("not_found", "That import no longer exists.");
-  const loaded = await loadEditableEvent(db, row.eventId);
-  if (!loaded.ok) return loaded.error;
 
   const done = await inEventTransaction(db, row.eventId, "edit", async (tx) => {
     const deleted = await tx.delete(rankings).where(eq(rankings.importId, row.id)).returning({ id: rankings.id });
     await tx.delete(imports).where(eq(imports.id, row.id));
+    await queueFileDeletions(tx, [row.fileKey]);
     await recordAudit(tx, {
       eventId: row.eventId,
       adminId: input.adminId,
@@ -660,7 +650,7 @@ export async function deleteImportRecord(
   if (!done.ok) return done;
   const rankingsDeleted = done.data;
   // After the commit, so a failed delete never leaves a row pointing at no file.
-  await deleteStoredFile(row.id, row.fileKey);
+  await deleteQueuedFilesNow(db, [row.fileKey]);
   return ok({ importId: row.id, rankingsDeleted });
 }
 
@@ -675,8 +665,6 @@ export async function ignoreImport(
 ): Promise<ActionResult<{ importId: string }>> {
   const row = await findImport(db, input.importId);
   if (!row) return fail("not_found", "That import no longer exists.");
-  const loaded = await loadEditableEvent(db, row.eventId);
-  if (!loaded.ok) return loaded.error;
   if (row.status === "applied") {
     return fail("conflict", "This file is applied, so it can't be ignored. Upload a new file of this kind instead.");
   }
@@ -711,8 +699,6 @@ export async function stopIgnoringImport(
 ): Promise<ActionResult<{ importId: string; state: ImportState }>> {
   const row = await findImport(db, input.importId);
   if (!row) return fail("not_found", "That import no longer exists.");
-  const loaded = await loadEditableEvent(db, row.eventId);
-  if (!loaded.ok) return loaded.error;
   if (row.status !== "ignored") return fail("conflict", "This file isn't ignored.");
 
   const done = await inEventTransaction(db, row.eventId, "edit", async (tx) => {

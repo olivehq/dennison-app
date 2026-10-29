@@ -11,20 +11,14 @@ export function isEventEditable(event: { status: EventStatus }): boolean {
 
 export const ARCHIVED_MESSAGE = "This event is archived and can't be changed.";
 
-/**
- * Returns a `locked` failure when the event is locked, sent, or archived, else null.
- * Call it in every action that changes event data:
- *
- *   const blocked = assertEventEditable(event);
- *   if (blocked) return blocked;
- */
+/** Early refusal before costly or external work; writes still need an event transaction. */
 export function assertEventEditable(event: { status: EventStatus }): ActionResult<never> | null {
   if (isEventEditable(event)) return null;
-  const reason = event.status === "archived" ? ARCHIVED_MESSAGE : "The schedule is locked. Unlock it to make changes.";
+  const reason = event.status === "archived" ? ARCHIVED_MESSAGE : "The schedule is locked. Unlock it on the Schedule page to make changes.";
   return fail("locked", reason);
 }
 
-/** Loads the event and checks it is editable (D27) in one step. Used by roster and import writes. */
+/** Loads and checks the event before import storage work outside the transaction. */
 export async function loadEditableEvent(
   db: Db,
   eventId: string,
@@ -55,8 +49,7 @@ export class Refused extends Error {
 }
 
 /**
- * The compare-and-set half of a status check. Locks the event row
- * (`FOR UPDATE`) only while its status passes `gate`, so a concurrent lock,
+ * Locks the event row (`FOR UPDATE`) only while its status passes `gate`, so a concurrent lock,
  * archive, or status change waits for this transaction or makes it fail.
  * Returns the event as it is under the lock, or null when it is gone or its
  * status moved.
@@ -72,8 +65,8 @@ export async function claimEvent(tx: Db, eventId: string, gate: EventGate): Prom
 
 /**
  * Runs `work` in a transaction that first claims the event row against
- * `gate` (D85) and hands it the event as it is under the lock. A failed claim,
- * or an `EventChangedError` from `work`, becomes the event-changed conflict;
+ * `gate` (D85) and hands it the event as it is under the lock. A failed claim
+ * re-reads the event for a precise refusal. An `EventChangedError` becomes a conflict;
  * a `Refused` from `work` becomes its result. Other errors are rethrown.
  */
 export async function inEventTransaction<T>(
@@ -86,7 +79,18 @@ export async function inEventTransaction<T>(
     return ok(
       await db.transaction(async (tx) => {
         const event = await claimEvent(tx, eventId, gate);
-        if (!event) throw new EventChangedError();
+        if (!event) {
+          const current = await getEvent(eventId, tx);
+          if (!current) throw new Refused(fail("not_found", "That event no longer exists."));
+          if (current.status === "archived") throw new Refused(fail("locked", ARCHIVED_MESSAGE));
+          if (gate === "edit") {
+            const blocked = assertEventEditable(current);
+            if (blocked) throw new Refused(blocked);
+          }
+          if (gate === "locked") throw new Refused(fail("validation", "The schedule is not locked."));
+          if (gate === "draft") throw new Refused(fail("conflict", "Only draft events can be deleted. Archive this one instead."));
+          throw new EventChangedError();
+        }
         return work(tx, event);
       }),
     );

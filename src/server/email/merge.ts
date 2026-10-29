@@ -88,3 +88,17 @@ export const SAMPLE_MERGE_VALUES: MergeValues = {
   event_name: "AW Appointment Show",
   event_date: "Tuesday, November 10, 2026",
 };
+
+/** Wraps the body so every client gets a readable default font. */
+export function emailDocument(bodyHtml: string): string {
+  return `<div style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.5; color: #1f1a17;">${bodyHtml}</div>`;
+}
+
+/**
+ * Merges one recipient's values into a subject and an already sanitized body.
+ * The body is sanitized before merging, so a stored body from before the
+ * sanitizer, or an unsaved preview, is cleaned too; merged values are escaped.
+ */
+export function renderEmail(subject: string, safeBody: string, values: MergeValues): { subject: string; html: string } {
+  return { subject: renderText(subject, values), html: emailDocument(renderTemplate(safeBody, values)) };
+}

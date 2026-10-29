@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { deleteFile, getFile, importFileKey, putFile, useMemoryStorageForTests } from "./storage";
+import { deleteFile, failNextDeletesForTests, getFile, importFileKey, putFile, useMemoryStorageForTests } from "./storage";
 
 beforeAll(() => {
   useMemoryStorageForTests();
@@ -34,5 +34,15 @@ describe("storage (memory adapter)", () => {
     expect(await getFile(key)).toBeNull();
     await expect(deleteFile(key)).resolves.toBeUndefined();
     await expect(deleteFile("../nope")).rejects.toThrow(/Unsafe storage key/);
+  });
+
+  it("can be made to fail the next delete, once", async () => {
+    const key = importFileKey("event-3", "import-3", "flaky.csv");
+    await putFile({ key, body: Buffer.from("x"), contentType: "text/csv" });
+    failNextDeletesForTests();
+    await expect(deleteFile(key)).rejects.toThrow(/Storage is unavailable/);
+    expect(await getFile(key)).not.toBeNull();
+    await deleteFile(key);
+    expect(await getFile(key)).toBeNull();
   });
 });

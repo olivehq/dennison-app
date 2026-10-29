@@ -1,30 +1,31 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
 import { getSession } from "@/server/auth/session";
 import { safeNextPath } from "../auth-errors";
+import { AuthHeader } from "../auth-shell";
 import { LoginForm } from "./login-form";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
   const [session, params] = await Promise.all([getSession(), searchParams]);
   const next = safeNextPath(params.next);
   if (session) redirect(next);
+  // requireSession sends an ended session here with the page it was on; plain /events is also a first visit.
+  const sessionEnded = params.next !== undefined && next !== "/events";
 
   return (
     <>
-      <CardHeader>
-        <CardTitle>Sign in</CardTitle>
-        <CardDescription>Use the email and password for your admin account.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <LoginForm next={next} />
+      <AuthHeader
+        title="Sign in"
+        description="For Dennison & Associates staff. Use the email your invite went to."
+      />
+      <CardContent className="flex flex-col gap-6">
+        <LoginForm next={next} sessionEnded={sessionEnded} />
+        <Separator />
+        <p className="text-xs text-muted-foreground">
+          Looking for your appointment schedule? Open the link in the email Dennison &amp; Associates sent you.
+        </p>
       </CardContent>
-      <CardFooter className="justify-center">
-        <Button variant="link" asChild>
-          <Link href="/forgot-password">Forgot your password?</Link>
-        </Button>
-      </CardFooter>
     </>
   );
 }

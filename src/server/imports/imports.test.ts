@@ -3,25 +3,20 @@ import { readFileSync } from "node:fs";
 import { and, eq, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
-import { accessTokens, admins, auditEvents, events, imports, nameAliases, participants, rankings, suppliers } from "@/db/schema";
+import { accessTokens, admins, auditEvents, events, imports, nameAliases, participants, pendingFileDeletions, rankings, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
-import { deleteFile, getFile, importFileKey, useMemoryStorageForTests } from "@/lib/storage";
+import { failNextDeletesForTests, getFile, importFileKey, useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
+import { drainFileDeletions } from "@/server/files/cleanup";
 import { issueTokenForContact, verifyToken } from "@/server/tokens/tokens";
 import { applyImport, createImport, deleteImportRecord, ignoreImport, revalidateImport, saveAliases, stopIgnoringImport } from "./imports";
 import { matchingReadiness } from "@/server/matching/readiness";
 import { getImport, getImportStatusByKind, listImports } from "./queries";
 
 // Real ids by default; a test can fix the next one to know an upload's storage key.
-// Real storage by default; a test can make the next delete fail.
-vi.mock("@/lib/storage", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/storage")>();
-  return { ...actual, deleteFile: vi.fn(actual.deleteFile) };
-});
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:crypto")>();
   return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
@@ -618,7 +613,7 @@ describe("applies and revalidation under the event row lock (D85)", () => {
     const before = await db.select().from(rankings).where(eq(rankings.eventId, raceEvent));
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, raceEvent));
     const result = await applyImport(raceBeforeTransaction(db, lock), { importId: pending.importId, adminId });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await getImport(pending.importId, db))?.status).toBe("validated");
     expect(await db.select().from(rankings).where(eq(rankings.eventId, raceEvent))).toEqual(before);
     await db.update(events).set({ status: "imported" }).where(eq(events.id, raceEvent));
@@ -706,31 +701,27 @@ describe("a failed upload leaves no stored file", () => {
   it("when the event is locked while the file is parsed", async () => {
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, eventId));
     const { importId, key, result } = await uploadWithKnownKey(raceBeforeTransaction(db, lock));
-    expect(await result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(await result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect(await getFile(key)).toBeNull();
     expect(await getImport(importId, db)).toBeNull();
     await db.update(events).set({ status: "draft" }).where(eq(events.id, eventId));
   });
 
-  it("when the event is locked and the stored file can't be deleted, the key is logged and the conflict still returns", async () => {
+  it("when the event is locked and the stored file can't be deleted, the key stays queued and the locked refusal still returns", async () => {
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, eventId));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const realDelete = vi.mocked(deleteFile).getMockImplementation()!;
-    vi.mocked(deleteFile).mockRejectedValueOnce(new Error("storage is down"));
+    failNextDeletesForTests();
     try {
       const { importId, key, result } = await uploadWithKnownKey(raceBeforeTransaction(db, lock));
-      expect(await result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+      expect(await result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
       expect(await getImport(importId, db)).toBeNull();
-      // The failed delete is neither thrown nor lost: the log names the import and the key to clean up by hand.
-      expect(warn).toHaveBeenCalledTimes(1);
-      const message = String(warn.mock.calls[0][0]);
-      expect(message).toContain(importId);
-      expect(message).toContain(key);
-      expect(message).toContain("storage is down");
+      // The failed delete is neither thrown nor lost: the key waits in the queue for the next drain.
       expect(await getFile(key)).not.toBeNull();
-      await realDelete(key);
+      const queued = () => db.select().from(pendingFileDeletions).where(eq(pendingFileDeletions.storageKey, key));
+      expect(await queued()).toMatchObject([{ attempts: 1 }]);
+      await drainFileDeletions(db, { now: new Date(Date.now() + 24 * 60 * 60 * 1000) });
+      expect(await getFile(key)).toBeNull();
+      expect(await queued()).toEqual([]);
     } finally {
-      warn.mockRestore();
       await db.update(events).set({ status: "draft" }).where(eq(events.id, eventId));
     }
   });

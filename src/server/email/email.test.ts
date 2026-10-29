@@ -15,10 +15,17 @@ import {
 } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { recordAudit } from "@/server/audit/audit";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { ARCHIVED_MESSAGE } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { raceBeforeTransaction, recordQueries } from "@/server/events/test-race";
-import { clearLoggedEmails, getLoggedEmails, isEmailConfigured, sendBatch, sendEmail } from "@/lib/email/adapter";
+import {
+  clearLoggedEmails,
+  EmailRejectedError,
+  getLoggedEmails,
+  isEmailConfigured,
+  sendBatch,
+  sendEmail,
+} from "@/lib/email/adapter";
 import { campaignFieldsSchema, recipientKey, type CampaignFieldsInput } from "@/lib/schemas/email";
 import { getActiveRun } from "@/server/matching/queries";
 import { startRun } from "@/server/matching/runs";
@@ -34,7 +41,6 @@ import {
   NOT_LOCKED_MESSAGE,
   REGENERATE_HINT,
   previewCampaign,
-  PROVIDER_ID_WRITE_ATTEMPTS,
   resendToBounced,
   sendCampaign,
   sendTest,
@@ -44,6 +50,7 @@ import {
   TEST_SEND_ADMINS_ONLY,
   updateCampaign,
 } from "./campaigns";
+import { PROVIDER_ID_WRITE_ATTEMPTS } from "./delivery";
 import { campaignStats, getAudienceOptions, getCampaign, getEmailSummary, listCampaigns } from "./queries";
 import { listAudienceContacts, resolveAudience } from "./recipients";
 import {
@@ -803,7 +810,7 @@ describe("batches", () => {
     const batch = vi.mocked(sendBatch);
     batch.mockClear();
     const real = batch.getMockImplementation()!;
-    batch.mockImplementationOnce(real).mockRejectedValueOnce(new Error("Resend is down"));
+    batch.mockImplementationOnce(real).mockRejectedValueOnce(new EmailRejectedError("Resend is down"));
     const result = await sendCampaign(db, { campaignId: created.data.id, adminId: big.adminId });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1060,7 +1067,7 @@ describe("campaign writes on an event archived mid-action", () => {
     if (!draft.ok) throw new Error(draft.error.message);
     const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, other.eventId));
     const unarchive = () => db.update(events).set({ status: "matched" }).where(eq(events.id, other.eventId));
-    const refused = { ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } };
+    const refused = { ok: false, error: { code: "locked", message: ARCHIVED_MESSAGE } };
     const campaignCount = async () =>
       (await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, other.eventId))).length;
     const auditCount = async () =>
@@ -1247,7 +1254,7 @@ describe("a database failure after the provider accepted a batch", () => {
     expect(audit.after).not.toHaveProperty("sentWithoutIds");
   });
 
-  it("keeps going when the fallback write fails too, and resend never mails anyone the provider accepted", async () => {
+  it("keeps going when the fallback write fails too, and a resend under the same keys mails nobody twice", async () => {
     const { other } = await sentCampaignOnNewEvent();
     const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
     if (!created.ok) throw new Error(created.error.message);
@@ -1265,8 +1272,8 @@ describe("a database failure after the provider accepted a batch", () => {
     expect(result.ok && result.data).toMatchObject({ sent: accepted, failed: 0 });
     expect(await campaignStatus(created.data.id)).toBe("sent");
     const rows = await messagesOf(created.data.id);
-    // Still queued, but with the time they were handed to the provider.
-    expect(rows.every((m) => m.status === "queued" && m.sentAt !== null)).toBe(true);
+    // Still queued, but with the time and batch key they were handed to the provider under.
+    expect(rows.every((m) => m.status === "queued" && m.sentAt !== null && m.batchKey !== null)).toBe(true);
     const [audit] = await db
       .select()
       .from(auditEvents)
@@ -1277,16 +1284,18 @@ describe("a database failure after the provider accepted a batch", () => {
       statusNotSaved: rows.length,
       statusError: "database went away",
     });
-    expect((await getCampaign(created.data.id, db))?.resendable).toBe(0);
+    // They look like a batch without an answer, so resend may retry them, under the same key.
+    expect((await getCampaign(created.data.id, db))?.resendable).toBe(rows.length);
 
-    // Neither a sent nor a failed campaign mails them again.
     clearLoggedEmails();
     const resend = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
-    expect(!resend.ok && resend.error.code).toBe("validation");
-    await db.update(emailCampaigns).set({ status: "failed" }).where(eq(emailCampaigns.id, created.data.id));
-    const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: other.adminId });
-    expect(!retry.ok && retry.error.code).toBe("validation");
+    expect(resend.ok && resend.data).toMatchObject({ recipients: rows.length, sent: rows.length, failed: 0 });
+    // The provider (here the logger) answers a known key with the first result and sends nothing.
     expect(getLoggedEmails()).toHaveLength(0);
+    const after = await messagesOf(created.data.id);
+    expect(after).toHaveLength(rows.length);
+    expect(after.every((m) => m.status === "sent" && m.providerMessageId)).toBe(true);
+    expect((await getCampaign(created.data.id, db))?.resendable).toBe(0);
   });
 
   it("does not send a batch whose hand-off time can't be saved, and resend sends it later", async () => {
@@ -1318,7 +1327,7 @@ describe("a database failure after the provider accepted a batch", () => {
     const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
     if (!created.ok) throw new Error(created.error.message);
 
-    vi.mocked(sendBatch).mockRejectedValueOnce(new Error("Resend is down"));
+    vi.mocked(sendBatch).mockRejectedValueOnce(new EmailRejectedError("Resend is down"));
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const result = await sendCampaign(db, { campaignId: created.data.id, adminId: other.adminId });
     error.mockRestore();

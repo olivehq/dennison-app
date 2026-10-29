@@ -175,7 +175,7 @@ export const loadActiveSchedule = cache(async (db: Db, eventId: string): Promise
 });
 
 export type PersonSchedule = {
-  event: Pick<Event, "id" | "name" | "eventDate" | "timezone" | "status">;
+  event: Pick<Event, "id" | "name" | "eventDate" | "timezone" | "status" | "branding">;
   person: PersonRef & { name: string; desk: number | null; withdrawn: boolean };
   slots: ParticipantSlot[];
 };
@@ -185,9 +185,9 @@ function personSchedule(
   person: PersonSchedule["person"],
   snapshot: Omit<ScheduleSnapshot, "slots">,
 ): PersonSchedule {
-  const { id, name, eventDate, timezone, status } = event;
+  const { id, name, eventDate, timezone, status, branding } = event;
   return {
-    event: { id, name, eventDate, timezone, status },
+    event: { id, name, eventDate, timezone, status, branding },
     person,
     slots: participantSlots({ ...snapshot, slots: slotsFor(event) }, person),
   };

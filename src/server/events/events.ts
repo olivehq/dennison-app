@@ -5,9 +5,9 @@ import { appointments, events, imports, matchRuns, participants, type Event } fr
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { eventSchema, type EventInput } from "@/lib/schemas/event";
 import { defaultEventSettings, eventSettingsSchema, type EventSettings } from "@/lib/schemas/event-settings";
-import { deleteFile } from "@/lib/storage";
 import { recordAudit } from "@/server/audit/audit";
-import { assertEventEditable, EventChangedError, inEventTransaction, Refused } from "./editable";
+import { deleteQueuedFilesNow, queueFileDeletions } from "@/server/files/cleanup";
+import { EventChangedError, inEventTransaction, Refused } from "./editable";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "./status";
 
 const idSchema = z.uuid();
@@ -153,18 +153,15 @@ export async function updateEvent(
   input: unknown,
   actorId: string,
 ): Promise<ActionResult<{ id: string }>> {
-  const loaded = await loadEvent(db, id);
-  if (!loaded.ok) return loaded;
-  const event = loaded.data;
-  const blocked = assertEventEditable(event);
-  if (blocked) return blocked;
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
 
   const parsed = eventSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  const done = await inEventTransaction(db, event.id, "edit", (tx, current) => writeDetails(tx, current, parsed.data, actorId));
+  const done = await inEventTransaction(db, parsedId.data, "edit", (tx, current) => writeDetails(tx, current, parsed.data, actorId));
   if (!done.ok) return done;
-  return ok({ id: event.id });
+  return ok({ id: parsedId.data });
 }
 
 export async function updateEventSettings(
@@ -174,20 +171,17 @@ export async function updateEventSettings(
   actorId: string,
   options: { clearSchedule?: boolean } = {},
 ): Promise<ActionResult<{ id: string; clearedRunId: string | null }>> {
-  const loaded = await loadEvent(db, id);
-  if (!loaded.ok) return loaded;
-  const event = loaded.data;
-  const blocked = assertEventEditable(event);
-  if (blocked) return blocked;
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
 
   const parsed = eventSettingsSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  const done = await inEventTransaction(db, event.id, "edit", (tx, current) =>
+  const done = await inEventTransaction(db, parsedId.data, "edit", (tx, current) =>
     writeSettings(tx, current, withoutRetainData(parsed.data), actorId, options.clearSchedule ?? false),
   );
   if (!done.ok) return done;
-  return ok({ id: event.id, clearedRunId: done.data.clearedRunId });
+  return ok({ id: parsedId.data, clearedRunId: done.data.clearedRunId });
 }
 
 export type SaveEventFormInput = {
@@ -210,11 +204,8 @@ export async function saveEventForm(
   input: SaveEventFormInput,
   actorId: string,
 ): Promise<ActionResult<{ id: string; clearedRunId: string | null }>> {
-  const loaded = await loadEvent(db, id);
-  if (!loaded.ok) return loaded;
-  const event = loaded.data;
-  const blocked = assertEventEditable(event);
-  if (blocked) return blocked;
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
   if (input.details === undefined && input.settings === undefined) {
     return fail("validation", "Nothing to save. Change a value first.");
   }
@@ -226,7 +217,7 @@ export async function saveEventForm(
   if (settings && !settings.success) Object.assign(fieldErrors, fieldErrorsOf(fromZod(settings.error), "settings."));
   if (Object.keys(fieldErrors).length > 0) return fail("validation", "Check the highlighted fields.", fieldErrors);
 
-  const done = await inEventTransaction(db, event.id, "edit", async (tx, current) => {
+  const done = await inEventTransaction(db, parsedId.data, "edit", async (tx, current) => {
     const saved = settings?.success
       ? await writeSettings(tx, current, withoutRetainData(settings.data), actorId, input.clearSchedule ?? false)
       : { clearedRunId: null };
@@ -237,7 +228,7 @@ export async function saveEventForm(
     const errors = fieldErrorsOf(done, "settings.");
     return errors ? fail(done.error.code, done.error.message, errors) : done;
   }
-  return ok({ id: event.id, clearedRunId: done.data.clearedRunId });
+  return ok({ id: parsedId.data, clearedRunId: done.data.clearedRunId });
 }
 
 /**
@@ -251,58 +242,47 @@ export async function setRetainData(
   retain: unknown,
   actorId: string,
 ): Promise<ActionResult<{ id: string; retainData: boolean }>> {
-  const loaded = await loadEvent(db, id);
-  if (!loaded.ok) return loaded;
-  const event = loaded.data;
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
   const parsed = z.boolean().safeParse(retain);
   if (!parsed.success) return fail("validation", "Choose whether to keep the data.");
-  if (event.status === "archived") {
-    return fail("locked", "This event is archived, so its retention setting can't change.");
-  }
-  const current = event.settings.retainData ?? false;
-  if (current === parsed.data) return ok({ id: event.id, retainData: current });
 
   // The only writer of retainData: lock the row and change that one key of
   // the stored settings, so a concurrent settings save is kept.
-  const done = await inEventTransaction(db, event.id, "unarchived", async (tx, row) => {
+  const done = await inEventTransaction(db, parsedId.data, "unarchived", async (tx, row) => {
     const stored = row.settings.retainData ?? false;
     if (stored === parsed.data) return;
-    await tx.update(events).set({ settings: { ...row.settings, retainData: parsed.data } }).where(eq(events.id, event.id));
+    await tx.update(events).set({ settings: { ...row.settings, retainData: parsed.data } }).where(eq(events.id, parsedId.data));
     await recordAudit(tx, {
-      eventId: event.id,
+      eventId: parsedId.data,
       adminId: actorId,
       action: "event.retention",
       entityType: "event",
-      entityId: event.id,
+      entityId: parsedId.data,
       before: { retainData: stored },
       after: { retainData: parsed.data },
     });
   });
   if (!done.ok) return done;
-  return ok({ id: event.id, retainData: parsed.data });
+  return ok({ id: parsedId.data, retainData: parsed.data });
 }
 
 /**
  * Only a draft event with no participants can be deleted. Everything else is
- * kept for the audit trail. Uploaded import files are deleted from storage
- * after the rows commit; `fileErrors` lists the keys that could not be, to
- * retry by hand (as the retention job does).
+ * kept for the audit trail. Uploaded import files and the logo are queued for
+ * deletion with the rows and deleted after the commit; a failed delete stays
+ * queued for the retention cron (D184).
  */
 export async function deleteEvent(
   db: Db,
   id: unknown,
   actorId: string,
-): Promise<ActionResult<{ id: string; fileErrors: string[] }>> {
-  const loaded = await loadEvent(db, id);
-  if (!loaded.ok) return loaded;
-  const event = loaded.data;
-
-  if (event.status !== "draft") {
-    return fail("conflict", "Only draft events can be deleted. Archive this one instead.");
-  }
+): Promise<ActionResult<{ id: string }>> {
+  const parsedId = idSchema.safeParse(id);
+  if (!parsedId.success) return fail("not_found", "That event no longer exists.");
   // Lock the row while it is still a draft, then count, so a participant
   // added or a status change in between can't slip past the checks.
-  const done = await inEventTransaction(db, event.id, "draft", async (tx) => {
+  const done = await inEventTransaction(db, parsedId.data, "draft", async (tx, event) => {
     const [{ value: participantCount }] = await tx
       .select({ value: count() })
       .from(participants)
@@ -320,21 +300,16 @@ export async function deleteEvent(
       entityId: event.id,
       before: { name: event.name, eventDate: event.eventDate, timezone: event.timezone, status: event.status },
     });
-    return files.map((f) => f.key);
+    const keys = [...files.map((f) => f.key), ...(event.branding?.logoKey ? [event.branding.logoKey] : [])];
+    await queueFileDeletions(tx, keys);
+    return keys;
   });
   if (!done.ok) return done;
   if (!done.data) {
-    return fail("conflict", "This event already has participants. Withdraw or remove them before deleting it.");
+    return fail("conflict", "This event already has participants, so it can't be deleted. Archive it instead.");
   }
-  const fileErrors: string[] = [];
-  for (const key of done.data) {
-    try {
-      await deleteFile(key);
-    } catch {
-      fileErrors.push(key);
-    }
-  }
-  return ok({ id: event.id, fileErrors });
+  await deleteQueuedFilesNow(db, done.data);
+  return ok({ id: parsedId.data });
 }
 
 /**
@@ -350,7 +325,6 @@ export async function archiveEvent(
   const loaded = await loadEvent(db, input.eventId);
   if (!loaded.ok) return loaded;
   const event = loaded.data;
-  if (event.status === "archived") return fail("conflict", "This event is already archived.");
 
   const done = await inEventTransaction(db, event.id, "unarchived", async (tx) => {
     const changed = await tx

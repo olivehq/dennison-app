@@ -59,7 +59,7 @@ export function SendUpdateButton({
       disabled={disabled || pending}
     >
       {pending ? <Spinner data-icon="inline-start" /> : <MailPlusIcon data-icon="inline-start" />}
-      Send update
+      Draft update
     </Button>
   );
 }

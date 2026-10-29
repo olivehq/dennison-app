@@ -5,7 +5,6 @@ import { accessTokens, admins, appointments, auditEvents, events, matchRuns, par
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import { recipientKey } from "@/lib/schemas/email";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { decryptToken } from "@/lib/tokens";
 import { issueTokenForContact, linksForContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
@@ -271,7 +270,7 @@ describe("editability under the event row lock (D85)", () => {
     const [person] = await db.insert(suppliers).values({ eventId: event, name: "Late Lodge", type: "hotel" }).returning();
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, event));
     const result = await withdrawSupplier(raceBeforeTransaction(db, lock), { id: person.id, adminId });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await getSupplier(person.id, db))?.status).toBe("active");
     expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, person.id))).toHaveLength(0);
   });

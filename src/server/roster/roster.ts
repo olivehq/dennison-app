@@ -10,7 +10,7 @@ import {
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
-import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
+import { inEventTransaction, Refused } from "@/server/events/editable";
 import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 
 type Actor = { adminId: string };
@@ -87,8 +87,6 @@ export async function upsertParticipant(
   db: Db,
   input: UpsertParticipantInput,
 ): Promise<ActionResult<{ id: string }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
 
   const existing = input.id ? await findParticipant(db, input.id) : null;
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
@@ -149,8 +147,6 @@ async function setParticipantStatus(
 ): Promise<ActionResult<{ id: string }>> {
   const existing = await findParticipant(db, input.id);
   if (!existing) return fail("not_found", "That participant no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
   // Rankings, appointments, and links stay; the schedule flags the gaps and
@@ -258,8 +254,6 @@ function supplierValues(data: SupplierInput) {
 }
 
 export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promise<ActionResult<{ id: string }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
 
   const existing = input.id ? await findSupplier(db, input.id) : null;
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
@@ -327,8 +321,6 @@ async function setSupplierStatus(
 ): Promise<ActionResult<SupplierStatusResult>> {
   const existing = await findSupplier(db, input.id);
   if (!existing) return fail("not_found", "That supplier no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
   const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {

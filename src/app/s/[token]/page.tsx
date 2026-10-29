@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
+import { BrandedHeader } from "@/components/app/branded-header";
 import { PersonSchedule, type PersonScheduleSlot } from "@/components/app/person-schedule";
 import { Separator } from "@/components/ui/separator";
 import { getDb } from "@/db/client";
 import { formatEventDate } from "@/lib/time";
+import { logoUrl } from "@/server/events/branding";
 import { loadParticipantView } from "@/server/exports/participant";
 
 // Every request re-checks the token and reads the live schedule. Dynamic
@@ -44,18 +46,21 @@ export default async function ParticipantSchedulePage({ params }: { params: Prom
         }
       : null,
   }));
+  const primaryColor = event.branding?.primaryColor ?? null;
+  const accentColor = event.branding?.accentColor ?? primaryColor;
+  const logoSrc = logoUrl(event.id, event.branding);
   const booked = rows.filter((r) => r.appointment).length;
 
   return (
     <main className="mx-auto flex w-full max-w-[480px] flex-col gap-6 px-4 py-8 print:max-w-none print:px-0 print:py-0">
-      <header className="flex flex-col gap-1">
-        <p className="font-display text-sm font-bold tracking-wide text-muted-foreground uppercase">{event.name}</p>
-        <p className="text-sm text-muted-foreground">{formatEventDate(event.eventDate, event.timezone)}</p>
-        <h1 className="mt-3 font-display text-2xl leading-tight font-bold text-balance break-words">{person.name}</h1>
-        {isSupplier && person.desk !== null ? (
-          <p className="font-display text-lg font-bold tabular-nums">Desk {person.desk}</p>
-        ) : null}
-      </header>
+      <BrandedHeader
+        eventName={event.name}
+        dateLabel={formatEventDate(event.eventDate, event.timezone)}
+        name={person.name}
+        desk={isSupplier ? person.desk : null}
+        primaryColor={primaryColor}
+        logoSrc={logoSrc}
+      />
       <Separator />
       <section aria-labelledby="appointments-heading" className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
@@ -64,11 +69,11 @@ export default async function ParticipantSchedulePage({ params }: { params: Prom
           </h2>
           <p className="text-sm text-muted-foreground">
             {isSupplier
-              ? "Your appointments. Each is ten minutes at your desk."
-              : "Your appointments. Each is ten minutes at the supplier's desk."}
+              ? "Your appointments, all at your desk."
+              : "Your appointments, each at the supplier's desk."}
           </p>
         </div>
-        <PersonSchedule slots={rows} personType={person.type} showRanks={false} className="print:gap-1" />
+        <PersonSchedule slots={rows} personType={person.type} showRanks={false} accentColor={accentColor} className="print:gap-1" />
       </section>
       <Footer />
     </main>

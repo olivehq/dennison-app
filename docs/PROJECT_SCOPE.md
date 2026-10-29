@@ -184,7 +184,7 @@ Postgres, Drizzle schema. Every row scoped to an `event_id` except `admins`.
 | Table | Purpose | Key columns |
 |---|---|---|
 | `admins`, `sessions`, `accounts`, `verifications` | Better Auth tables | admins also get invited_by, disabled_at |
-| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`) |
+| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`), branding jsonb (primary and accent color, logo storage key and type; null until set) |
 | `event_settings` | Per-event tunables | slot_count, slots jsonb `[{n, start, end}]`, supplier_target (9), buyer_min (7), buyer_max (9), buyer_ideal (8), mutual_top_n (10), hotel_rank_cutoff (27), biztech_opt_in_rule |
 | `participants` | Buyers | email (unique per event), first_name, last_name, organization, title, display_name, biztech_opt_in bool, status (`active`, `withdrawn`) |
 | `suppliers` | Suppliers | name, type (`business`, `hotel`), desk_number, desk_override bool, admin_contact (email, name), attendee_contact (email, name), status (`active`, `withdrawn`) |
@@ -197,6 +197,7 @@ Postgres, Drizzle schema. Every row scoped to an `event_id` except `admins`.
 | `access_tokens` | Participant links | contact_type (`buyer`, `supplier_admin`, `supplier_attendee`), entity_id, token_hash, expires_at, revoked_at, last_viewed_at |
 | `email_campaigns` | A send | name, from_name, from_email, reply_to, subject, html_body, audience (`all`, `buyers`, `suppliers`, `selected`, `changed_since_last_send`), kind (`initial`, `reminder`, `update`), sent_at |
 | `email_messages` | One per recipient | campaign_id, access_token_id, to_email, provider_message_id, status (`queued`, `sent`, `delivered`, `bounced`, `complained`, `failed`), events jsonb, schedule_hash (hash of the schedule the person was sent) |
+| `pending_file_deletions` | Added. Stored files no row points at any more, until storage confirms the delete (D184) | storage_key (primary key), created_at, attempts, last_error (error name only), next_attempt_at |
 
 Uniqueness constraints on `appointments` enforce the three hard rules at the database layer, not just in code.
 
@@ -322,7 +323,7 @@ Added:
 Added, sending updates to only the people affected:
 
 - Each sent email stores a hash of the schedule it described. The participants and suppliers pages show a "Changed since last email" flag, and the dashboard shows how many people are affected.
-- "Send update" creates a campaign of kind `update` with the audience `changed_since_last_send`. It uses the same editor and send path as reminders, with a default body that says the schedule changed and links to it.
+- "Draft update" (formerly "Send update") creates a draft campaign of kind `update` with the audience `changed_since_last_send`. It uses the same editor and send path as reminders, with a default body that says the schedule changed and links to it.
 - Exports show when they were generated and warn if the schedule has changed since the last export.
 
 ### 2.8 Tuning and live-run support

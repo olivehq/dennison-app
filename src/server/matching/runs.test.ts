@@ -315,14 +315,14 @@ describe("one active run per event", () => {
     expect(runs.find((r) => r.id === result.data.runId)?.status).toBe("completed");
   });
 
-  it("activateRun is a conflict when the event was locked between its read and its write", async () => {
+  it("activateRun reports locked when a lock lands before its write", async () => {
     const other = await seedEvent(db, { buyers: 4 });
     const first = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
     const second = await startRun(db, { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
     if (!first.ok || !second.ok) throw new Error("runs failed");
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
     const result = await activateRun(raceBeforeTransaction(db, lock), { runId: second.data.runId, adminId: other.adminId });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await getActiveRun(other.eventId, db))?.id).toBe(first.data.runId);
   });
 
@@ -330,7 +330,7 @@ describe("one active run per event", () => {
     const other = await seedEvent(db, { buyers: 4 });
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, other.eventId));
     const result = await startRun(raceBeforeTransaction(db, lock), { eventId: other.eventId, adminId: other.adminId, keepExisting: false });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect(await listRuns(other.eventId, db)).toHaveLength(0);
   });
 

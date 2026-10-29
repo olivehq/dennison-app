@@ -15,7 +15,6 @@ import {
 import { createTestDb } from "@/db/test-db";
 import { NOT_ACTIVE_RUN_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { getActiveRun } from "@/server/matching/queries";
@@ -601,7 +600,7 @@ describe("lock and unlock", () => {
     expect(event.status).toBe("locked");
 
     const again = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
-    expect(again).toEqual({ ok: false, error: { code: "conflict", message: "The schedule is already locked." } });
+    expect(again).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
   });
 
   it("lock on an archived event says it is archived, not already locked", async () => {
@@ -713,37 +712,37 @@ describe("status races (compare-and-set)", () => {
   const setStatus = (status: "matched" | "locked" | "archived") => () =>
     db.update(events).set({ status }).where(eq(events.id, seeded.eventId));
 
-  it("lock is a conflict when the event was locked between its read and its write", async () => {
+  it("lock reports locked when another lock lands before its write", async () => {
     const result = await lockSchedule(raceBeforeTransaction(db, setStatus("locked")), {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
     });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect(await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId))).toHaveLength(0);
     expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.lock" } }, db)).total).toBe(0);
   });
 
-  it("unlock is a conflict when the event was unlocked or archived in between", async () => {
+  it("unlock reports archived when an archive lands before its write", async () => {
     expect((await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId })).ok).toBe(true);
     const raced = await unlockSchedule(raceBeforeTransaction(db, setStatus("archived")), {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
       reason: "Late change",
     });
-    expect(raced).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(raced).toEqual({ ok: false, error: { code: "locked", message: "This event is archived and can't be changed." } });
     const [event] = await db.select().from(events).where(eq(events.id, seeded.eventId));
     expect(event.status).toBe("archived");
     expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.unlock" } }, db)).total).toBe(0);
   });
 
-  it("an edit or desk change that lands after a lock is a conflict, not a write", async () => {
+  it("an edit or desk change after a lock reports locked and writes nothing", async () => {
     const [a] = await rows();
     const edit = await removeAppointment(
       raceBeforeTransaction(db, setStatus("locked")),
       { runId, version: await version(), slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
       seeded.adminId,
     );
-    expect(edit).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(edit).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await rows()).some((r) => r.id === a.id)).toBe(true);
 
     await setStatus("matched")();
@@ -751,7 +750,7 @@ describe("status races (compare-and-set)", () => {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
     });
-    expect(!desks.ok && desks.error.code).toBe("conflict");
+    expect(!desks.ok && desks.error.code).toBe("locked");
   });
 });
 

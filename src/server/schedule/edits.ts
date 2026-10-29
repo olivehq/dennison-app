@@ -33,7 +33,7 @@ import {
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { compareNames } from "@/lib/names";
-import { assertEventEditable, inEventTransaction, Refused } from "@/server/events/editable";
+import { inEventTransaction, Refused } from "@/server/events/editable";
 import {
   loadPeople,
   loadRoster,
@@ -140,8 +140,6 @@ async function loadContext(db: Db, runId: string): Promise<ActionResult<EditCont
   if (run.status !== "completed") return fail("validation", "That run did not complete, so it cannot be edited.");
   const roster = await loadRoster(db, run.eventId);
   if (!roster) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(roster.event);
-  if (locked) return locked;
   // D33: only the active run is edited, so a colleague's activation stops stale editors.
   if (!run.isActive) return fail("conflict", NOT_ACTIVE_RUN_MESSAGE);
   const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));

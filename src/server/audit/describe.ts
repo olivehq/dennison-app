@@ -229,6 +229,13 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
       const fields = changedKeys(before, after, SETTING_LABELS);
       return fields.length ? `Changed the settings: ${list(fields)}` : "Saved the settings";
     }
+    case "event.branding": {
+      const changed = [
+        before.primaryColor !== after.primaryColor || before.accentColor !== after.accentColor ? "colors" : null,
+        before.logoKey !== after.logoKey ? (after.logoKey ? "logo" : "logo removed") : null,
+      ].filter((c): c is string => c !== null);
+      return changed.length ? `Changed the schedule page branding: ${list(changed)}` : "Saved the schedule page branding";
+    }
     case "event.retention":
       return after.retainData
         ? "Turned on keeping participant data after 90 days"

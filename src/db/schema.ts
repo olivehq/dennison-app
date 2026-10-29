@@ -14,6 +14,7 @@ import {
   uuid,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
+import type { EventBranding } from "../lib/branding";
 import type { EventSettings } from "../lib/schemas/event-settings";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -198,6 +199,8 @@ export const events = pgTable("events", {
   status: eventStatusEnum("status").notNull().default("draft"),
   // Per-event tunables, validated by eventSettingsSchema on every write (D19).
   settings: jsonb("settings").$type<EventSettings>().notNull(),
+  // Logo and colors for the participant schedule page. Null until an admin sets some (D181).
+  branding: jsonb("branding").$type<EventBranding>(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -518,6 +521,16 @@ export const emailMessages = pgTable(
     status: emailMessageStatusEnum("status").notNull().default("queued"),
     events: jsonb("events").$type<EmailDeliveryEvent[]>().notNull().default([]),
     scheduleHash: text("schedule_hash"),
+    // The batch this message was handed to the provider in, written with
+    // `sentAt` before the call. The provider's idempotency key derives from
+    // it, so a retry of a batch with an unknown outcome can't send twice.
+    batchKey: uuid("batch_key"),
+    // The exact email handed to the provider and its place in the batch,
+    // as JSON text (key order survives) encrypted with the D59 key because it
+    // holds schedule links. Written with `batchKey`, cleared once the batch has
+    // an answer. A retry under the key resends the batch byte for byte, as the
+    // provider's idempotency contract requires (D185).
+    request: text("request"),
     sentAt: timestamptz("sent_at"),
     lastEventAt: timestamptz("last_event_at"),
     createdAt: createdAt(),
@@ -670,3 +683,24 @@ export type EmailAudience = EmailCampaign["audience"];
 export type EmailCampaignKind = EmailCampaign["kind"];
 export type EmailCampaignStatus = EmailCampaign["status"];
 export type EmailMessageStatus = EmailMessage["status"];
+
+// ---------------------------------------------------------------------------
+// Stored files no row points at any more, deleted from storage by
+// src/server/files/cleanup.ts. A caller adds the key in the transaction that
+// removes the last row referencing it, so a failed delete is retried, not lost.
+// ---------------------------------------------------------------------------
+
+export const pendingFileDeletions = pgTable(
+  "pending_file_deletions",
+  {
+    storageKey: text("storage_key").primaryKey(),
+    createdAt: createdAt(),
+    attempts: integer("attempts").notNull().default(0),
+    // The error's name or code only: storage messages can repeat the key's file name.
+    lastError: text("last_error"),
+    nextAttemptAt: timestamptz("next_attempt_at").notNull().defaultNow(),
+  },
+  (table) => [index("pending_file_deletions_next_attempt_idx").on(table.nextAttemptAt)],
+);
+
+export type PendingFileDeletion = typeof pendingFileDeletions.$inferSelect;

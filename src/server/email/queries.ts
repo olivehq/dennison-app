@@ -11,7 +11,7 @@ import {
 } from "@/db/schema";
 import { compareNames } from "@/lib/names";
 import { recipientKey } from "@/lib/schemas/email";
-import { isResendable } from "./campaigns";
+import { isResendable } from "./delivery";
 import { listAudienceContacts } from "./recipients";
 import { scheduleChangeState, type ScheduleChangeState } from "./schedule-hash";
 
@@ -160,7 +160,7 @@ export async function getCampaign(campaignId: string, db: Db = getDb()): Promise
     sentByName: sender[0]?.name ?? null,
     messages,
     stats: countByCampaign(latest).get(campaignId) ?? emptyCounts(),
-    resendable: latest.filter(isResendable).length + neverMessaged,
+    resendable: latest.filter((m) => isResendable(m)).length + neverMessaged,
   };
 }
 

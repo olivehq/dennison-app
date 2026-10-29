@@ -30,6 +30,58 @@ export function describeAuthError(error: AuthClientError, fallback: string): str
   }
 }
 
+/** What an auth form shows after a failed request. */
+export type AuthFeedback =
+  | { kind: "invalid-credentials" }
+  /** `retryAt` is epoch milliseconds, or null when the server sent no usable `X-Retry-After`. */
+  | { kind: "rate-limited"; retryAt: number | null }
+  | { kind: "network" }
+  | { kind: "error"; message: string };
+
+/** Better Auth's rate limiter sends `X-Retry-After` in whole seconds. Anything else is ignored. */
+export function parseRetryAfter(value: string | null | undefined): number | null {
+  if (!value || !/^\d+$/.test(value.trim())) return null;
+  const seconds = Number(value.trim());
+  return seconds > 0 ? seconds : null;
+}
+
+/** Sorts a Better Auth error into the states the forms render differently. */
+export function classifyAuthError(
+  error: AuthClientError,
+  fallback: string,
+  retryAfterSeconds: number | null,
+  now: number,
+): AuthFeedback {
+  if (error.status === 429) {
+    return { kind: "rate-limited", retryAt: retryAfterSeconds === null ? null : now + retryAfterSeconds * 1000 };
+  }
+  switch (error.code) {
+    case "INVALID_EMAIL_OR_PASSWORD":
+    case "INVALID_PASSWORD":
+    case "USER_NOT_FOUND":
+      return { kind: "invalid-credentials" };
+    default:
+      return { kind: "error", message: describeAuthError(error, fallback) };
+  }
+}
+
+/** Whole seconds until `retryAt`, never negative. */
+export function secondsUntil(retryAt: number, now: number): number {
+  return Math.max(0, Math.ceil((retryAt - now) / 1000));
+}
+
+/** `4:05` style countdown for the disabled submit button. */
+export function formatCountdown(seconds: number): string {
+  const whole = Math.max(0, Math.ceil(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/** The rate-limit sentence. Rounds up to whole minutes so a screen reader isn't told every second. */
+export function waitCopy(seconds: number | null): string {
+  const minutes = seconds === null ? 10 : Math.max(1, Math.ceil(seconds / 60));
+  return `Wait ${minutes} ${minutes === 1 ? "minute" : "minutes"}, then try again.`;
+}
+
 /** A stand-in origin: `next` must resolve against it and stay on it. */
 const SAME_SITE = "http://same-site.invalid";
 
