@@ -175,7 +175,9 @@ function suggestionsFor(raw: string, entities: ResolvableEntity[]): NameSuggesti
   }));
   return scored
     .filter((suggestion) => suggestion.score >= SUGGESTION_THRESHOLD)
-    .sort((a, b) => b.score - a.score || compareNames(a.name, b.name))
+    // The id breaks ties between people with the same name, so the order (and a
+    // stale-report check comparing two runs) doesn't depend on database row order.
+    .sort((a, b) => b.score - a.score || compareNames(a.name, b.name) || a.entityId.localeCompare(b.entityId))
     .slice(0, SUGGESTION_LIMIT)
     .map((suggestion) => ({ ...suggestion, score: Math.round(suggestion.score * 100) / 100 }));
 }

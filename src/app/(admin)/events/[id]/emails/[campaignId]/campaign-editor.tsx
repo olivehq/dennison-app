@@ -123,6 +123,9 @@ export function CampaignEditor({
   const skippedText = skippedNote(skipped);
   // Preview as lists only who gets the email; if the audience changes under the choice, fall back to the first person.
   const previewAs = previewKey === AUTO_RECIPIENT || sendList.some((c) => c.key === previewKey) ? previewKey : AUTO_RECIPIENT;
+  // "First in the audience" means the first person a send reaches, so a revoked
+  // contact never shows up there. With nobody to send to, the server picks.
+  const previewRecipient = previewAs === AUTO_RECIPIENT ? sendList[0]?.key : previewAs;
 
   // The preview follows the editor, audience included, debounced, rendered on the server with real values.
   React.useEffect(() => {
@@ -130,7 +133,7 @@ export function CampaignEditor({
     const timer = setTimeout(async () => {
       const result = await previewCampaignAction({
         campaignId,
-        recipient: previewAs === AUTO_RECIPIENT ? undefined : previewAs,
+        recipient: previewRecipient,
         subject,
         htmlBody,
         audience,
@@ -148,7 +151,7 @@ export function CampaignEditor({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [campaignId, previewAs, subject, htmlBody, audience, selectedKeys]);
+  }, [campaignId, previewRecipient, subject, htmlBody, audience, selectedKeys]);
 
   /** Saves when there are unsaved edits. Returns false and shows errors when the save fails. */
   const save = async (values: CampaignFields, force = false): Promise<boolean> => {

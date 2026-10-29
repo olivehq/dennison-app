@@ -28,9 +28,9 @@ export function StaleReportAlert({ importId, lockedReason }: { importId: string;
   return (
     <Alert>
       <RefreshCwIcon />
-      <AlertTitle>This report is out of date</AlertTitle>
+      <AlertTitle>This report may be out of date</AlertTitle>
       <AlertDescription>
-        <p>The roster changed after this file was checked. Check it again.</p>
+        <p>Checking this file now gives a different result, usually because the roster or saved names changed. Check it again.</p>
         <Button
           type="button"
           variant="outline"

@@ -114,7 +114,9 @@ export function PersonSheet(props: PersonSheetProps) {
     buyerName: string;
     slot: number;
   } | null>(null);
-  // Only on the sheet it was made from, so opening someone else's schedule drops it.
+  // Cleared as soon as the sheet shows someone else or closes, so coming back to
+  // this person never shows a note about a replace that may have been undone since.
+  if (replacedNote && replacedNote.sheetPersonId !== person?.id) setReplaced(null);
   const replaced = replacedNote && replacedNote.sheetPersonId === person?.id ? replacedNote : null;
 
   // Picking someone opens a preview; Save commits it. Tied to the request so a new picker starts clean.
@@ -170,6 +172,8 @@ export function PersonSheet(props: PersonSheetProps) {
     const a = row.appointment;
     if (!a) return;
     setBusyRow(a.id);
+    // Any other edit makes the note about the last replace stale.
+    setReplaced(null);
     try {
       const result = await removeAppointmentAction({ runId, version, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId });
       const supplier = model.personById.get(a.supplierId);
@@ -186,6 +190,7 @@ export function PersonSheet(props: PersonSheetProps) {
     const a = row.appointment;
     if (!a) return;
     setBusyRow(a.id);
+    setReplaced(null);
     startTransition(async () => {
       const result = await setPinnedAction({ appointmentId: a.id, pinned: !a.pinned, version });
       setBusyRow(null);
