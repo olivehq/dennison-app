@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { ThemeProvider } from "next-themes";
+import { ThemeProvider } from "./theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 
 /**
