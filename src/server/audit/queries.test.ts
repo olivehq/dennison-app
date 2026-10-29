@@ -77,6 +77,25 @@ describe("getActivityPage", () => {
     });
   });
 
+  it("names people by their own name on roster rows and by the organization label on schedule rows", async () => {
+    // Buyer 0 has an organization and title, so the schedule calls them "Org 0 - Title 0".
+    const buyer = seeded.buyers[0];
+    await recordAudit(db, {
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+      action: "participant.withdraw",
+      entityType: "participant",
+      entityId: buyer.id,
+      before: { status: "active" },
+      after: { status: "withdrawn" },
+    });
+    const { auditEventId } = await removeFirst();
+    const page = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
+    expect(page.rows.find((r) => r.action === "participant.withdraw")!.sentence).toBe("Withdrew Buyer0 Person");
+    expect(page.rows.find((r) => r.id === auditEventId)!.sentence).toMatch(/^Removed (Org \d+ - Title \d+|Buyer\d+ Person) from /);
+    expect(page.people.find((p) => p.value === buyer.id)!.label).toBe("Org 0 - Title 0");
+  });
+
   it("disables undo while locked and for runs that are no longer active", async () => {
     const { auditEventId } = await removeFirst();
     await db.update(events).set({ status: "locked" }).where(eq(events.id, seeded.eventId));

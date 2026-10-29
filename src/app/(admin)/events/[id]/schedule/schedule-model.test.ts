@@ -669,6 +669,22 @@ describe("lockOutcomeText", () => {
     );
   });
 
+  it("names up to three people with a revoked link, then counts the rest", () => {
+    const base = { desks: 56, issued: 0, kept: 174 };
+    expect(lockOutcomeText({ ...base, revoked: 1, revokedNames: ["Ann Lee"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee has a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 2, revokedNames: ["Ann Lee", "Bo Chen"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee and Bo Chen have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 3, revokedNames: ["Ann Lee", "Bo Chen", "Cy Dee"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee, Bo Chen and Cy Dee have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 5, revokedNames: ["Ann Lee", "Bo Chen", "Cy Dee", "Di Fox", "Ed Gu"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee, Bo Chen, Cy Dee and 2 more have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+  });
+
   it("reports issued links on a first lock", () => {
     expect(lockOutcomeText({ desks: 56, issued: 177, kept: 0 })).toBe("56 desks assigned and 177 participant links issued.");
     expect(lockOutcomeText({ desks: 1, issued: 1, kept: 0 })).toBe("1 desk assigned and 1 participant link issued.");

@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { brandingColorsSchema, LOGO_ACCEPT, LOGO_MAX_BYTES } from "@/lib/branding";
+import { brandingColorsSchema, LOGO_ACCEPT, LOGO_MAX_BYTES, LOGO_TYPES, type LogoType } from "@/lib/branding";
 import { saveEventBranding } from "@/server/events/actions";
 
 type FormValues = z.input<typeof brandingColorsSchema>;
@@ -111,6 +111,12 @@ export function BrandingCard({
 
   const pickFile = (picked: File | null) => {
     setFileError(null);
+    if (picked && !LOGO_TYPES.includes(picked.type as LogoType)) {
+      setFileError("Upload a PNG, JPEG, WebP, or SVG logo.");
+      if (fileInput.current) fileInput.current.value = "";
+      setFile(null);
+      return;
+    }
     if (picked && picked.size > LOGO_MAX_BYTES) {
       setFileError("The logo is larger than 300 KB. Shrink it or export a smaller file.");
       if (fileInput.current) fileInput.current.value = "";

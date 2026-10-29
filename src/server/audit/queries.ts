@@ -7,7 +7,7 @@ import { endOfDayInTimezone, formatTimeOfDay, formatTimestamp, isoDateInTimezone
 import { isEventEditable } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
-import { displayNameFor } from "@/server/roster/display-name";
+import { displayNameFor, fullNameFor } from "@/server/roster/display-name";
 import { UNDOABLE_ACTIONS, undoBlocker, undoNote } from "@/server/schedule/edits";
 import { DEFAULT_AUDIT_PAGE_SIZE, countAudit, listAudit, type AuditFilters } from "./audit";
 import { AUDIT_ACTION_GROUPS, auditActionGroupOf, describeAudit, isAuditActionGroup, type AuditActionGroup } from "./describe";
@@ -221,6 +221,9 @@ export async function getActivityPage(
   const names = new Map<string, string>();
   for (const b of buyerRows) names.set(b.id, displayNameFor(b));
   for (const s of supplierRows) names.set(s.id, s.name);
+  // Roster and link rows name the person, not the organization label the schedule uses.
+  const peopleNames = new Map(names);
+  for (const b of buyerRows) peopleNames.set(b.id, fullNameFor(b) || names.get(b.id)!);
   const adminNames = new Map(adminRows.map((a) => [a.id, a.name]));
 
   const undoable = list.rows.filter((r) => r.entityType === "appointment" && UNDOABLE_ACTIONS.has(r.action));
@@ -296,7 +299,7 @@ export async function getActivityPage(
         .sort((a, b) => compareNames(a.name, b.name)),
     },
     rows: list.rows.map((row) => {
-      const sentence = describeAudit(row, names);
+      const sentence = describeAudit(row, names, peopleNames);
       // Undo notes are bookkeeping (D32); other notes show unless the sentence already quotes them.
       const note = row.note && row.action !== "appointment.undo" && !sentence.includes(row.note) ? row.note : null;
       return {

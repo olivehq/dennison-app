@@ -638,6 +638,11 @@ describe("lock and unlock", () => {
     await db.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, one.id));
     const third = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
     expect(third.ok && third.data).toMatchObject({ tokensIssued: 0, tokensKept: 20, linksRevoked: 1 });
+    if (!third.ok) return;
+    expect(third.data.revokedNames).toHaveLength(1);
+    expect(third.data.revokedNames[0]).toMatch(/\S/);
+    const locks = await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.lock" } }, db);
+    expect(locks.rows[0].after).toMatchObject({ tokensIssued: 0, tokensKept: 20, linksRevoked: 1 });
   });
 
   it("lock on an archived event says it is archived, not already locked", async () => {

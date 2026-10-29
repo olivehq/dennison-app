@@ -278,8 +278,15 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
  * one issued. A contact whose link was revoked gets none, so the text never
  * claims everyone has a link while someone doesn't.
  */
-export function lockOutcomeText(input: { desks: number; issued: number; kept: number; revoked?: number }): string {
-  const { issued, kept, revoked = 0 } = input;
+export function lockOutcomeText(input: {
+  desks: number;
+  issued: number;
+  kept: number;
+  revoked?: number;
+  /** Who the revoked contacts are. Up to three are named, then "and N more". Without names the note counts them. */
+  revokedNames?: readonly string[];
+}): string {
+  const { issued, kept, revoked = 0, revokedNames = [] } = input;
   const desks = `${plural(input.desks, "desk")} assigned`;
   let links: string;
   if (issued === 0 && kept > 0) {
@@ -291,7 +298,13 @@ export function lockOutcomeText(input: { desks: number; issued: number; kept: nu
   } else {
     links = ".";
   }
-  const note = revoked > 0 ? ` ${plural(revoked, "person has", "people have")} a revoked link and got no new one. Use Regenerate on the roster.` : "";
+  let note = "";
+  if (revoked > 0) {
+    const shown = revokedNames.slice(0, 3);
+    const items = shown.length === 0 ? [plural(revoked, "person", "people")] : [...shown, ...(revoked > shown.length ? [`${revoked - shown.length} more`] : [])];
+    const who = items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+    note = ` ${who} ${revoked === 1 ? "has" : "have"} a revoked link and got no new one. Use Regenerate on the roster.`;
+  }
   return `${desks}${links}${note}`;
 }
 

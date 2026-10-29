@@ -30,6 +30,7 @@ describe("sendPlan", () => {
   it("counts only who will be sent and names who is left out", () => {
     const plan = sendPlan(audienceMembers(contacts, "all", []));
     expect(plan.sendCount).toBe(3);
+    expect(plan.recipients.map((c) => c.key)).toEqual(["a", "c", "d"]);
     expect(plan.skipped.map((c) => c.key)).toEqual(["b"]);
     expect(sendPlan([]).sendCount).toBe(0);
   });

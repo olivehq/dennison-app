@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
@@ -255,6 +256,34 @@ export async function revalidateImport(db: Db, row: Import): Promise<ImportState
   if (row.status === "applied" || row.status === "ignored") return row.status;
   const evaluation = await writeFreshReport(db, row, { statusToo: true });
   return evaluation ? importStateFor(evaluation.status, evaluation.report) : null;
+}
+
+/**
+ * Checks the file again and saves the new report, for the button on a report
+ * that went stale. Locked and archived events, and files applied or ignored
+ * meanwhile, are refused.
+ */
+export async function recheckImport(db: Db, input: { importId: string }): Promise<ActionResult<{ importId: string; state: ImportState }>> {
+  const row = await findImport(db, input.importId);
+  if (!row) return fail("not_found", "That import no longer exists.");
+  if (row.status !== "validated") return fail("conflict", STATUS_CHANGED_MESSAGE);
+  const state = await revalidateImport(db, row);
+  if (!state) return fail("conflict", "This file can't be checked again. The event may be locked, or the file was applied or deleted meanwhile.");
+  return ok({ importId: row.id, state });
+}
+
+/**
+ * True when the stored report of a waiting file differs from what checking it
+ * now would say, for example after the roster gained a name the file used to
+ * need a mapping for. Reads only. Apply checks again under the lock, so a stale
+ * report can't write wrong rows; this is for telling the admin.
+ */
+export async function reportIsStale(db: Db, importId: string): Promise<boolean> {
+  const row = await findImport(db, importId);
+  if (!row || row.status !== "validated") return false;
+  const evaluation = await evaluateStored(db, row);
+  // Through JSON, as the stored copy was, so undefined fields and key order don't count as changes.
+  return !isDeepStrictEqual(JSON.parse(JSON.stringify(evaluation.report)), row.validation);
 }
 
 async function revalidatePending(db: Db, eventId: string): Promise<{ importId: string; kind: ImportKind; state: ImportState }[]> {

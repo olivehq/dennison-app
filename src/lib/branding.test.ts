@@ -13,6 +13,14 @@ describe("brandingColorsSchema", () => {
     const result = brandingColorsSchema.safeParse({ primaryColor: value, accentColor: "" });
     expect(result.success).toBe(false);
   });
+
+  it("explains a bad color in plain words", () => {
+    const result = brandingColorsSchema.safeParse({ primaryColor: "teal", accentColor: "" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+      "Use a six-digit color like #1d4ed8, or leave it empty.",
+    ]);
+  });
 });
 
 describe("sniffLogoType", () => {

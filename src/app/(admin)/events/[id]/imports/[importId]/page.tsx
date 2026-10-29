@@ -16,10 +16,12 @@ import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDb } from "@/db/client";
 import { isRankingKind, type EntityType, type ImportValidationReport } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
+import { reportIsStale } from "@/server/imports/imports";
 import { countRankingsToReplace, getImport, listImports, listSavedNameMappings } from "@/server/imports/queries";
 import { fullNameFor, listParticipants, listSuppliers } from "@/server/roster/queries";
 import { lockReason } from "../../_roster/lock-reason";
@@ -30,6 +32,7 @@ import { SavedNameMappings } from "../saved-name-mappings";
 import { ApplyPanel } from "./apply-panel";
 import { NameMappingTable, type EntityOption } from "./name-mapping-table";
 import { ReportSection } from "./report-section";
+import { StaleReportAlert } from "./stale-report-alert";
 
 const FORMAT_LABELS = {
   template: "Olive template",
@@ -164,7 +167,7 @@ export default async function ImportDetailPage({
   const rankersKnown = report !== null && report.rankersInFile.length === report.counts.rankers;
 
   const aliased = report?.aliasedNames ?? [];
-  const [history, participants, suppliers, replacing, savedMappings] = await Promise.all([
+  const [history, participants, suppliers, replacing, savedMappings, stale] = await Promise.all([
     listImports(event.id),
     needsMapping ? listParticipants(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
     needsMapping ? listSuppliers(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
@@ -172,6 +175,7 @@ export default async function ImportDetailPage({
       ? countRankingsToReplace(event.id, detail.kind, report.rankersInFile)
       : Promise.resolve(null),
     aliased.length > 0 ? listSavedNameMappings(event.id) : Promise.resolve([]),
+    report && detail.status === "validated" ? reportIsStale(getDb(), detail.id) : Promise.resolve(false),
   ]);
   // The saved mappings this file was read through, so a wrong one can be removed here.
   // Keyed the way the resolver reads them: this event's aliases match the exact
@@ -260,6 +264,7 @@ export default async function ImportDetailPage({
         <h2 id="report-heading" className="font-display text-lg font-bold">
           Validation report
         </h2>
+        {stale ? <StaleReportAlert importId={detail.id} lockedReason={locked} /> : null}
         {report ? (
           <ReportSections report={report} ranking={ranking} />
         ) : (

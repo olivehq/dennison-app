@@ -23,6 +23,13 @@ export const AUDIENCE_LABELS: Record<EmailAudience, string> = {
   changed_since_last_send: "Changed since last email",
 };
 
+/** The audience as the end of "Update email to ...". */
+export function audiencePhrase(audience: EmailAudience): string {
+  return audience === "changed_since_last_send"
+    ? "people whose schedule changed since their last email"
+    : AUDIENCE_LABELS[audience].toLowerCase();
+}
+
 const CAMPAIGN_STATUS_LABELS: Record<CampaignStatus, string> = {
   draft: "Draft",
   sending: "Sending",

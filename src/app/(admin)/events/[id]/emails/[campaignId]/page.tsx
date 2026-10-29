@@ -1,4 +1,4 @@
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, LockIcon } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
@@ -16,7 +16,7 @@ import { getEvent } from "@/server/events/queries";
 import { eventSectionHref } from "../../event-sections";
 import { DuplicateAsReminderButton } from "../campaign-buttons";
 import {
-  AUDIENCE_LABELS,
+  audiencePhrase,
   CampaignStatusBadge,
   emailSetupReason,
   KIND_LABELS,
@@ -30,6 +30,7 @@ import { EmailPreview } from "./email-preview";
 
 const NOT_LOCKED = "Lock the schedule before sending so every link is final.";
 const ARCHIVED = "This event is archived.";
+const TALLY_STATUSES = ["delivered", "sent", "queued", "bounced", "complained", "failed"] as const;
 
 export default async function CampaignPage({ params }: { params: Promise<{ id: string; campaignId: string }> }) {
   const { user: admin } = await requireSession();
@@ -47,12 +48,21 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   const retryBlockedReason = sendBlockedReason ?? emailSetupReason(setup, campaign.fromEmail, { retry: true });
   const at = (date: Date) => formatTimestamp(date, event.timezone);
   const backHref = eventSectionHref(event.id, "emails");
+  const archivedBanner = archived ? (
+    <Alert>
+      <LockIcon />
+      <AlertTitle>This event is archived</AlertTitle>
+      <AlertDescription>
+        <p>You can read this campaign, but it can&apos;t be edited, sent, or retried.</p>
+      </AlertDescription>
+    </Alert>
+  ) : null;
 
   const header = (
     <PageHeader
       title={campaign.name}
       status={<CampaignStatusBadge status={campaign.status} />}
-      description={`${KIND_LABELS[campaign.kind]} email to ${AUDIENCE_LABELS[campaign.audience].toLowerCase()}`}
+      description={`${KIND_LABELS[campaign.kind]} email to ${audiencePhrase(campaign.audience)}`}
       actions={
         <>
           <Button variant="ghost" asChild>
@@ -82,6 +92,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
     return (
       <>
         {header}
+        {archivedBanner}
         <CampaignEditor
           campaignId={campaign.id}
           initial={{
@@ -125,16 +136,13 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
     ["Reply-to", campaign.replyTo],
     ["Subject", campaign.subject],
   ];
-  const tally: [string, number][] = [
-    ["Delivered", stats.delivered + stats.complained],
-    ["Waiting", stats.queued + stats.sent],
-    ["Bounced", stats.bounced],
-    ["Failed", stats.failed],
-  ];
+  // One tile per status in the table below, under the table's own word, so the two always agree.
+  const tally = TALLY_STATUSES.map((status): [string, number] => [MESSAGE_STATUS_LABELS[status], stats[status]]);
 
   return (
     <>
       {header}
+      {archivedBanner}
       {isEmailConfigured() ? null : (
         <Alert>
           <AlertTitle>These emails were logged, not delivered</AlertTitle>
@@ -155,7 +163,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
             </CardAction>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {tally.map(([label, value]) => (
                 <div key={label} className="flex flex-col gap-0.5">
                   <dt className="text-sm text-muted-foreground">{label}</dt>

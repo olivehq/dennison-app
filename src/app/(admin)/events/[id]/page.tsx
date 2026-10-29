@@ -23,10 +23,12 @@ import { eventSectionHref } from "./event-sections";
 const STEPS: EventStatus[] = ["draft", "imported", "matched", "locked", "sent"];
 
 function StatusStepper({ status }: { status: EventStatus }) {
-  const current = status === "archived" ? STEPS.length : STEPS.indexOf(status);
+  // An archived event gets a last step of its own, so the stepper always has a current step.
+  const steps: EventStatus[] = status === "archived" ? [...STEPS, "archived"] : STEPS;
+  const current = steps.indexOf(status);
   return (
     <ol className="flex flex-wrap items-center gap-2" aria-label="Event progress">
-      {STEPS.map((step, index) => {
+      {steps.map((step, index) => {
         const done = index < current;
         const active = index === current;
         return (
@@ -43,7 +45,7 @@ function StatusStepper({ status }: { status: EventStatus }) {
               <span className="font-display tabular-nums">{index + 1}</span>
               {EVENT_STATUS_LABELS[step]}
             </span>
-            {index < STEPS.length - 1 ? (
+            {index < steps.length - 1 ? (
               <span className="h-px w-3 bg-border" aria-hidden="true" />
             ) : null}
           </li>

@@ -24,10 +24,14 @@ export function audienceMembers(
   }
 }
 
-/** Who a send reaches, and who it leaves out because their link was revoked. */
-export function sendPlan(members: readonly AudienceOption[]): { sendCount: number; skipped: AudienceOption[] } {
-  const skipped = members.filter((c) => c.linkRevoked);
-  return { sendCount: members.length - skipped.length, skipped };
+/** Who a send reaches, who it leaves out because their link was revoked, and how many get the email. */
+export function sendPlan(members: readonly AudienceOption[]): {
+  recipients: AudienceOption[];
+  sendCount: number;
+  skipped: AudienceOption[];
+} {
+  const recipients = members.filter((c) => !c.linkRevoked);
+  return { recipients, sendCount: recipients.length, skipped: members.filter((c) => c.linkRevoked) };
 }
 
 const NAMES_SHOWN = 3;

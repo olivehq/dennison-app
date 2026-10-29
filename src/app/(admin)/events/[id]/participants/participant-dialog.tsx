@@ -93,7 +93,11 @@ export function ParticipantDialog({ eventId, participant, hasLiveLink = false, o
     const result = await saveParticipant({ ...values, eventId, id: participant?.id });
     if (!result.ok) {
       applyActionError(result.error, setError, FIELDS);
-      if (result.error.code === "locked") router.refresh();
+      // The event was locked or archived in another tab: the edit can't be saved, so close the form on the refreshed page.
+      if (result.error.code === "locked") {
+        onOpenChange(false);
+        router.refresh();
+      }
       return;
     }
     const name = participantName(values);

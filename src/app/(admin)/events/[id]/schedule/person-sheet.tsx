@@ -95,15 +95,27 @@ export function PersonSheet(props: PersonSheetProps) {
   // No router.refresh() after a save: the actions call revalidatePath, so the
   // action response already carries the fresh page. A second request was one
   // more slow round trip racing the admin's next clicks.
-  const finish = (result: ActionResult<EditResult>, success: string, action?: { label: string; onClick: () => void }) => {
+  const finish = (result: ActionResult<EditResult>, success: string) => {
     if (!result.ok) {
       onError(result.error);
       return false;
     }
     onVersion(result.data.version);
-    toast.success(success, { description: affectedText(result.data.affected) || undefined, action });
+    toast.success(success, { description: affectedText(result.data.affected) || undefined });
     return true;
   };
+
+  // The follow-up to a Replace lives in the sheet, not the toast: the open sheet
+  // makes the page behind it inert, so a toast button could not be clicked.
+  const [replacedNote, setReplaced] = React.useState<{
+    sheetPersonId: string;
+    sentence: string;
+    buyerId: string;
+    buyerName: string;
+    slot: number;
+  } | null>(null);
+  // Only on the sheet it was made from, so opening someone else's schedule drops it.
+  const replaced = replacedNote && replacedNote.sheetPersonId === person?.id ? replacedNote : null;
 
   // Picking someone opens a preview; Save commits it. Tied to the request so a new picker starts clean.
   const [draft, setDraft] = React.useState<{ request: PickerRequest; candidate: SwapCandidate } | null>(null);
@@ -141,11 +153,13 @@ export function PersonSheet(props: PersonSheetProps) {
           : `Added ${candidate.name}`;
       // A withdrawn buyer's sheet has no Add button, so there is nothing to follow up on.
       const removed = removeBuyerId ? model.personById.get(removeBuyerId) : undefined;
-      const followUp =
-        removeBuyerId && removeBuyerId !== person?.id && !removed?.withdrawn
-          ? { label: "Open their schedule", onClick: () => onSelect(removeBuyerId, picker.slot) }
-          : undefined;
-      if (finish(result, `${verb} in slot ${picker.slot}.`, followUp)) {
+      const sentence = `${verb} in slot ${picker.slot}.`;
+      if (finish(result, sentence)) {
+        setReplaced(
+          person && removeBuyerId && removed && removeBuyerId !== person.id && !removed.withdrawn
+            ? { sheetPersonId: person.id, sentence, buyerId: removeBuyerId, buyerName: personLabel(removed).primary, slot: picker.slot }
+            : null,
+        );
         setDraft(null);
         onPickerChange(null);
       }
@@ -325,6 +339,16 @@ export function PersonSheet(props: PersonSheetProps) {
                   )
                 ) : (
                   <div className="flex flex-col gap-4">
+                    {replaced ? (
+                      <Alert>
+                        <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{replaced.sentence}</span>
+                          <Button size="xs" variant="outline" onClick={() => onSelect(replaced.buyerId, replaced.slot)}>
+                            Open {replaced.buyerName}&apos;s schedule
+                          </Button>
+                        </AlertDescription>
+                      </Alert>
+                    ) : null}
                     <div className="flex flex-col gap-2">
                       <div className="flex items-baseline justify-between gap-2 text-sm">
                         <span className="font-semibold">{healthText(person, targets)}</span>

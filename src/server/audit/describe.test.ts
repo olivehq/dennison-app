@@ -69,6 +69,33 @@ describe("describeAudit", () => {
     );
   });
 
+  it("names a person by their own name on roster and link rows, and keeps the organization label on schedule rows", () => {
+    const people = new Map([[BUYER, "Ana Ruiz"]]);
+    expect(describeAudit(row("participant.withdraw", { entityId: BUYER }), names, people)).toBe("Withdrew Ana Ruiz");
+    expect(describeAudit(row("participant.update", { entityId: BUYER, note: "Email changed; 0 links revoked." }), names, people)).toBe(
+      "Edited Ana Ruiz. Email changed; 0 links revoked.",
+    );
+    expect(describeAudit(row("token.revoke", { after: { contactType: "buyer", entityId: BUYER } }), names, people)).toBe(
+      "Revoked the link for Ana Ruiz",
+    );
+    expect(describeAudit(row("supplier.withdraw", { entityId: SUPPLIER }), names, people)).toBe("Withdrew Hyatt Regency Monterey");
+    expect(describeAudit(row("appointment.add", { after: snap(BUYER) }), names, people)).toBe(
+      "Added CA Medical Association at Hyatt Regency Monterey, slot 4",
+    );
+  });
+
+  it("says what a lock did with links, including kept and revoked ones", () => {
+    const lock = (after: Record<string, unknown>) => describeAudit(row("schedule.lock", { after: { status: "locked", ...after } }), names);
+    expect(lock({ tokensIssued: 0, tokensKept: 176, linksRevoked: 1 })).toBe(
+      "Locked the schedule and assigned desks. Issued 0 new participant links, kept 176 and left 1 revoked link alone",
+    );
+    expect(lock({ tokensIssued: 3, tokensKept: 0, linksRevoked: 0 })).toBe("Locked the schedule and assigned desks. Issued 3 new participant links");
+    expect(lock({ tokensIssued: 2, tokensKept: 174, linksRevoked: 0 })).toBe(
+      "Locked the schedule and assigned desks. Issued 2 new participant links and kept 174",
+    );
+    expect(lock({})).toBe("Locked the schedule and assigned desks");
+  });
+
   it("describes lock, unlock, desks, and matching", () => {
     expect(describeAudit(row("schedule.lock", { after: { status: "locked", tokensIssued: 121 } }), names)).toBe(
       "Locked the schedule and assigned desks. Issued 121 new participant links",

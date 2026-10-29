@@ -19,7 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { lockScheduleAction, unlockScheduleAction } from "@/server/schedule/actions";
 import { lockCountWarning, lockOutcomeText } from "./schedule-model";
 
-type LockOutcome = { desks: number; issued: number; kept: number; revoked: number };
+type LockOutcome = { desks: number; issued: number; kept: number; revoked: number; revokedNames: string[] };
 
 /** Lock: explains what happens, runs it, then shows how many desks and links it produced. */
 export function LockDialog({
@@ -69,6 +69,7 @@ export function LockDialog({
         issued: result.data.tokensIssued,
         kept: result.data.tokensKept,
         revoked: result.data.linksRevoked,
+        revokedNames: result.data.revokedNames,
       });
     } finally {
       setPending(false);
@@ -102,7 +103,7 @@ export function LockDialog({
                       Assign desk numbers alphabetically by supplier name. Desk overrides are kept. Withdrawn suppliers get no
                       desk.
                     </li>
-                    <li>Issue a private schedule link for every buyer and supplier.</li>
+                    <li>Issue a private schedule link to everyone who doesn&apos;t have one, except people whose link was revoked.</li>
                     <li>Turn off editing and re-running until someone unlocks it.</li>
                   </ul>
                   <p>{lockCountWarning({ buyersBelowMin, buyerMin, suppliersBelowTarget, supplierTarget })}</p>

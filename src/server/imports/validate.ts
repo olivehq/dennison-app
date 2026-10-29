@@ -160,7 +160,16 @@ function finalise(report: ImportValidationReport): ImportValidationReport {
   report.counts.unknownNames = report.unknownNames.length;
   report.counts.errors = report.errors.length;
   report.counts.warnings = report.warnings.length;
+  report.errors = byRow(report.errors);
+  report.warnings = byRow(report.warnings);
   return report;
+}
+
+const EXAMPLE_ROW_MESSAGE = "This is the template's example row. Delete it, then upload the file again.";
+
+/** Messages in row order, the ones about the whole file last. The sort is stable, so ties keep the order they were found in. */
+function byRow<T extends { row: number | null }>(messages: T[]): T[] {
+  return [...messages].sort((a, b) => (a.row ?? Infinity) - (b.row ?? Infinity));
 }
 
 function stripCodes(messages: RowMessage[]): { row: number | null; message: string }[] {
@@ -244,7 +253,7 @@ export function validateParticipants(
 
   for (const row of rows) {
     if (row.email === EXAMPLE_PARTICIPANT_EMAIL) {
-      report.errors.push({ row: row.row, message: "This is the template's example row. Delete it, then upload the file again." });
+      report.errors.push({ row: row.row, message: EXAMPLE_ROW_MESSAGE });
     }
   }
 
@@ -310,7 +319,7 @@ export function validateSuppliers(
 
   for (const row of rows) {
     if (row.name.toLowerCase() === EXAMPLE_SUPPLIER_NAME.toLowerCase()) {
-      report.errors.push({ row: row.row, message: "This is the template's example row. Delete it, then upload the file again." });
+      report.errors.push({ row: row.row, message: EXAMPLE_ROW_MESSAGE });
     }
   }
 
@@ -487,9 +496,17 @@ export function analyzeRankings(
   const suppliers = supplierEntities(context.suppliers);
   const rankers = rankerType === "buyer" ? participants : suppliers;
   const targets = targetType === "buyer" ? participants : suppliers;
-  const rows = toNamedRows(parsed);
-  const report = emptyReport(parsed.format, rows.length + parsed.errors.filter((e) => e.row !== null).length);
+  const fileRows = toNamedRows(parsed);
+  const report = emptyReport(parsed.format, fileRows.length + parsed.errors.filter((e) => e.row !== null).length);
   report.errors.push(...stripCodes(parsed.errors));
+  // The template's example row is refused and left out of the rest of the check, so its
+  // made-up names don't also show up as names to map.
+  const rows = fileRows.filter((row) => {
+    const isExample =
+      row.rankerEmail === EXAMPLE_PARTICIPANT_EMAIL || row.rankerName.trim().toLowerCase() === EXAMPLE_SUPPLIER_NAME.toLowerCase();
+    if (isExample) report.errors.push({ row: row.row, message: EXAMPLE_ROW_MESSAGE });
+    return !isExample;
+  });
   const inexact: RankingAnalysis["inexact"] = [];
 
   // Rankers: email first when the file has one, then the name.

@@ -19,6 +19,7 @@ import {
   createImport,
   deleteImportRecord,
   ignoreImport,
+  recheckImport,
   removeAlias,
   saveAliases,
   stopIgnoringImport,
@@ -151,6 +152,21 @@ export async function stopIgnoringImportAction(
   const parsed = idSchema.safeParse(importId);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await stopIgnoringImport(getDb(), { importId: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getImport(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
+  return result;
+}
+
+/** Checks a waiting file again, for a report made before the roster changed. */
+export async function recheckImportAction(
+  importId: unknown,
+): Promise<ActionResult<{ importId: string; state: ImportState }>> {
+  await requireAdmin();
+  const parsed = idSchema.safeParse(importId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await recheckImport(getDb(), { importId: parsed.data });
   if (result.ok) {
     const row = await getImport(parsed.data);
     if (row) revalidateEvent(row.eventId);

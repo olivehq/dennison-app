@@ -97,6 +97,13 @@ export function createDataTableColumnHelper<TData extends RowData>() {
 
 export const DATA_TABLE_PAGE_SIZE = 50;
 
+/**
+ * Header clicks cycle ascending then descending. Left to itself the table starts
+ * a numeric column descending; the first click sorts ascending everywhere, and a
+ * column can opt back in with `sortDescFirst: true` in its definition.
+ */
+export const DATA_TABLE_SORTING = { enableSortingRemoval: false, sortDescFirst: false } as const;
+
 const RESIZE_KEY_STEP = 16;
 
 /**
@@ -220,7 +227,7 @@ export function DataTable<TData extends RowData>({
     columnResizeMode: "onChange",
     globalFilterFn: "includesString",
     getColumnCanGlobalFilter: (column) => searchable.has(column.id),
-    enableSortingRemoval: false,
+    ...DATA_TABLE_SORTING,
   });
 
   const rows = table.getRowModel().rows;

@@ -8,7 +8,7 @@ import type { ImportKind } from "@/lib/schemas/import";
 import { useMemoryStorageForTests } from "@/lib/storage";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { writeSheet } from "@/lib/xlsx";
-import { applyImport, createImport, removeAlias, saveAliases } from "./imports";
+import { applyImport, createImport, recheckImport, removeAlias, reportIsStale, saveAliases } from "./imports";
 import { getImport, listSavedNameMappings } from "./queries";
 import { templateWorkbook } from "./templates";
 
@@ -250,6 +250,82 @@ describe("template example rows", () => {
         message: "This is the template's example row. Delete it, then upload the file again.",
       });
     }
+  });
+});
+
+describe("template example rows in ranking files", () => {
+  it("are refused on their row and leave no example names to map", async () => {
+    const eventId = await makeEvent("Example ranking rows");
+    for (const kind of ["buyer_biztech_rankings", "buyer_hotel_rankings", "supplier_rankings"] as const) {
+      const outcome = await expectOk(
+        await createImport(db, { eventId, kind, filename: `${kind}.xlsx`, buffer: templateWorkbook(kind), adminId }),
+      );
+      expect(outcome.state).toBe("needs_fixes");
+      expect(outcome.report.errors).toContainEqual({
+        row: 2,
+        message: "This is the template's example row. Delete it, then upload the file again.",
+      });
+      expect(outcome.report.unknownNames).toEqual([]);
+    }
+  });
+});
+
+describe("report order", () => {
+  it("lists errors by row, the ones about the whole file last", async () => {
+    const eventId = await makeEvent("Error order");
+    const outcome = await expectOk(
+      await createImport(db, {
+        eventId,
+        kind: "suppliers",
+        filename: "suppliers.xlsx",
+        buffer: writeSheet(supplierHeaders, [
+          ["Dup Hotel", "hotel", "", "", "", ""],
+          ["Bad Type", "spa", "", "", "", ""],
+          ["Dup Hotel", "hotel", "", "", "", ""],
+          ["Also Bad", "spa", "", "", "", ""],
+        ]),
+        adminId,
+      }),
+    );
+    const rows = outcome.report.errors.map((e) => e.row);
+    expect(rows.length).toBeGreaterThan(2);
+    expect(rows).toEqual([...rows].sort((a, b) => (a ?? Infinity) - (b ?? Infinity)));
+  });
+});
+
+describe("a report made before the roster changed", () => {
+  it("is stale once a supplier gains the exact name of a mapped text, and fresh again after a re-check", async () => {
+    const eventId = await makeEvent("Stale report");
+    await uploadAndApply(eventId, "participants", participantFile);
+    await uploadAndApply(eventId, "suppliers", supplierSheet(["Harbor Resort"]));
+    const hotels = await uploadHotels(eventId, hotelSheet(["Harbour Resort"]));
+    expect(hotels.state).toBe("needs_mapping");
+    expect(await reportIsStale(db, hotels.importId)).toBe(false);
+
+    await expectOk(
+      await saveAliases(db, {
+        eventId,
+        adminId,
+        aliases: [{ raw: "Harbour Resort", entityType: "supplier", entityId: await supplierId(eventId, "Harbor Resort") }],
+      }),
+    );
+    expect(await reportIsStale(db, hotels.importId)).toBe(false);
+
+    await db.insert(suppliers).values({ eventId, name: "Harbour Resort", type: "hotel" });
+    expect(await reportIsStale(db, hotels.importId)).toBe(true);
+
+    const rechecked = await expectOk(await recheckImport(db, { importId: hotels.importId }));
+    expect(rechecked.state).toBe("ready");
+    expect(await reportIsStale(db, hotels.importId)).toBe(false);
+  });
+
+  it("can't be checked again once applied", async () => {
+    const eventId = await makeEvent("Recheck applied");
+    await uploadAndApply(eventId, "participants", participantFile);
+    await uploadAndApply(eventId, "suppliers", supplierSheet(HOTEL_CHOICES));
+    const importId = await uploadAndApply(eventId, "buyer_hotel_rankings", hotelSheet());
+    expect(await reportIsStale(db, importId)).toBe(false);
+    expect(await recheckImport(db, { importId })).toMatchObject({ ok: false, error: { code: "conflict" } });
   });
 });
 

@@ -119,10 +119,10 @@ export function CampaignEditor({
     () => audienceMembers(options.contacts, audience, selectedKeys ? selectedKeys.split(",") : []),
     [options.contacts, audience, selectedKeys],
   );
-  const { sendCount, skipped } = React.useMemo(() => sendPlan(members), [members]);
+  const { recipients: sendList, sendCount, skipped } = React.useMemo(() => sendPlan(members), [members]);
   const skippedText = skippedNote(skipped);
-  // Preview as lists only the audience; if the audience changes under the choice, fall back to the first person.
-  const previewAs = previewKey === AUTO_RECIPIENT || members.some((c) => c.key === previewKey) ? previewKey : AUTO_RECIPIENT;
+  // Preview as lists only who gets the email; if the audience changes under the choice, fall back to the first person.
+  const previewAs = previewKey === AUTO_RECIPIENT || sendList.some((c) => c.key === previewKey) ? previewKey : AUTO_RECIPIENT;
 
   // The preview follows the editor, audience included, debounced, rendered on the server with real values.
   React.useEffect(() => {
@@ -186,7 +186,8 @@ export function CampaignEditor({
     if (result.data.failed > 0) {
       toast.error(`${recipients(result.data.failed)} could not be sent. Use Retry delivery to try again.`);
     }
-    if (result.data.skippedRevoked > 0) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
+    // The confirm already named who was left out; only say more if the server skipped someone it did not.
+    if (result.data.skippedRevoked > skipped.length) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
   };
 
   // On an archived event nothing saves either; the footer line says why.
@@ -222,14 +223,14 @@ export function CampaignEditor({
             <FieldGroup>
               <Field data-invalid={!!errors.name}>
                 <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
-                <Input id="campaign-name" autoComplete="off" aria-invalid={!!errors.name} {...register("name")} />
+                <Input id="campaign-name" autoComplete="off" disabled={archived} aria-invalid={!!errors.name} {...register("name")} />
                 <FieldDescription>Only admins see this.</FieldDescription>
                 <FieldError errors={[errors.name]} />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field data-invalid={!!errors.fromName}>
                   <FieldLabel htmlFor="campaign-from-name">From name</FieldLabel>
-                  <Input id="campaign-from-name" autoComplete="off" aria-invalid={!!errors.fromName} {...register("fromName")} />
+                  <Input id="campaign-from-name" autoComplete="off" disabled={archived} aria-invalid={!!errors.fromName} {...register("fromName")} />
                   <FieldError errors={[errors.fromName]} />
                 </Field>
                 <Field data-invalid={!!errors.fromEmail}>
@@ -238,6 +239,7 @@ export function CampaignEditor({
                     id="campaign-from-email"
                     type="email"
                     autoComplete="off"
+                    disabled={archived}
                     aria-invalid={!!errors.fromEmail}
                     {...register("fromEmail")}
                   />
@@ -251,6 +253,7 @@ export function CampaignEditor({
                   id="campaign-reply-to"
                   type="email"
                   autoComplete="off"
+                  disabled={archived}
                   aria-invalid={!!errors.replyTo}
                   {...register("replyTo")}
                 />
@@ -266,6 +269,7 @@ export function CampaignEditor({
                     <div className="flex flex-wrap items-center gap-2">
                       <Select
                         value={field.value}
+                        disabled={archived}
                         onValueChange={(value) => {
                           field.onChange(value);
                           if (value === "selected") setPickerOpen(true);
@@ -284,7 +288,7 @@ export function CampaignEditor({
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                      {field.value === "selected" ? (
+                      {field.value === "selected" && !archived ? (
                         <Button type="button" variant="outline" onClick={() => setPickerOpen(true)}>
                           <UsersIcon data-icon="inline-start" />
                           Choose people
@@ -309,7 +313,7 @@ export function CampaignEditor({
               />
               <Field data-invalid={!!errors.subject}>
                 <FieldLabel htmlFor="campaign-subject">Subject</FieldLabel>
-                <Input id="campaign-subject" autoComplete="off" aria-invalid={!!errors.subject} {...register("subject")} />
+                <Input id="campaign-subject" autoComplete="off" disabled={archived} aria-invalid={!!errors.subject} {...register("subject")} />
                 <FieldError errors={[errors.subject]} />
               </Field>
               <Controller
@@ -325,6 +329,7 @@ export function CampaignEditor({
                       onChange={field.onChange}
                       onBlur={field.onBlur}
                       invalid={!!errors.htmlBody}
+                      disabled={archived}
                       aria-describedby="campaign-body-help"
                     />
                     <FieldDescription id="campaign-body-help">
@@ -400,7 +405,7 @@ export function CampaignEditor({
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value={AUTO_RECIPIENT}>First in the audience</SelectItem>
-                    {members.map((c) => (
+                    {sendList.map((c) => (
                       <SelectItem key={c.key} value={c.key}>
                         {c.name}
                       </SelectItem>

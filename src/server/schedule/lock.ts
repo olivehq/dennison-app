@@ -13,6 +13,7 @@ import {
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { findActiveRun } from "@/server/matching/runs";
+import { fullNameFor } from "@/server/roster/display-name";
 import { issueTokensForEvent, linksForContacts, listContacts } from "@/server/tokens/tokens";
 
 /**
@@ -78,6 +79,8 @@ export type LockResult = {
   tokensKept: number;
   /** Current contacts whose newest link was revoked: lock doesn't replace it; Regenerate on the roster does. */
   linksRevoked: number;
+  /** Who those revoked contacts are, in name order: a buyer by full name, a supplier contact as "Supplier (Contact)". */
+  revokedNames: string[];
 };
 
 /** Appointments of the run where the buyer or the supplier has withdrawn since it was built. */
@@ -129,8 +132,14 @@ export async function lockSchedule(
     if (!issued.ok) throw new Error(issued.error.message);
     // Counted per current contact (D180), not per token: a withdrawn person's live
     // token is not a kept link, and a revoked newest link means that contact has none.
-    const contactLinks = await linksForContacts(tx, event.id, await listContacts(tx, event.id), { issueMissing: false });
+    const contacts = await listContacts(tx, event.id);
+    const contactLinks = await linksForContacts(tx, event.id, contacts, { issueMissing: false });
     if (!contactLinks.ok) throw new Error(contactLinks.error.message);
+    const tokensKept = Math.max(0, contactLinks.data.links.size - issued.data.length);
+    const revokedNames = contacts
+      .filter((c) => contactLinks.data.revoked.has(c.key))
+      .map((c) => (c.buyer ? fullNameFor(c.buyer) || c.name : c.name))
+      .sort(compareNames);
     await recordAudit(tx, {
       eventId: event.id,
       adminId: input.adminId,
@@ -138,14 +147,22 @@ export async function lockSchedule(
       entityType: "event",
       entityId: event.id,
       before: { status: event.status },
-      after: { status: "locked", runId: active.id, desks, tokensIssued: issued.data.length },
+      after: {
+        status: "locked",
+        runId: active.id,
+        desks,
+        tokensIssued: issued.data.length,
+        tokensKept,
+        linksRevoked: contactLinks.data.revoked.size,
+      },
     });
     return {
       eventId: event.id,
       desks,
       tokensIssued: issued.data.length,
-      tokensKept: Math.max(0, contactLinks.data.links.size - issued.data.length),
+      tokensKept,
       linksRevoked: contactLinks.data.revoked.size,
+      revokedNames,
     };
   });
 }

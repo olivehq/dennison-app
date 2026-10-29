@@ -18,10 +18,11 @@ export const LOGO_ACCEPT = LOGO_TYPES.join(",");
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
-const colorField = z.union([
-  z.literal(""),
-  z.string().trim().regex(HEX_COLOR, "Use a six-digit color like #1d4ed8.").transform((value) => value.toLowerCase()),
-]);
+const colorField = z
+  .string()
+  .trim()
+  .refine((value) => value === "" || HEX_COLOR.test(value), "Use a six-digit color like #1d4ed8, or leave it empty.")
+  .transform((value) => value.toLowerCase());
 
 /** The two colors as the settings form holds them. An empty string means none. */
 export const brandingColorsSchema = z.object({
