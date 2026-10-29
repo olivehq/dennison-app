@@ -6,7 +6,7 @@ import { haveIBeenPwned, isPasswordCompromised, twoFactor } from "better-auth/pl
 import { eq } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
 import { accounts, admins, rateLimits, sessions, twoFactors, verifications } from "@/db/schema";
-import { sendEmail } from "@/lib/email/adapter";
+import { isEmailConfigured, sendEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
 import { BREACHED_PASSWORD_MESSAGE } from "@/lib/schemas/auth";
 import { recordAudit } from "@/server/audit/audit";
@@ -69,6 +69,10 @@ export function createAuth(db: Db, options: CreateAuthOptions = {}) {
         // form shows the same "Check your inbox" either way.
         const [row] = await db.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.id, user.id));
         if (!row || row.disabledAt) return;
+        // Like the invite link (admins.ts): only when no provider will deliver it.
+        if (process.env.NODE_ENV === "development" && !isEmailConfigured()) {
+          console.log(`[email] dev reset link for ${user.email}: ${url}`);
+        }
         const name = escapeHtml(user.name);
         await sendEmail({
           to: user.email,
@@ -96,6 +100,10 @@ export function createAuth(db: Db, options: CreateAuthOptions = {}) {
       window: 60,
       max: 100,
       customRules: {
+        "/get-session": { window: 60, max: 1000 },
+        "/two-factor/verify-totp": { window: 60, max: 10 },
+        "/two-factor/verify-backup-code": { window: 60, max: 10 },
+        "/reset-password": STRICT_RATE_LIMIT,
         "/sign-in/email": STRICT_RATE_LIMIT,
         "/sign-up/email": STRICT_RATE_LIMIT,
         "/request-password-reset": STRICT_RATE_LIMIT,

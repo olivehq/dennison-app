@@ -95,8 +95,12 @@ export function formatCountdown(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/** The rate-limit sentence. Rounds up to whole minutes so a screen reader isn't told every second. */
+/** Use seconds for short waits and round longer waits up to whole minutes. */
 export function waitCopy(seconds: number | null): string {
+  if (seconds !== null && seconds < 60) {
+    const whole = Math.max(1, Math.ceil(seconds));
+    return `Wait ${whole} ${whole === 1 ? "second" : "seconds"}, then try again.`;
+  }
   const minutes = seconds === null ? 10 : Math.max(1, Math.ceil(seconds / 60));
   return `Wait ${minutes} ${minutes === 1 ? "minute" : "minutes"}, then try again.`;
 }

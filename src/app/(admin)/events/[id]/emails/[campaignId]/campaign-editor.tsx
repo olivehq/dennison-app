@@ -37,6 +37,7 @@ import { findUnknownFields } from "@/server/email/merge";
 import type { AudienceOptions } from "@/server/email/queries";
 import { applyActionError } from "../../_roster/form-errors";
 import { AUDIENCE_LABELS, emailSetupReason, recipients, sentMessage, skippedRevokedMessage } from "../labels";
+import { audienceMembers, sendPlan, skippedNote } from "./audience";
 import { EmailPreview } from "./email-preview";
 import { RecipientPicker } from "./recipient-picker";
 import { RichTextEditor } from "./rich-text-editor";
@@ -44,6 +45,8 @@ import { RichTextEditor } from "./rich-text-editor";
 const FIELDS = ["name", "fromName", "fromEmail", "replyTo", "subject", "htmlBody", "audience", "selectedRecipients"] as const;
 const AUTO_RECIPIENT = "auto";
 const PREVIEW_DELAY_MS = 350;
+const PICK_PERSON = "Pick at least one person.";
+const ALL_REVOKED = "Everyone in this audience has a revoked link. Use Regenerate on the roster to give someone a new link.";
 
 type Preview = { recipient: { key: string; name: string; email: string } | null; subject: string; html: string };
 
@@ -105,10 +108,21 @@ export function CampaignEditor({
   const selectedCount = (selected ?? []).filter((key) => contactKeys.has(key)).length;
   const audienceCount = (value: EmailAudience) => (value === "selected" ? selectedCount : options.counts[value]);
   const recipientCount = audienceCount(audience);
+  const emptySelection = audience === "selected" && recipientCount === 0;
   const unknownFields = React.useMemo(() => findUnknownFields(`${subject ?? ""} ${htmlBody ?? ""}`), [subject, htmlBody]);
 
   // A string, so the effect below reruns only when the selection really changes.
   const selectedKeys = audience === "selected" ? (selected ?? []).join(",") : "";
+
+  // Who the audience covers, and how many of them a send reaches: a revoked link is skipped, not counted.
+  const members = React.useMemo(
+    () => audienceMembers(options.contacts, audience, selectedKeys ? selectedKeys.split(",") : []),
+    [options.contacts, audience, selectedKeys],
+  );
+  const { sendCount, skipped } = React.useMemo(() => sendPlan(members), [members]);
+  const skippedText = skippedNote(skipped);
+  // Preview as lists only the audience; if the audience changes under the choice, fall back to the first person.
+  const previewAs = previewKey === AUTO_RECIPIENT || members.some((c) => c.key === previewKey) ? previewKey : AUTO_RECIPIENT;
 
   // The preview follows the editor, audience included, debounced, rendered on the server with real values.
   React.useEffect(() => {
@@ -116,7 +130,7 @@ export function CampaignEditor({
     const timer = setTimeout(async () => {
       const result = await previewCampaignAction({
         campaignId,
-        recipient: previewKey === AUTO_RECIPIENT ? undefined : previewKey,
+        recipient: previewAs === AUTO_RECIPIENT ? undefined : previewAs,
         subject,
         htmlBody,
         audience,
@@ -134,7 +148,7 @@ export function CampaignEditor({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [campaignId, previewKey, subject, htmlBody, audience, selectedKeys]);
+  }, [campaignId, previewAs, subject, htmlBody, audience, selectedKeys]);
 
   /** Saves when there are unsaved edits. Returns false and shows errors when the save fails. */
   const save = async (values: CampaignFields, force = false): Promise<boolean> => {
@@ -186,11 +200,15 @@ export function CampaignEditor({
       ? "Fix the unknown merge fields first."
       : recipientCount === 0
         ? audience === "selected"
-          ? "Pick at least one person."
+          ? PICK_PERSON
           : audience === "changed_since_last_send"
             ? "Nobody's schedule changed since their last email."
             : "Nobody in this audience has an email address."
-        : null);
+        : sendCount === 0
+          ? ALL_REVOKED
+          : null);
+  // An empty selection says so under Audience, once; the footer doesn't repeat it.
+  const footerReason = emptySelection && sendDisabledReason === PICK_PERSON ? null : sendDisabledReason;
 
   return (
     <>
@@ -273,12 +291,19 @@ export function CampaignEditor({
                         </Button>
                       ) : null}
                     </div>
-                    <FieldDescription>
-                      {field.value === "changed_since_last_send"
-                        ? `${recipients(recipientCount)} whose appointments, times, or desks changed since the last email they got.`
-                        : `${recipients(recipientCount)}. Withdrawn people and contacts without an email are left out.`}
-                    </FieldDescription>
-                    <FieldError errors={[errors.selectedRecipients]} />
+                    {errors.selectedRecipients ? (
+                      <FieldError>{PICK_PERSON}</FieldError>
+                    ) : (
+                      <FieldDescription>
+                        {emptySelection
+                          ? PICK_PERSON
+                          : `${
+                              field.value === "changed_since_last_send"
+                                ? `${recipients(sendCount)} whose appointments, times, or desks changed since the last email they got.`
+                                : `${recipients(sendCount)}. Withdrawn people and contacts without an email are left out.`
+                            }${skippedText ? ` ${skippedText}` : ""}`}
+                      </FieldDescription>
+                    )}
                   </Field>
                 )}
               />
@@ -344,13 +369,18 @@ export function CampaignEditor({
               >
                 Send test
               </Button>
-              <Button type="button" onClick={onSend} disabled={isSubmitting || sendDisabledReason !== null}>
+              <Button
+                type="button"
+                onClick={onSend}
+                disabled={isSubmitting || sendDisabledReason !== null}
+                title={sendDisabledReason ?? undefined}
+              >
                 <SendIcon data-icon="inline-start" />
-                Send to {recipients(recipientCount)}
+                Send to {recipients(sendCount)}
               </Button>
             </div>
             <p className="text-sm text-muted-foreground">
-              {sendDisabledReason ?? (testSentLabel ? testSentLabel : "Send yourself a test before sending to everyone.")}
+              {footerReason ?? (testSentLabel ? testSentLabel : "Send yourself a test before sending to everyone.")}
             </p>
           </CardFooter>
         </Card>
@@ -363,14 +393,14 @@ export function CampaignEditor({
           <CardContent className="flex flex-col gap-3">
             <Field>
               <FieldLabel htmlFor="campaign-preview-as">Preview as</FieldLabel>
-              <Select value={previewKey} onValueChange={setPreviewKey}>
+              <Select value={previewAs} onValueChange={setPreviewKey}>
                 <SelectTrigger id="campaign-preview-as" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value={AUTO_RECIPIENT}>First in the audience</SelectItem>
-                    {options.contacts.map((c) => (
+                    {members.map((c) => (
                       <SelectItem key={c.key} value={c.key}>
                         {c.name}
                       </SelectItem>
@@ -426,9 +456,9 @@ export function CampaignEditor({
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={`Send to ${recipients(recipientCount)}?`}
-        description="Each person gets their own copy with their private schedule link. Sent emails can't be recalled."
-        confirmLabel={`Send to ${recipients(recipientCount)}`}
+        title={`Send to ${recipients(sendCount)}?`}
+        description={`Each person gets their own copy with their private schedule link. Sent emails can't be recalled.${skippedText ? ` ${skippedText}` : ""}`}
+        confirmLabel={`Send to ${recipients(sendCount)}`}
         destructive
         onConfirm={send}
       />

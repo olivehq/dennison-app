@@ -119,15 +119,12 @@ export function SupplierDialog({ eventId, supplier, liveLinks = NO_LIVE_LINKS, o
       if (result.error.code === "locked") router.refresh();
       return;
     }
-    const emailsChanged =
-      editing &&
-      ((supplier.adminContactEmail ?? null) !== (values.adminContact?.email ?? null) ||
-        (supplier.attendeeContactEmail ?? null) !== (values.attendeeContact?.email ?? null));
+    const { linksRevoked } = result.data;
     toast.success(
       editing
-        ? emailsChanged
-          ? "Supplier saved. Links for the changed contact emails were revoked."
-          : "Supplier saved."
+        ? linksRevoked > 0
+          ? `${values.name} saved. ${linksRevoked === 1 ? "1 link was" : `${linksRevoked} links were`} revoked because a contact email changed.`
+          : `${values.name} saved.`
         : `${values.name} added.`,
     );
     onOpenChange(false);

@@ -412,3 +412,21 @@ describe("Better Auth routes", () => {
     expect(statuses[5]).toBe(429);
   });
 });
+
+describe("development reset links", () => {
+  it.each(["development", "production", "test"])("logs the link only in development, environment %s", async (mode) => {
+    const email = `reset-log-${mode}@example.com`;
+    await createAdmin(email);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.stubEnv("NODE_ENV", mode);
+    try {
+      await auth.api.requestPasswordReset({ body: { email, redirectTo: "/reset-password" } });
+      const links = log.mock.calls.filter(([message]) => String(message).startsWith("[email] dev reset link"));
+      expect(links).toHaveLength(mode === "development" ? 1 : 0);
+      if (mode === "development") expect(links[0][0]).toContain("/api/auth/reset-password/");
+    } finally {
+      vi.unstubAllEnvs();
+      log.mockRestore();
+    }
+  });
+});

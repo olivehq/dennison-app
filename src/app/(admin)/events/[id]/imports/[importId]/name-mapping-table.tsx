@@ -21,6 +21,7 @@ import type { ActionResult } from "@/lib/errors";
 import type { EntityType, ImportKind, ImportState, UnknownName } from "@/lib/schemas/import";
 import { saveAliasesAction } from "@/server/imports/actions";
 import { plural } from "../import-labels";
+import { bulkMappings } from "./bulk-mapping";
 
 export type EntityOption = { value: string; label: string; hint?: string };
 type OptionGroup = { value: string; items: EntityOption[] };
@@ -173,9 +174,10 @@ type NameMappingTableProps = {
 };
 
 export function NameMappingTable({ eventId, importId, names, entities, lockedReason }: NameMappingTableProps) {
-  // An ambiguous name's candidates are equal, so the first one is no suggestion. Those are mapped one at a time.
-  const withSuggestion = names.filter((name) => name.suggestions.length > 0 && !name.ambiguous);
+  // Only near-certain suggestions go in bulk; the rest are mapped one at a time.
+  const { take: withSuggestion, skipped } = bulkMappings(names);
   const locked = lockedReason !== null;
+  const skippedNote = skipped > 0 ? `Skips ${plural(skipped, "name")} with no near-certain match. Map those one at a time.` : null;
 
   const saveAllSuggested = async () => {
     const result: ActionResult<{ imports: Revalidated }> = await saveAliasesAction({
@@ -190,7 +192,9 @@ export function NameMappingTable({ eventId, importId, names, entities, lockedRea
       toast.error(result.error.message);
       return;
     }
-    toast.success(`Mapped ${plural(withSuggestion.length, "name")} to their top suggestion.`);
+    toast.success(
+      `Mapped ${plural(withSuggestion.length, "name")} to their top suggestion.${skipped > 0 ? ` Skipped ${skipped} with no near-certain match.` : ""}`,
+    );
     reportState(importId, result.data.imports);
   };
 
@@ -198,14 +202,18 @@ export function NameMappingTable({ eventId, importId, names, entities, lockedRea
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Pick who each name means. Saved names are reused for later files of this event and for next year&apos;s files with the same name.
+          Pick who each name means. Saved names are reused for later files of this event and for next year&apos;s files with the same name,
+          unless someone on the roster has that exact name.
         </p>
         {withSuggestion.length > 0 ? (
           <ConfirmDialog
             title={`Map ${plural(withSuggestion.length, "name")} to their top suggestion?`}
             description={
               <span className="flex flex-col gap-2">
-                <span>Check these before you continue. You can change a mapping later by saving a different choice.</span>
+                <span>
+                  Check these before you continue. You can remove a saved mapping later on the Imports page.
+                  {skippedNote ? ` ${skippedNote}` : ""}
+                </span>
                 <span className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
                   {withSuggestion.map((name) => (
                     <span key={`${name.entityType}-${name.raw}`}>

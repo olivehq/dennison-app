@@ -1,7 +1,7 @@
 import { and, count, eq, max } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
-import { appointments, events, imports, matchRuns, participants, type Event } from "@/db/schema";
+import { appointments, events, imports, matchRuns, participants, suppliers, type Event } from "@/db/schema";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { eventSchema, type EventInput } from "@/lib/schemas/event";
 import { defaultEventSettings, eventSettingsSchema, type EventSettings } from "@/lib/schemas/event-settings";
@@ -268,10 +268,24 @@ export async function setRetainData(
 }
 
 /**
- * Only a draft event with no participants can be deleted. Everything else is
- * kept for the audit trail. Uploaded import files and the logo are queued for
- * deletion with the rows and deleted after the commit; a failed delete stays
- * queued for the retention cron (D184).
+ * Everything that keeps a draft from being deleted: people, suppliers, and
+ * uploaded files, withdrawn ones included. The overview hides Delete from the
+ * same count, so the page and the server can't disagree.
+ */
+export async function countEventData(db: Db, eventId: string): Promise<number> {
+  const [[participantRow], [supplierRow], [importRow]] = await Promise.all([
+    db.select({ value: count() }).from(participants).where(eq(participants.eventId, eventId)),
+    db.select({ value: count() }).from(suppliers).where(eq(suppliers.eventId, eventId)),
+    db.select({ value: count() }).from(imports).where(eq(imports.eventId, eventId)),
+  ]);
+  return Number(participantRow?.value ?? 0) + Number(supplierRow?.value ?? 0) + Number(importRow?.value ?? 0);
+}
+
+/**
+ * Only a draft event with no participants, suppliers, or imports can be
+ * deleted. Everything else is kept for the audit trail and can be archived.
+ * The logo is queued for deletion with the row and deleted after the commit;
+ * a failed delete stays queued for the retention cron (D184).
  */
 export async function deleteEvent(
   db: Db,
@@ -283,13 +297,7 @@ export async function deleteEvent(
   // Lock the row while it is still a draft, then count, so a participant
   // added or a status change in between can't slip past the checks.
   const done = await inEventTransaction(db, parsedId.data, "draft", async (tx, event) => {
-    const [{ value: participantCount }] = await tx
-      .select({ value: count() })
-      .from(participants)
-      .where(eq(participants.eventId, event.id));
-    if (participantCount > 0) return null;
-    // The import rows go with the event (cascade); their stored files don't.
-    const files = await tx.select({ key: imports.fileKey }).from(imports).where(eq(imports.eventId, event.id));
+    if ((await countEventData(tx, event.id)) > 0) return null;
     await tx.delete(events).where(eq(events.id, event.id));
     // The event row is gone, so the audit row is filed under no event.
     await recordAudit(tx, {
@@ -300,13 +308,17 @@ export async function deleteEvent(
       entityId: event.id,
       before: { name: event.name, eventDate: event.eventDate, timezone: event.timezone, status: event.status },
     });
-    const keys = [...files.map((f) => f.key), ...(event.branding?.logoKey ? [event.branding.logoKey] : [])];
+    // A draft has no imports, so the logo is the only stored file left.
+    const keys = event.branding?.logoKey ? [event.branding.logoKey] : [];
     await queueFileDeletions(tx, keys);
     return keys;
   });
   if (!done.ok) return done;
   if (!done.data) {
-    return fail("conflict", "This event already has participants, so it can't be deleted. Archive it instead.");
+    return fail(
+      "conflict",
+      "This event already has participants, suppliers, or imports, so it can't be deleted. Archive it instead.",
+    );
   }
   await deleteQueuedFilesNow(db, done.data);
   return ok({ id: parsedId.data });

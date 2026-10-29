@@ -27,6 +27,7 @@ import {
   swapCandidates,
   undoAudit,
   UNDO_CONFLICT_HINT,
+  undoBlocker,
   VERSION_CONFLICT_MESSAGE,
   type SwapCandidate,
 } from "./edits";
@@ -597,6 +598,7 @@ describe("lock and unlock", () => {
     if (!result.ok) return;
     // 12 buyers + 6 supplier admins + 3 attendees
     expect(result.data.tokensIssued).toBe(21);
+    expect(result.data.tokensKept).toBe(0);
     const tokens = await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId));
     expect(tokens).toHaveLength(21);
 
@@ -615,6 +617,27 @@ describe("lock and unlock", () => {
 
     const again = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
     expect(again).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
+  });
+
+  it("a second lock issues no new links and reports the ones it kept", async () => {
+    const first = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(first.ok).toBe(true);
+    const unlocked = await unlockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId, reason: "Check a desk" });
+    expect(unlocked.ok).toBe(true);
+    const second = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.data.tokensIssued).toBe(0);
+    expect(second.data.tokensKept).toBe(21);
+    expect(second.data.linksRevoked).toBe(0);
+
+    // A link revoked while unlocked is not replaced by lock, and isn't counted as kept.
+    const again = await unlockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId, reason: "Revoke one link" });
+    expect(again.ok).toBe(true);
+    const [one] = await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId)).limit(1);
+    await db.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, one.id));
+    const third = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(third.ok && third.data).toMatchObject({ tokensIssued: 0, tokensKept: 20, linksRevoked: 1 });
   });
 
   it("lock on an archived event says it is archived, not already locked", async () => {
@@ -1084,5 +1107,51 @@ describe("unlock while an email send is in progress", () => {
 
     await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
     expect((await unlockSchedule(db, input)).ok).toBe(true);
+  });
+});
+
+describe("undoBlocker", () => {
+  const snap = (slot: number, buyerId: string, supplierId: string) => ({
+    runId: "00000000-0000-4000-8000-000000000000",
+    slot,
+    buyerId,
+    supplierId,
+    buyerRank: 1,
+    supplierRank: 1,
+    source: "manual",
+    pinned: false,
+  });
+  const names: Record<string, string> = {
+    "00000001-0000-4000-8000-000000000000": "B1",
+    "00000002-0000-4000-8000-000000000000": "B2",
+    "00000003-0000-4000-8000-000000000000": "S1",
+    "00000004-0000-4000-8000-000000000000": "S2",
+  };
+  const name = (id: string) => names[id] ?? id;
+
+  it("is null when the undo would fit, and words a refilled slot like the undo does", () => {
+    const removal = { before: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"), after: null, name };
+    expect(undoBlocker({ ...removal, current: [{ slot: 8, buyerId: "00000002-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBeNull();
+    expect(undoBlocker({ ...removal, current: [{ slot: 9, buyerId: "00000002-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBe(
+      `S1 already has B2 in slot 9. ${UNDO_CONFLICT_HINT}`,
+    );
+    expect(undoBlocker({ ...removal, current: [{ slot: 9, buyerId: "00000001-0000-4000-8000-000000000000", supplierId: "00000004-0000-4000-8000-000000000000" }] })).toBe(
+      `B1 is already booked in slot 9 with S2. ${UNDO_CONFLICT_HINT}`,
+    );
+  });
+
+  it("checks that an added meeting is still there, and who has withdrawn", () => {
+    const addition = { before: null, after: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"), name };
+    expect(undoBlocker({ ...addition, current: [{ slot: 9, buyerId: "00000001-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBeNull();
+    expect(undoBlocker({ ...addition, current: [] })).toMatch(/no longer in the schedule/);
+    expect(
+      undoBlocker({
+        before: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"),
+        after: null,
+        current: [],
+        name,
+        withdrawn: new Map([["00000001-0000-4000-8000-000000000000", "Participants" as const]]),
+      }),
+    ).toMatch(/^B1 has withdrawn, so this change can't be undone\. Restore them on the Participants page/);
   });
 });

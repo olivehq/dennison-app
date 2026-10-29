@@ -42,6 +42,7 @@ import {
   NOT_LOCKED_MESSAGE,
   REGENERATE_HINT,
   previewCampaign,
+  reminderSubject,
   resendToBounced,
   sendCampaign,
   sendTest,
@@ -663,6 +664,16 @@ describe("sending", () => {
       sentAt: null,
     });
   });
+
+  it("prefixes a reminder's subject with Reminder: once", async () => {
+    const copy = await duplicateCampaign(db, { campaignId: campaign.id, adminId: seeded.adminId, kind: "reminder" });
+    if (!copy.ok) throw new Error(copy.error.message);
+    expect(copy.data.subject).toBe(`Reminder: ${campaign.subject}`);
+    // A subject that already starts with Reminder: doesn't get a second one.
+    expect(reminderSubject(copy.data.subject)).toBe(copy.data.subject);
+    expect(reminderSubject("reminder: Your schedule")).toBe("reminder: Your schedule");
+    expect(reminderSubject("x".repeat(200))).toHaveLength(200);
+  });
 });
 
 describe("changed since last send (D13)", () => {
@@ -796,6 +807,10 @@ describe("revoked links (decision a)", () => {
     expect((await revokeToken(db, revoked.id, other.adminId)).ok).toBe(true);
     const [expired] = await tokenOf(expiredBuyer.id);
     await db.update(accessTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(accessTokens.id, expired.id));
+
+    // The editor counts only who a send reaches: it learns who is skipped before the click.
+    const options = await getAudienceOptions(other.eventId, db);
+    expect(options?.contacts.filter((c) => c.linkRevoked).map((c) => c.key)).toEqual([recipientKey("buyer", revokedBuyer.id)]);
 
     const created = await createCampaign(db, { eventId: other.eventId, adminId: other.adminId });
     if (!created.ok) throw new Error(created.error.message);

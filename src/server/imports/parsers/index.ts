@@ -1,20 +1,26 @@
-import type { ImportKind } from "@/lib/schemas/import";
+import { IMPORT_KIND_LABELS, isRankingKind, type ImportKind, type RankingKind } from "@/lib/schemas/import";
 import { readSheetRows, SpreadsheetTooLargeError, type SheetRows } from "@/lib/xlsx";
-import { detectFormat } from "../templates";
+import { detectFormat, detectShape } from "../templates";
 import { parseParticipants } from "./participants";
 import { parseRankingList } from "./ranking-list";
 import { parseRankingMatrix } from "./ranking-matrix";
 import { parseSuppliers } from "./suppliers";
 import type { ParsedFile } from "./types";
 
-export type ParseOutcome = { ok: true; parsed: ParsedFile } | { ok: false; message: string };
+/**
+ * `refuse` marks a file that isn't worth keeping as a failed import: it is
+ * empty or belongs on another card. The upload is refused with the message.
+ */
+export type ParseOutcome = { ok: true; parsed: ParsedFile } | { ok: false; message: string; refuse?: boolean };
 
 /** The first sheet with a header row and at least one data row, else the first with a header. */
 function pickSheet(sheets: SheetRows[]): SheetRows | null {
   return sheets.find((sheet) => sheet.rows.length > 0) ?? sheets[0] ?? null;
 }
 
-function readWorkbook(buffer: Buffer | Uint8Array): SheetRows | { message: string } {
+const NO_ROWS = "The file has no rows.";
+
+function readWorkbook(buffer: Buffer | Uint8Array): SheetRows | { message: string; refuse?: boolean } {
   let sheets: SheetRows[];
   try {
     sheets = readSheetRows(buffer);
@@ -24,8 +30,30 @@ function readWorkbook(buffer: Buffer | Uint8Array): SheetRows | { message: strin
     return { message: `Could not read the file as a spreadsheet (${detail}).` };
   }
   const sheet = pickSheet(sheets);
-  if (!sheet) return { message: "The file has no rows." };
+  if (!sheet || sheet.rows.length === 0) return { message: NO_ROWS, refuse: true };
   return sheet;
+}
+
+/** The ranking card a file name points at ("…hotel_rankings…"), or null when it doesn't say. */
+export function rankingKindFromFileName(fileName: string): RankingKind | null {
+  const name = fileName.toLowerCase();
+  if (/supplier[\s_-]*rank/.test(name)) return "supplier_rankings";
+  if (name.includes("hotel")) return "buyer_hotel_rankings";
+  if (/biz|business|tech/.test(name)) return "buyer_biztech_rankings";
+  return null;
+}
+
+/** Null when the headers fit the card; otherwise where the file should go. */
+function wrongCardMessage(kind: ImportKind, headers: string[], fileName: string): string | null {
+  const shape = detectShape(headers);
+  if (shape === null || shape === (isRankingKind(kind) ? "rankings" : kind)) return null;
+  if (shape !== "rankings") {
+    return `This looks like a ${shape} file. Upload it on the ${IMPORT_KIND_LABELS[shape]} card.`;
+  }
+  const guess = rankingKindFromFileName(fileName);
+  return guess
+    ? `This looks like a rankings file. Upload it on the ${IMPORT_KIND_LABELS[guess]} card.`
+    : `This looks like a rankings file. Upload it on the ${IMPORT_KIND_LABELS.buyer_biztech_rankings}, ${IMPORT_KIND_LABELS.buyer_hotel_rankings}, or ${IMPORT_KIND_LABELS.supplier_rankings} card.`;
 }
 
 function parseSheet(kind: ImportKind, sheet: SheetRows): ParseOutcome {
@@ -57,10 +85,16 @@ export function isStructuralFailure(parsed: ParsedFile): boolean {
   return parsed.rows.length === 0 && parsed.errors.some((error) => error.row === null);
 }
 
-/** Opens the workbook, picks the sheet, detects the format for ranking kinds, and parses. */
-export function parseImportFile(kind: ImportKind, buffer: Buffer | Uint8Array): ParseOutcome {
+/**
+ * Opens the workbook, picks the sheet, refuses a file with no rows or one
+ * shaped for another card, detects the format for ranking kinds, and parses.
+ * `fileName` only helps name the right card.
+ */
+export function parseImportFile(kind: ImportKind, buffer: Buffer | Uint8Array, fileName = ""): ParseOutcome {
   const sheet = readWorkbook(buffer);
-  if ("message" in sheet) return { ok: false, message: sheet.message };
+  if ("message" in sheet) return { ok: false, message: sheet.message, refuse: sheet.refuse };
+  const wrongCard = wrongCardMessage(kind, sheet.headers, fileName);
+  if (wrongCard) return { ok: false, message: wrongCard, refuse: true };
   return parseSheet(kind, sheet);
 }
 

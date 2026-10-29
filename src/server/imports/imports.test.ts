@@ -169,13 +169,44 @@ describe("participants import", () => {
   });
 
   it("stores a parse failure as a failed import with the message", async () => {
-    const outcome = await expectOk(await upload("participants", Buffer.from("not a workbook at all", "utf8"), "junk.csv"));
+    const outcome = await expectOk(await upload("participants", Buffer.from("Name\nnot a participant\n", "utf8"), "junk.csv"));
     expect(outcome.state).toBe("failed");
     expect(outcome.report.errors[0].message).toContain("Missing required column");
-    const garbage = await expectOk(await upload("participants", Buffer.from([0, 1, 2, 3]), "junk.xlsx"));
-    expect(garbage.state).toBe("failed");
-    expect(garbage.report.errors).toHaveLength(1);
-    expect((await getImport(garbage.importId, db))?.status).toBe("failed");
+    const partial = await expectOk(await upload("participants", writeSheet(["Email"], [["a@example.com"]]), "partial.xlsx"));
+    expect(partial.state).toBe("failed");
+    expect(partial.report.errors).toHaveLength(1);
+    expect((await getImport(partial.importId, db))?.status).toBe("failed");
+  });
+
+  it("refuses an empty file, a header-only file, and a file for another card without storing it", async () => {
+    const before = (await listImports(eventId, db)).length;
+    const refused = (message: string) => ({ ok: false, error: { code: "validation", message } });
+    expect(await upload("participants", Buffer.from([0, 1, 2, 3]), "junk.xlsx")).toMatchObject(refused("The file has no rows."));
+    expect(await upload("participants", writeSheet(participantHeaders, []), "header-only.csv")).toMatchObject(
+      refused("The file has no rows."),
+    );
+    const hotelFile = listSheet([{ name: "Ann Lee", email: "ann@example.com", choices: ["10 Hotel", "20 Hotel"] }]);
+    expect(await upload("participants", hotelFile, "TEST_AW_buyer_hotel_rankings_update.xlsx")).toMatchObject(
+      refused("This looks like a rankings file. Upload it on the Buyer hotel rankings card."),
+    );
+    expect(await upload("suppliers", hotelFile, "export.xlsx")).toMatchObject(
+      refused("This looks like a rankings file. Upload it on the Buyer biztech rankings, Buyer hotel rankings, or Supplier rankings card."),
+    );
+    const supplierFile = writeSheet(supplierHeaders, [["10 Hotel", "hotel", "", "", "", ""]]);
+    expect(await upload("participants", supplierFile)).toMatchObject(
+      refused("This looks like a suppliers file. Upload it on the Suppliers card."),
+    );
+    expect(await upload("supplier_rankings", supplierFile)).toMatchObject(
+      refused("This looks like a suppliers file. Upload it on the Suppliers card."),
+    );
+    const participantFile = writeSheet(participantHeaders, [["ann@example.com", "Ann", "Lee", "", "", ""]]);
+    expect(await upload("buyer_hotel_rankings", participantFile)).toMatchObject(
+      refused("This looks like a participants file. Upload it on the Participants card."),
+    );
+    expect(await upload("suppliers", participantFile)).toMatchObject(
+      refused("This looks like a participants file. Upload it on the Participants card."),
+    );
+    expect((await listImports(eventId, db)).length).toBe(before);
   });
 
   it("refuses a sheet over the row limit with a plain message in the report", async () => {
@@ -671,7 +702,7 @@ describe("applies and revalidation under the event row lock (D85)", () => {
     expect(await revalidateImport(db, stale)).toBe("ready");
   });
 
-  it("an apply refused as invalid leaves the report of an apply that won the race alone", async () => {
+  it("an apply that lost the race is refused and leaves the winner's report alone", async () => {
     const pending = await expectOk(await hotelFile(["Hotel Three"]));
     expect(pending.state).toBe("needs_mapping");
     // After the refused apply checked the file: the supplier arrives and another admin applies it.
@@ -680,7 +711,9 @@ describe("applies and revalidation under the event row lock (D85)", () => {
       await expectOk(await applyImport(db, { importId: pending.importId, adminId }));
     };
     const refused = await applyImport(raceBeforeTransaction(db, otherApply), { importId: pending.importId, adminId });
-    expect(refused).toMatchObject({ ok: false, error: { code: "validation" } });
+    // The file is checked under the event lock (D195), where it is valid by now, so the
+    // loser fails on the status compare-and-set, not on a stale "needs mapping".
+    expect(refused).toMatchObject({ ok: false, error: { code: "conflict" } });
     const applied = await getImport(pending.importId, db);
     expect(applied).toMatchObject({ status: "applied", state: "applied" });
     expect(applied?.report?.counts.unknownNames).toBe(0);

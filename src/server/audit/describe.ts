@@ -213,6 +213,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
         return `Stopped ignoring ${file ?? `a ${kind} file`}`;
     }
   }
+  if (row.action === "alias.remove") {
+    const mapsTo = str(before.mapsTo);
+    return `Removed the saved name match "${str(before.raw) ?? "?"}"${mapsTo ? ` to ${mapsTo}` : ""}`;
+  }
   if (row.action === "alias.save") {
     return `Matched the name "${str(after.raw) ?? "?"}" to ${name(after.entityId, "someone on the roster")}`;
   }

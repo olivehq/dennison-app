@@ -48,7 +48,14 @@ export type Resolution = {
    * alias sends every row with this text to one entity, so callers warn.
    */
   aliasedAmbiguous: Map<string, string[]>;
+  /**
+   * Raw names resolved by a saved alias rather than by a name on the roster:
+   * `event` for this event's alias, `cross_year` for a global one (D76).
+   */
+  viaAlias: Map<string, AliasScope>;
 };
+
+export type AliasScope = "event" | "cross_year";
 
 export const SUGGESTION_THRESHOLD = 0.5;
 export const SUGGESTION_LIMIT = 3;
@@ -81,6 +88,18 @@ function bigrams(text: string): Map<string, number> {
     grams.set(gram, (grams.get(gram) ?? 0) + 1);
   }
   return grams;
+}
+
+/** The numbers in a name, leading zeros dropped and sorted: "Hall 2 Suite 010" gives ["10", "2"]. */
+export function numberTokens(name: string): string[] {
+  return (normaliseName(name).match(/\p{N}+/gu) ?? []).map((digits) => digits.replace(/^0+(?=.)/, "")).sort();
+}
+
+/** True when both names hold the same numbers. "100 Hotel" and "10 Hotel" don't: they are different places. */
+export function sameNumbers(a: string, b: string): boolean {
+  const left = numberTokens(a);
+  const right = numberTokens(b);
+  return left.length === right.length && left.every((token, i) => token === right[i]);
 }
 
 /** Dice coefficient over character bigrams of the normalised names, 0 to 1. */
@@ -147,11 +166,12 @@ function buildIndex(entities: ResolvableEntity[], aliases: AliasRow[], globalAli
   return { byEmail, byAlias, byGlobalAlias, byOrganization, byOrganizationNormalised, byLower, byNormalised };
 }
 
+/** Close spellings for the admin to confirm. A name whose numbers differ from the text is never suggested. */
 function suggestionsFor(raw: string, entities: ResolvableEntity[]): NameSuggestion[] {
   const scored = entities.map((entity) => ({
     entityId: entity.id,
     name: entity.label,
-    score: Math.max(...entity.names.map((name) => similarity(raw, name))),
+    score: Math.max(0, ...entity.names.map((name) => (sameNumbers(raw, name) ? similarity(raw, name) : 0))),
   }));
   return scored
     .filter((suggestion) => suggestion.score >= SUGGESTION_THRESHOLD)
@@ -181,11 +201,12 @@ function several(set: Set<string> | undefined): Set<string> | null {
 /**
  * Matches raw names to entities, in this order: an email address in the text
  * (with `byEmail`; one roster email wins, else only this event's alias can
- * settle it), this event's alias, the organization
- * (with `byOrganization`; exact ignoring case, then normalised), a cross-year
- * alias whose canonical name is exactly (ignoring case) one entity's name
- * here, exact case-insensitive name, normalised name, then fuzzy suggestions
- * for the admin to confirm. A text that matches several entities by
+ * settle it), the organization (with `byOrganization`; exact ignoring case,
+ * then normalised), exact case-insensitive name, normalised name, then a saved
+ * alias (this event's, then a cross-year one whose canonical name is exactly,
+ * ignoring case, one entity's name here), then fuzzy suggestions for the admin
+ * to confirm. A name on the roster always beats an alias: aliases only resolve
+ * text no entity has as its name. A text that matches several entities by
  * organization or by name is left unresolved, `ambiguous`, with all of them
  * suggested; only this event's alias settles it, never a cross-year alias.
  */
@@ -200,6 +221,7 @@ export function resolveNames(
   const resolved = new Map<string, string>();
   const inexact = new Map<string, string>();
   const aliasedAmbiguous = new Map<string, string[]>();
+  const viaAlias = new Map<string, AliasScope>();
   const unresolved: Unresolved[] = [];
   const seen = new Set<string>();
 
@@ -216,9 +238,13 @@ export function resolveNames(
     const email = options.byEmail ? emailIn(key) : null;
     if (email) {
       // An email that is exactly one buyer's wins. Otherwise only the admin's mapping for this text can settle it.
-      const resolvedId = only(index.byEmail.get(email)) ?? index.byAlias.get(key);
-      if (resolvedId) resolved.set(key, resolvedId);
-      else unresolved.push({ raw: key, suggestions: suggestionsFor(key.toLowerCase().replace(email, " "), entities) });
+      const byEmail = only(index.byEmail.get(email));
+      const byAlias = byEmail ? null : index.byAlias.get(key);
+      if (byEmail) resolved.set(key, byEmail);
+      else if (byAlias) {
+        resolved.set(key, byAlias);
+        viaAlias.set(key, "event");
+      } else unresolved.push({ raw: key, suggestions: suggestionsFor(key.toLowerCase().replace(email, " "), entities) });
       continue;
     }
 
@@ -226,40 +252,28 @@ export function resolveNames(
     const lower = index.byLower.get(key.toLowerCase());
     const normalised = index.byNormalised.get(normaliseName(key));
 
-    const byAlias = index.byAlias.get(key);
-    if (byAlias) {
-      resolved.set(key, byAlias);
-      // An alias for a shared company or name sends every row with this text to one person. Say so.
-      const shared = several(organization) ?? several(lower) ?? several(normalised);
-      if (shared) aliasedAmbiguous.set(key, [...shared]);
-      continue;
-    }
-
     const byOrganization = only(organization);
     if (byOrganization) {
       resolved.set(key, byOrganization);
       continue;
     }
-    const sharedOrganization = several(organization);
-    if (sharedOrganization) {
-      // Never fall through to names or cross-year aliases: they would pick one of these people silently.
-      unresolved.push({ raw: key, suggestions: candidateSuggestions(sharedOrganization, entities), ambiguous: true });
+    // A shared company or name is never settled by a name or a cross-year
+    // alias: they would pick one of these people silently. Only this event's
+    // alias settles it, with a warning. An exact name one entity has still
+    // wins over a normalised clash.
+    const shared = several(organization) ?? several(lower) ?? (only(lower) ? null : several(normalised));
+    if (shared) {
+      const byAlias = index.byAlias.get(key);
+      if (byAlias) {
+        resolved.set(key, byAlias);
+        viaAlias.set(key, "event");
+        aliasedAmbiguous.set(key, [...shared]);
+      } else {
+        unresolved.push({ raw: key, suggestions: candidateSuggestions(shared, entities), ambiguous: true });
+      }
       continue;
     }
 
-    // A shared name is refused before the cross-year alias for the same reason.
-    // An exact name one entity has still wins over a normalised clash, as below.
-    const sharedName = several(lower) ?? (only(lower) ? null : several(normalised));
-    if (sharedName) {
-      unresolved.push({ raw: key, suggestions: candidateSuggestions(sharedName, entities), ambiguous: true });
-      continue;
-    }
-
-    const byGlobalAlias = only(index.byGlobalAlias.get(key.toLowerCase()));
-    if (byGlobalAlias) {
-      resolved.set(key, byGlobalAlias);
-      continue;
-    }
     const byLower = only(lower);
     if (byLower) {
       resolved.set(key, byLower);
@@ -271,7 +285,19 @@ export function resolveNames(
       inexact.set(key, byNormalised);
       continue;
     }
+    const byAlias = index.byAlias.get(key);
+    if (byAlias) {
+      resolved.set(key, byAlias);
+      viaAlias.set(key, "event");
+      continue;
+    }
+    const byGlobalAlias = only(index.byGlobalAlias.get(key.toLowerCase()));
+    if (byGlobalAlias) {
+      resolved.set(key, byGlobalAlias);
+      viaAlias.set(key, "cross_year");
+      continue;
+    }
     unresolved.push({ raw: key, suggestions: suggestionsFor(key, entities) });
   }
-  return { resolved, unresolved, inexact, aliasedAmbiguous };
+  return { resolved, unresolved, inexact, aliasedAmbiguous, viaAlias };
 }

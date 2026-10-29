@@ -243,6 +243,15 @@ export async function updateCampaign(
   });
 }
 
+const REMINDER_PREFIX = "Reminder: ";
+/** The longest subject a campaign accepts (`campaignFieldsSchema`). */
+const SUBJECT_MAX = 200;
+
+/** The subject for a reminder copy: "Reminder: " first, unless it already starts that way. */
+export function reminderSubject(subject: string): string {
+  return /^reminder\s*:/i.test(subject.trim()) ? subject : `${REMINDER_PREFIX}${subject}`.slice(0, SUBJECT_MAX);
+}
+
 /**
  * A new draft from an existing campaign. `reminder` keeps the copy and the
  * audience for editing; `update` switches to the default update body and the
@@ -266,7 +275,7 @@ export async function duplicateCampaign(
         fromName: source.fromName,
         fromEmail: source.fromEmail,
         replyTo: source.replyTo,
-        subject: isUpdate ? DEFAULT_SUBJECTS.update : source.subject,
+        subject: isUpdate ? DEFAULT_SUBJECTS.update : reminderSubject(source.subject),
         htmlBody: isUpdate ? DEFAULT_BODIES.update : source.htmlBody,
         audience: isUpdate ? "changed_since_last_send" : source.audience,
         selectedRecipients: isUpdate ? [] : source.selectedRecipients,

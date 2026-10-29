@@ -134,8 +134,10 @@ describe("rate-limit countdown", () => {
     expect(formatCountdown(600)).toBe("10:00");
   });
 
-  it("rounds the wait sentence up to whole minutes", () => {
-    expect(waitCopy(1)).toBe("Wait 1 minute, then try again.");
+  it("uses seconds under a minute and rounds longer waits up", () => {
+    expect(waitCopy(1)).toBe("Wait 1 second, then try again.");
+    expect(waitCopy(9)).toBe("Wait 9 seconds, then try again.");
+    expect(waitCopy(59)).toBe("Wait 59 seconds, then try again.");
     expect(waitCopy(60)).toBe("Wait 1 minute, then try again.");
     expect(waitCopy(61)).toBe("Wait 2 minutes, then try again.");
     expect(waitCopy(null)).toBe("Wait 10 minutes, then try again.");

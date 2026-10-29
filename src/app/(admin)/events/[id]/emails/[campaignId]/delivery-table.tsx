@@ -32,6 +32,8 @@ export type DeliveryTableRow = {
 
 const helper = createDataTableColumnHelper<DeliveryTableRow>();
 
+const NOTHING_TO_RETRY = "Nothing to retry. No email has bounced or failed.";
+
 const STATUS_OPTIONS: MessageStatus[] = ["queued", "sent", "delivered", "bounced", "complained", "failed"];
 
 export function DeliveryTable({ rows }: { rows: DeliveryTableRow[] }) {
@@ -119,19 +121,20 @@ export function RetryDeliveryButton({
   disabledReason: string | null;
 }) {
   const router = useRouter();
+  // Nothing to retry is the plainer fact, so it wins over a setup problem that would only matter later.
+  const reason = count === 0 ? NOTHING_TO_RETRY : disabledReason;
   const trigger = (
-    <Button variant="outline" disabled={count === 0 || disabledReason !== null} title={disabledReason ?? undefined}>
+    <Button variant="outline" disabled={reason !== null} title={reason ?? undefined}>
       <RotateCwIcon data-icon="inline-start" />
       Retry delivery
     </Button>
   );
-  if (count === 0) return trigger;
   // A visible reason, not only a tooltip: keyboard and touch users can't hover a disabled button.
-  if (disabledReason !== null) {
+  if (reason !== null) {
     return (
       <div className="flex flex-col items-end gap-1">
         {trigger}
-        <p className="max-w-xs text-right text-xs text-muted-foreground">{disabledReason}</p>
+        <p className="max-w-xs text-right text-xs text-muted-foreground">{reason}</p>
       </div>
     );
   }
@@ -163,10 +166,27 @@ export function RetryDeliveryButton({
 export function RefreshStatusButton() {
   const router = useRouter();
   const [pending, startTransition] = React.useTransition();
+  const requested = React.useRef(false);
+
+  // The refresh is done when the transition ends, so say so then, not when the click lands.
+  React.useEffect(() => {
+    if (pending || !requested.current) return;
+    requested.current = false;
+    toast.success("Status updated.");
+  }, [pending]);
+
   return (
-    <Button variant="outline" size="sm" disabled={pending} onClick={() => startTransition(() => router.refresh())}>
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={pending}
+      onClick={() => {
+        requested.current = true;
+        startTransition(() => router.refresh());
+      }}
+    >
       {pending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-      Refresh status
+      {pending ? "Refreshing" : "Refresh status"}
     </Button>
   );
 }

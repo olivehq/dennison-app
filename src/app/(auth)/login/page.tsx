@@ -6,12 +6,11 @@ import { safeNextPath } from "../auth-errors";
 import { AuthHeader } from "../auth-shell";
 import { LoginForm } from "./login-form";
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[] }> }) {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string | string[]; sessionEnded?: string | string[] }> }) {
   const [session, params] = await Promise.all([getSession(), searchParams]);
   const next = safeNextPath(params.next);
   if (session) redirect(next);
-  // requireSession sends an ended session here with the page it was on; plain /events is also a first visit.
-  const sessionEnded = params.next !== undefined && next !== "/events";
+  const sessionEnded = params.sessionEnded === "1";
 
   return (
     <>

@@ -14,6 +14,9 @@ import { NewCampaignButton, SendUpdateButton } from "./campaign-buttons";
 import { CampaignsTable, type CampaignTableRow } from "./campaigns-table";
 import { people } from "./labels";
 
+const ARCHIVED_REASON = "This event is archived, so no campaign can be created.";
+const NOBODY_CHANGED = "Nobody's schedule changed since their last email.";
+
 export default async function EmailsPage({ params }: { params: Promise<{ id: string }> }) {
   await requireSession();
   const { id } = await params;
@@ -44,8 +47,17 @@ export default async function EmailsPage({ params }: { params: Promise<{ id: str
       <PageHeader
         title="Emails"
         description="Email buyers and supplier contacts their private schedule link, then follow delivery."
-        actions={<NewCampaignButton eventId={event.id} disabled={archived} />}
+        actions={<NewCampaignButton eventId={event.id} disabledReason={archived ? ARCHIVED_REASON : null} />}
       />
+      {archived ? (
+        <Alert>
+          <LockIcon />
+          <AlertTitle>This event is archived</AlertTitle>
+          <AlertDescription>
+            <p>New campaigns and updates can&apos;t be created, and nothing can be sent. Open a campaign to read it.</p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {!canSend && !archived ? (
         <Alert>
           <LockIcon />
@@ -74,7 +86,10 @@ export default async function EmailsPage({ params }: { params: Promise<{ id: str
                 : "When an edit changes someone's schedule after they were emailed, they show up here."}
             </CardDescription>
             <CardAction>
-              <SendUpdateButton eventId={event.id} disabled={summary.changed === 0 || archived} />
+              <SendUpdateButton
+                eventId={event.id}
+                disabledReason={archived ? ARCHIVED_REASON : summary.changed === 0 ? NOBODY_CHANGED : null}
+              />
             </CardAction>
           </CardHeader>
         </Card>

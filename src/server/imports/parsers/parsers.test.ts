@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { readSheetRows, writeSheet } from "@/lib/xlsx";
-import { detectFormat, templateWorkbook } from "../templates";
+import { detectFormat, detectShape, templateWorkbook } from "../templates";
 import { isStructuralFailure, parseImportFile, parseParticipants, parseRankingList, parseRankingMatrix, parseSuppliers } from "./index";
 
 const sheetOf = (buffer: Buffer) => readSheetRows(buffer)[0];
@@ -221,19 +221,46 @@ describe("parseImportFile", () => {
     expect(matrix.ok && matrix.parsed.format).toBe("matrix");
     const unknown = parseImportFile("buyer_hotel_rankings", writeSheet(["Email", "First name"], [["a@b.co", "A"]]));
     expect(unknown.ok).toBe(false);
-    // SheetJS reads arbitrary bytes as a one-cell csv; the parser then finds no usable columns.
-    const garbage = parseImportFile("participants", Buffer.from("not a spreadsheet"));
+    // SheetJS reads arbitrary text as a csv; the parser then finds no usable columns.
+    const garbage = parseImportFile("participants", Buffer.from("not a spreadsheet\nat all"));
     expect(garbage.ok && isStructuralFailure(garbage.parsed)).toBe(true);
-    // Control bytes alone are stripped from the cell (so they can be stored), which leaves an empty file.
-    expect(parseImportFile("participants", Buffer.from([1, 2, 3]))).toEqual({ ok: false, message: "The file has no rows." });
-    const empty = parseImportFile("participants", writeSheet([], []));
-    expect(empty).toEqual({ ok: false, message: "The file has no rows." });
+    // A header with no rows, and control bytes alone (stripped so they can be stored), are refused.
+    const noRows = { ok: false, message: "The file has no rows.", refuse: true };
+    expect(parseImportFile("participants", Buffer.from("not a spreadsheet"))).toEqual(noRows);
+    expect(parseImportFile("participants", Buffer.from([1, 2, 3]))).toEqual(noRows);
+    expect(parseImportFile("participants", writeSheet([], []))).toEqual(noRows);
   });
 
-  it("template workbooks parse with their own parser", () => {
-    const participants = parseImportFile("participants", templateWorkbook("participants"));
-    expect(participants.ok && participants.parsed.rows).toEqual([]);
-    const rankings = readSheetRows(templateWorkbook("buyer_hotel_rankings"))[0];
-    expect(detectFormat(rankings.headers)).toBe("list");
+  it("template workbooks have one example row that parses on their own card", () => {
+    const kinds = ["participants", "suppliers", "buyer_biztech_rankings", "buyer_hotel_rankings", "supplier_rankings"] as const;
+    for (const kind of kinds) {
+      const parsed = parseImportFile(kind, templateWorkbook(kind));
+      expect(parsed.ok && parsed.parsed.errors).toEqual([]);
+      expect(parsed.ok && parsed.parsed.rows).toHaveLength(1);
+    }
+    const hotel = readSheetRows(templateWorkbook("buyer_hotel_rankings"))[0];
+    expect(detectFormat(hotel.headers)).toBe("list");
+    // The three ranking templates differ: who ranks, and what the choices name.
+    const sheets = kinds.slice(2).map((kind) => readSheetRows(templateWorkbook(kind))[0]);
+    expect(new Set(sheets.map((sheet) => JSON.stringify([sheet.sheetName, sheet.rows]))).size).toBe(3);
+    const supplier = sheets[2];
+    expect(supplier.headers.slice(0, 2)).toEqual(["SUPPLIER", "EMAIL"]);
+    expect(supplier.headers).not.toContain("FIRST_NAME");
+    const list = parseRankingList(supplier);
+    expect(list.rows[0]).toMatchObject({ rankerName: "Example Bay Hotel", rankerEmail: "sam.lee@example.com" });
+    // A participants file with Organization and Category also fits the suppliers shape (name, type):
+    // ambiguous, so it isn't refused on the Participants card.
+    const overlap = ["Email", "First name", "Last name", "Organization", "Title", "Category"];
+    expect(detectShape(overlap)).toBeNull();
+    const overlapFile = writeSheet(overlap, [["jane.doe@example.com", "Jane", "Doe", "Example Meetings Co", "Planner", "Association"]]);
+    expect(parseImportFile("participants", overlapFile, "participants.xlsx")).toMatchObject({ ok: true });
+    expect(detectShape(["Name", "Type", "Admin contact email"])).toBe("suppliers");
+    expect(detectShape(["Email", "First name", "Last name", "Organization"])).toBe("participants");
+    // A template on the wrong card is refused.
+    expect(parseImportFile("participants", templateWorkbook("supplier_rankings"), "AW_supplier_rankings_template.xlsx")).toEqual({
+      ok: false,
+      message: "This looks like a rankings file. Upload it on the Supplier rankings card.",
+      refuse: true,
+    });
   });
 });

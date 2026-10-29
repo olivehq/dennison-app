@@ -13,7 +13,7 @@ import {
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { findActiveRun } from "@/server/matching/runs";
-import { issueTokensForEvent } from "@/server/tokens/tokens";
+import { issueTokensForEvent, linksForContacts, listContacts } from "@/server/tokens/tokens";
 
 /**
  * Lock, unlock, and desk numbers (scope 2.5, D17). Locking freezes the
@@ -74,6 +74,10 @@ export type LockResult = {
   eventId: string;
   desks: DeskAssignment[];
   tokensIssued: number;
+  /** Current contacts whose link was already live and stayed (unlock keeps them), so a second lock issues none. */
+  tokensKept: number;
+  /** Current contacts whose newest link was revoked: lock doesn't replace it; Regenerate on the roster does. */
+  linksRevoked: number;
 };
 
 /** Appointments of the run where the buyer or the supplier has withdrawn since it was built. */
@@ -123,6 +127,10 @@ export async function lockSchedule(
     const issued = await issueTokensForEvent(tx, event.id);
     // Throwing rolls the desk changes back; the event was loaded a moment ago so this cannot happen.
     if (!issued.ok) throw new Error(issued.error.message);
+    // Counted per current contact (D180), not per token: a withdrawn person's live
+    // token is not a kept link, and a revoked newest link means that contact has none.
+    const contactLinks = await linksForContacts(tx, event.id, await listContacts(tx, event.id), { issueMissing: false });
+    if (!contactLinks.ok) throw new Error(contactLinks.error.message);
     await recordAudit(tx, {
       eventId: event.id,
       adminId: input.adminId,
@@ -132,7 +140,13 @@ export async function lockSchedule(
       before: { status: event.status },
       after: { status: "locked", runId: active.id, desks, tokensIssued: issued.data.length },
     });
-    return { eventId: event.id, desks, tokensIssued: issued.data.length };
+    return {
+      eventId: event.id,
+      desks,
+      tokensIssued: issued.data.length,
+      tokensKept: Math.max(0, contactLinks.data.links.size - issued.data.length),
+      linksRevoked: contactLinks.data.revoked.size,
+    };
   });
 }
 

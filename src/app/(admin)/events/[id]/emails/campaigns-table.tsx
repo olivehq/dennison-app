@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createDataTableColumnHelper, DataTable } from "@/components/app/data-table";
 import type { EmailAudience, EmailCampaignKind } from "@/lib/schemas/email";
 import { AUDIENCE_LABELS, CampaignStatusBadge, KIND_LABELS, type CampaignStatus } from "./labels";
@@ -30,13 +31,18 @@ function Count({ value, muted }: { value: number; muted: boolean }) {
 }
 
 export function CampaignsTable({ rows }: { rows: CampaignTableRow[] }) {
+  const router = useRouter();
   const columns = React.useMemo(
     () =>
       helper.columns([
         helper.accessor("name", {
           header: "Name",
           cell: ({ row }) => (
-            <Link href={row.original.href} className="block max-w-xs font-medium whitespace-normal underline-offset-4 hover:underline">
+            <Link
+              href={row.original.href}
+              onClick={(event) => event.stopPropagation()}
+              className="block max-w-xs font-medium whitespace-normal underline-offset-4 hover:underline"
+            >
               {row.original.name}
             </Link>
           ),
@@ -93,6 +99,8 @@ export function CampaignsTable({ rows }: { rows: CampaignTableRow[] }) {
       columns={columns}
       data={rows}
       getRowId={(row) => row.id}
+      // Every campaign opens, archived events included: a sent or archived one opens read-only.
+      onRowClick={(row) => router.push(row.href)}
       emptyTitle="No campaigns yet"
       emptyDescription="Create a campaign to email every buyer and supplier contact their private schedule link."
     />

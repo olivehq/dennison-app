@@ -79,3 +79,59 @@ describe("exportAvailability latest export per kind", () => {
     expect(availability.exports.report.scheduleChanged).toBe(false);
   });
 });
+
+describe("exportAvailability lists", () => {
+  async function recordAction(action: string, createdAt: string) {
+    await db.insert(auditEvents).values({
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+      action,
+      entityType: "event",
+      createdAt: new Date(createdAt),
+    });
+  }
+
+  it("flags the access list for people and link changes, and the full lists for people or schedule changes", async () => {
+    await recordAt("access_list", "2026-11-01T10:00:00Z");
+    await recordAt("participants_full", "2026-11-01T10:00:00Z");
+    await recordAt("suppliers_full", "2026-11-01T10:00:00Z");
+    // Before the export: nothing to warn about.
+    await recordAction("participant.update", "2026-10-31T10:00:00Z");
+    let { exports } = (await exportAvailability(seeded.eventId, db))!;
+    expect([exports.access_list, exports.participants_full, exports.suppliers_full].map((e) => e.listChanged)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+
+    // A new appointment edit changes the full lists' counts, not the links.
+    await recordAction("appointment.replace", "2026-11-02T10:00:00Z");
+    ({ exports } = (await exportAvailability(seeded.eventId, db))!);
+    expect(exports.access_list.listChanged).toBe(false);
+    expect(exports.participants_full.listChanged).toBe(true);
+    expect(exports.suppliers_full.listChanged).toBe(true);
+
+    // A regenerated link changes the access list too.
+    await recordAction("token.regenerate", "2026-11-03T10:00:00Z");
+    ({ exports } = (await exportAvailability(seeded.eventId, db))!);
+    expect(exports.access_list.listChanged).toBe(true);
+
+    // The schedule files keep comparing run versions, never the list rule.
+    expect(exports.master.listChanged).toBe(false);
+    expect(exports.master.scheduleChanged).toBe(false);
+
+    // Exporting again clears the warning.
+    await recordAt("access_list", "2026-11-04T10:00:00Z");
+    ({ exports } = (await exportAvailability(seeded.eventId, db))!);
+    expect(exports.access_list.listChanged).toBe(false);
+
+    // Retention deletes people and links, so it dates every list.
+    await recordAction("event.retention_delete", "2026-11-05T10:00:00Z");
+    ({ exports } = (await exportAvailability(seeded.eventId, db))!);
+    expect([exports.access_list, exports.participants_full, exports.suppliers_full].map((e) => e.listChanged)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+});

@@ -17,8 +17,8 @@ type ThemeToggleProps = {
 function ThemeIcons() {
   return (
     <>
-      <SunIcon className="dark:hidden" aria-hidden="true" />
-      <MoonIcon className="hidden dark:block" aria-hidden="true" />
+      <MoonIcon className="dark:hidden" aria-hidden="true" />
+      <SunIcon className="hidden dark:block" aria-hidden="true" />
     </>
   );
 }

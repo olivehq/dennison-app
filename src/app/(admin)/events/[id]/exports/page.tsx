@@ -25,6 +25,16 @@ const ROUTE_SEGMENT: Record<ExportKind, string> = {
   suppliers_full: "suppliers",
 };
 
+/** The warning once what a file holds has changed since it was downloaded. */
+const CHANGED_COPY: Record<ExportKind, string> = {
+  master: "Schedule changed since this export",
+  schedules: "Schedule changed since this export",
+  report: "Schedule changed since this export",
+  access_list: "People or links changed since this export",
+  participants_full: "People or schedule changed since this export",
+  suppliers_full: "People or schedule changed since this export",
+};
+
 function copyFor(kind: ExportKind, slotCount: number): { title: string; description: string; action: string } {
   switch (kind) {
     case "master":
@@ -116,10 +126,10 @@ export default async function ExportsPage({ params }: { params: Promise<{ id: st
               </CardHeader>
               <CardContent className="flex flex-col items-start gap-2">
                 <LastGenerated state={state} />
-                {state.scheduleChanged ? (
+                {state.scheduleChanged || state.listChanged ? (
                   <Badge variant="outline" className="border-warning bg-warning/15 text-warning-foreground">
                     <TriangleAlertIcon data-icon="inline-start" />
-                    Schedule changed since this export
+                    {CHANGED_COPY[kind]}
                   </Badge>
                 ) : null}
                 {disabledReason ? <p className="text-sm text-muted-foreground">{disabledReason}</p> : null}

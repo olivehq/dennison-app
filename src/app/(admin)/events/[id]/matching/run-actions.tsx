@@ -15,7 +15,7 @@ function headline(stats: {
   mutualTopN: { pct: number };
   thresholds: { mutualTopN: number };
 }): string {
-  return `${stats.totalAppointments} appointments. ${stats.supplierSuccessPct}% of suppliers at target, ${stats.buyersInRangePct}% of buyers in range, ${stats.mutualTopN.pct}% mutual top ${stats.thresholds.mutualTopN}.`;
+  return `${stats.totalAppointments === 1 ? "1 appointment" : `${stats.totalAppointments} appointments`}. ${stats.supplierSuccessPct}% of suppliers at target, ${stats.buyersInRangePct}% of buyers in range, ${stats.mutualTopN.pct}% mutual top ${stats.thresholds.mutualTopN}.`;
 }
 
 /** "Run matching" and "Re-run and keep existing appointments", each behind a confirm. */

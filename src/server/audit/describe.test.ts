@@ -135,6 +135,9 @@ describe("describeAudit", () => {
     expect(describeAudit(row("alias.save", { after: { raw: "Hyatt Monterey", entityId: SUPPLIER } }), names)).toBe(
       'Matched the name "Hyatt Monterey" to Hyatt Regency Monterey',
     );
+    expect(describeAudit(row("alias.remove", { before: { raw: "100 Hotel", mapsTo: "10 Hotel" } }), names)).toBe(
+      'Removed the saved name match "100 Hotel" to 10 Hotel',
+    );
     expect(describeAudit(row("event.settings", { before: { buyerMin: 7, slots: [1] }, after: { buyerMin: 6, slots: [2] } }), names)).toBe(
       "Changed the settings: slot times and buyer minimum",
     );

@@ -4,7 +4,7 @@ import * as React from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { LockIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Controller, useFieldArray, useForm, type FieldPath } from "react-hook-form";
+import { Controller, useFieldArray, useForm, type FieldErrors, type FieldPath } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
@@ -27,10 +27,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ActionError } from "@/lib/errors";
 import { eventSchema } from "@/lib/schemas/event";
-import { eventSettingsSchema, MAX_SLOT_COUNT, type EventSettings } from "@/lib/schemas/event-settings";
+import { defaultEventSettings, eventSettingsSchema, MAX_SLOT_COUNT, type EventSettings } from "@/lib/schemas/event-settings";
 import { buildSlots, formatMinutes, parseClock } from "@/lib/time";
 import { saveEventSettings } from "@/server/events/actions";
-import { describeTargetChanges, fitTargetsToSlots } from "./fit-targets";
+import { describeRebuildUp, describeTargetChanges, fitTargetsToSlots, type MeetingTargets } from "./fit-targets";
+import { firstInvalidField } from "./first-invalid-field";
 
 const formSchema = eventSchema.extend({ settings: eventSettingsSchema });
 type FormValues = z.infer<typeof formSchema>;
@@ -111,6 +112,8 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
   } = form;
   const { fields, replace } = useFieldArray({ control, name: "settings.slots" });
   const [rebuild, setRebuild] = React.useState(() => rebuildDefaults(event.settings));
+  /** The targets as they were before the last rebuild lowered them, so rebuilding back up can offer them again. */
+  const loweredFrom = React.useRef<MeetingTargets | null>(null);
   /** Set when the save would cut into the active schedule and needs the admin's confirmation. */
   const [resetPrompt, setResetPrompt] = React.useState<{ payload: SavePayload; values: FormValues; message: string } | null>(null);
 
@@ -169,6 +172,15 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
     await save(payload, values, false);
   };
 
+  /** A save with an invalid field: say which one, and bring it into view, since it may be off screen. */
+  const onInvalid = (invalid: FieldErrors<FormValues>) => {
+    const first = firstInvalidField(invalid);
+    toast.error(first ? `Can't save yet. ${first.message}` : "Can't save yet. Fix the highlighted fields.");
+    const input = first ? document.getElementById(first.id) : null;
+    input?.scrollIntoView({ block: "center", behavior: "smooth" });
+    input?.focus({ preventScroll: true });
+  };
+
   const applyRebuild = () => {
     try {
       const slots = buildSlots({
@@ -183,13 +195,34 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
       clearErrors("settings.slotCount");
       // Targets above the new count would fail validation on save, so bring them into range now and say so.
       const { supplierTarget, buyerMin, buyerIdeal, buyerMax } = getValues("settings");
-      const fitted = fitTargetsToSlots({ supplierTarget, buyerMin, buyerIdeal, buyerMax }, slots.length);
-      for (const change of fitted.changes) {
-        setValue(`settings.${change.field}`, change.to, { shouldDirty: true });
-        clearErrors(`settings.${change.field}`);
-      }
+      const before: MeetingTargets = { supplierTarget, buyerMin, buyerIdeal, buyerMax };
+      const previousCount = fields.length;
+      const fitted = fitTargetsToSlots(before, slots.length);
+      const setTargets = (targets: MeetingTargets) => {
+        for (const [field, value] of Object.entries(targets) as [keyof MeetingTargets, number][]) {
+          setValue(`settings.${field}`, value, { shouldDirty: true });
+          clearErrors(`settings.${field}`);
+        }
+      };
+      // Remember only complete values: a blank target would be written back by "Restore previous targets".
+      const complete = Object.values(before).every((value) => typeof value === "number" && Number.isFinite(value));
+      if (complete && fitted.changes.some((change) => change.to < change.from)) loweredFrom.current = before;
+      setTargets(fitted.targets);
+      // Rebuilding up leaves the targets where they are, so say that and offer the values they had.
+      const up = describeRebuildUp(fitted.targets, slots.length, previousCount, loweredFrom.current, defaultEventSettings);
+      const restore = up?.restore;
       toast(`Built ${slots.length} slots from ${formatMinutes(slots[0].startMinutes)} to ${formatMinutes(slots[slots.length - 1].endMinutes)}.`, {
-        description: describeTargetChanges(fitted.changes) ?? undefined,
+        description: [describeTargetChanges(fitted.changes), up?.note].filter(Boolean).join(" ") || undefined,
+        duration: restore ? 12_000 : undefined,
+        action: restore
+          ? {
+              label: restore.label,
+              onClick: () => {
+                setTargets(restore.targets);
+                toast.success("Targets updated.");
+              },
+            }
+          : undefined,
       });
     } catch (error) {
       toast.error(error instanceof RangeError ? "Those numbers run past midnight. Lower the count, duration, or gap." : "Could not build slots.");
@@ -199,7 +232,7 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
   const numberField = (name: FieldPath<FormValues>) => register(name, { valueAsNumber: true });
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
+    <form onSubmit={handleSubmit(onSubmit, onInvalid)} noValidate className="flex flex-col gap-6">
       <PageHeader
         title="Settings"
         description="Slot times, meeting targets, and the thresholds the matching engine uses."

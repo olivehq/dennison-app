@@ -1,14 +1,14 @@
 import { and, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type Db } from "@/db/client";
-import { admins, auditEvents, participants, suppliers, type AuditEvent, type Event } from "@/db/schema";
+import { admins, appointments, auditEvents, participants, suppliers, type AuditEvent, type Event } from "@/db/schema";
 import { compareNames } from "@/lib/names";
 import { endOfDayInTimezone, formatTimeOfDay, formatTimestamp, isoDateInTimezone } from "@/lib/time";
 import { isEventEditable } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { findActiveRun } from "@/server/matching/runs";
 import { displayNameFor } from "@/server/roster/display-name";
-import { UNDOABLE_ACTIONS, undoNote } from "@/server/schedule/edits";
+import { UNDOABLE_ACTIONS, undoBlocker, undoNote } from "@/server/schedule/edits";
 import { DEFAULT_AUDIT_PAGE_SIZE, countAudit, listAudit, type AuditFilters } from "./audit";
 import { AUDIT_ACTION_GROUPS, auditActionGroupOf, describeAudit, isAuditActionGroup, type AuditActionGroup } from "./describe";
 
@@ -207,10 +207,11 @@ export async function getActivityPage(
         organization: participants.organization,
         title: participants.title,
         displayName: participants.displayName,
+        status: participants.status,
       })
       .from(participants)
       .where(eq(participants.eventId, eventId)),
-    db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(eq(suppliers.eventId, eventId)),
+    db.select({ id: suppliers.id, name: suppliers.name, status: suppliers.status }).from(suppliers).where(eq(suppliers.eventId, eventId)),
     db.select({ id: admins.id, name: admins.name }).from(admins),
     findActiveRun(db, eventId),
     countToday(eventId, event.timezone, today, db),
@@ -246,6 +247,20 @@ export async function getActivityPage(
   }
   const editable = isEventEditable(event);
 
+  // The meetings and withdrawals an undo would run into, read only when some row can still be undone.
+  const needsCheck =
+    editable && activeRun !== null && undoable.some((r) => !undone.has(r.id) && runIdOf(r) === activeRun.id);
+  const current = needsCheck
+    ? await db
+        .select({ slot: appointments.slot, buyerId: appointments.buyerId, supplierId: appointments.supplierId })
+        .from(appointments)
+        .where(eq(appointments.runId, activeRun.id))
+    : [];
+  const withdrawn = new Map<string, "Participants" | "Suppliers">([
+    ...buyerRows.filter((b) => b.status === "withdrawn").map((b) => [b.id, "Participants"] as const),
+    ...supplierRows.filter((s) => s.status === "withdrawn").map((s) => [s.id, "Suppliers"] as const),
+  ]);
+
   const undoFor = (row: AuditEvent): ActivityUndo | null => {
     if (row.entityType !== "appointment" || !UNDOABLE_ACTIONS.has(row.action)) return null;
     // Nothing to replay, for example after the retention job cleared the row.
@@ -260,7 +275,8 @@ export async function getActivityPage(
     if (!activeRun || runIdOf(row) !== activeRun.id) {
       return { available: false, reason: "This change belongs to a run that is no longer active." };
     }
-    return { available: true };
+    const blocked = undoBlocker({ before: row.before, after: row.after, current, withdrawn, name: (id) => names.get(id) ?? id });
+    return blocked ? { available: false, reason: blocked } : { available: true };
   };
 
   const people: ActivityOption[] = [

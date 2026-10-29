@@ -16,7 +16,7 @@ import { useIsClient } from "./use-is-client";
 function When({ label, at }: { label: string; at: Date }) {
   return (
     <span>
-      {label} <time dateTime={at.toISOString()}>{format(at, "MMM d, h:mm a")}</time>
+      {label} <time dateTime={at.toISOString()}>{format(at, "MMM d, yyyy, h:mm:ss a OOOO")}</time>
     </span>
   );
 }
@@ -25,10 +25,9 @@ function When({ label, at }: { label: string; at: Date }) {
 function SessionTimes({ session }: { session: AdminSessionItem }) {
   const isClient = useIsClient();
   if (!isClient) return <span aria-hidden="true">&nbsp;</span>;
-  const sameMinute = Math.abs(session.lastActiveAt.getTime() - session.signedInAt.getTime()) < 60_000;
   return (
     <>
-      {sameMinute ? null : <When label="Last active" at={session.lastActiveAt} />}
+      <When label="Last active" at={session.lastActiveAt} />
       <When label="Signed in" at={session.signedInAt} />
     </>
   );
@@ -69,10 +68,11 @@ export function SessionsCard({ sessions }: { sessions: AdminSessionItem[] }) {
               <div className="flex min-w-0 flex-1 basis-48 flex-col gap-0.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium break-words">{session.device}</span>
-                  {session.current ? <Badge variant="secondary">This browser</Badge> : null}
+                  {session.current ? <Badge variant="secondary">This session</Badge> : null}
                 </div>
                 <div className="flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
                   <SessionTimes session={session} />
+                  <span>IP address: {session.ipAddress ?? "Not recorded"}</span>
                 </div>
               </div>
               {session.current ? null : (

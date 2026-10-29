@@ -50,3 +50,38 @@ export function describeTargetChanges(changes: TargetChange[]): string | null {
     .join(" and ");
   return `${parts.charAt(0).toUpperCase()}${parts.slice(1)} to fit.`;
 }
+
+const sameTargets = (a: MeetingTargets, b: MeetingTargets) =>
+  (Object.keys(LABEL) as (keyof MeetingTargets)[]).every((field) => a[field] === b[field]);
+
+/** "Targets stay at 7." or "Targets stay at 9 per supplier and 7 to 9 per buyer (ideal 8)." */
+function describeKeptTargets(t: MeetingTargets): string {
+  if (new Set(Object.values(t)).size === 1) return `Targets stay at ${t.supplierTarget}.`;
+  return `Targets stay at ${t.supplierTarget} per supplier and ${t.buyerMin} to ${t.buyerMax} per buyer (ideal ${t.buyerIdeal}).`;
+}
+
+/**
+ * What to tell the admin after "Rebuild slots" adds slots. Raising the slot count never raises the
+ * targets, so when they sit below the new count the note says they stayed, and the restore option puts
+ * back the values they had before the last lowering (`previous`) or else the defaults, fitted to the
+ * new count. Null when the count did not grow or the targets already reach it.
+ */
+export function describeRebuildUp(
+  current: MeetingTargets,
+  slotCount: number,
+  previousSlotCount: number,
+  previous: MeetingTargets | null,
+  defaults: MeetingTargets,
+): { note: string; restore: { label: string; targets: MeetingTargets } | null } | null {
+  if (slotCount <= previousSlotCount) return null;
+  if (!Object.values(current).every(Number.isFinite)) return null;
+  if (current.supplierTarget >= slotCount && current.buyerMax >= slotCount) return null;
+  const from = previous ?? defaults;
+  const candidate = fitTargetsToSlots(from, slotCount).targets;
+  return {
+    note: `${describeKeptTargets(current)} Raise them if you want more meetings.`,
+    restore: sameTargets(candidate, current)
+      ? null
+      : { label: previous ? "Restore previous targets" : "Use default targets", targets: candidate },
+  };
+}

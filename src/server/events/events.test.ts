@@ -1,15 +1,16 @@
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/db/client";
-import { admins, emailCampaigns, events, imports, participants, pendingFileDeletions } from "@/db/schema";
+import { admins, emailCampaigns, events, imports, participants, pendingFileDeletions, suppliers } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings, type EventSettings } from "@/lib/schemas/event-settings";
-import { failNextDeletesForTests, getFile, importFileKey, putFile, useMemoryStorageForTests } from "@/lib/storage";
+import { failNextDeletesForTests, getFile, putFile, useMemoryStorageForTests } from "@/lib/storage";
 import { listAudit } from "@/server/audit/audit";
 import { drainFileDeletions } from "@/server/files/cleanup";
 import { assertEventEditable } from "./editable";
 import {
   archiveEvent,
+  countEventData,
   createEvent,
   deleteEvent,
   saveEventForm,
@@ -180,34 +181,26 @@ describe("deleteEvent", () => {
     expect(audit.rows.some((r) => r.entityId === id)).toBe(true);
   });
 
-  it("queues the draft's uploaded import files with the rows, and a failed delete stays queued for the cron", async () => {
-    const id = await makeEvent("Has uploads");
-    const upload = async (kind: "participants" | "suppliers", fileName: string) => {
-      const [row] = await db
-        .insert(imports)
-        .values({ eventId: id, kind, fileKey: "pending", fileName, status: "uploaded" })
-        .returning();
-      const fileKey = importFileKey(id, row.id, fileName);
-      await putFile({ key: fileKey, body: Buffer.from("email"), contentType: "text/csv" });
-      await db.update(imports).set({ fileKey }).where(eq(imports.id, row.id));
-      return fileKey;
-    };
-    const buyers = await upload("participants", "Buyers.csv");
-    const suppliersKey = await upload("suppliers", "Suppliers.csv");
+  it("queues the draft's logo file with the row, and a failed delete stays queued for the cron", async () => {
+    const id = await makeEvent("Has logo");
+    const logoKey = `branding/${id}/logo.png`;
+    await putFile({ key: logoKey, body: Buffer.from("png"), contentType: "image/png" });
+    await db
+      .update(events)
+      .set({ branding: { primaryColor: null, accentColor: null, logoKey, logoType: "image/png" } })
+      .where(eq(events.id, id));
 
-    // One of the two deletes fails, as a storage outage would.
+    // The delete fails, as a storage outage would.
     failNextDeletesForTests(1);
     const result = await deleteEvent(db, id, ACTOR);
     expect(result).toEqual({ ok: true, data: { id } });
-    expect(await db.select().from(imports).where(eq(imports.eventId, id))).toHaveLength(0);
     const remaining = await db.select().from(pendingFileDeletions);
     expect(remaining).toHaveLength(1);
-    expect([buyers, suppliersKey]).toContain(remaining[0].storageKey);
-    expect(await getFile(remaining[0].storageKey)).not.toBeNull();
+    expect(remaining[0].storageKey).toBe(logoKey);
+    expect(await getFile(logoKey)).not.toBeNull();
 
     await drainFileDeletions(db, { now: new Date(Date.now() + 24 * 60 * 60 * 1000) });
-    expect(await getFile(buyers)).toBeNull();
-    expect(await getFile(suppliersKey)).toBeNull();
+    expect(await getFile(logoKey)).toBeNull();
     expect(await db.select().from(pendingFileDeletions)).toHaveLength(0);
   });
 
@@ -218,6 +211,29 @@ describe("deleteEvent", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("conflict");
     expect(await getEvent(id, db)).not.toBeNull();
+  });
+
+  it("refuses when the event has suppliers", async () => {
+    const id = await makeEvent("Has suppliers");
+    await db.insert(suppliers).values({ eventId: id, name: "230 Hotel", type: "hotel", deskNumber: 1 });
+    const result = await deleteEvent(db, id, ACTOR);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("conflict");
+    expect(await getEvent(id, db)).not.toBeNull();
+    expect(await countEventData(db, id)).toBe(1);
+  });
+
+  it("refuses when the event has an uploaded file, and counts withdrawn people", async () => {
+    const id = await makeEvent("Has uploads");
+    await db.insert(imports).values({ eventId: id, kind: "suppliers", fileKey: "k", fileName: "Suppliers.csv", status: "uploaded" });
+    const result = await deleteEvent(db, id, ACTOR);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("Archive it instead.");
+    expect(await getEvent(id, db)).not.toBeNull();
+
+    const other = await makeEvent("Only withdrawn");
+    await db.insert(participants).values({ eventId: other, email: "w@example.com", firstName: "W", lastName: "X", status: "withdrawn" });
+    expect(await countEventData(db, other)).toBe(1);
   });
 
   it("refuses when the event is not a draft", async () => {

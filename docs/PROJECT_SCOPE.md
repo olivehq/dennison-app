@@ -249,7 +249,7 @@ Added, re-running without losing edits:
 
 - The engine accepts a list of pinned appointments. It treats them as already placed and fills only the remaining gaps. Withdrawn people are excluded from the input.
 - On the matching screen, "Re-run and keep existing appointments" pins every appointment in the active run that does not involve a withdrawn person. The new run records the old one as its parent.
-- An admin can also pin or unpin single appointments in the schedule workspace, for example to protect a match a supplier asked for.
+- An admin can also pin or unpin single appointments in the schedule workspace. A pin marks a meeting as reviewed (D148): "Re-run and keep existing appointments" keeps every existing meeting, pinned or not, and "Run matching" starts fresh and clears pins. Replacing a pinned meeting asks first and removes the pin (D193).
 - Before activating a re-run, the screen shows what changed: appointments added, removed, and people whose count moved.
 
 At about 500 appointments the engine runs in well under a second, far inside Vercel's function time limit.
@@ -267,8 +267,8 @@ Engine sign-off requires D&A written approval on the 2025 regression output.
 - Four uploads per event. Files go to Vercel Blob, then a Server Action parses them.
 - Source files are small, about 50 KB for the sample. If a real file nears the Server Action body limit, switch that upload to Vercel Blob client uploads.
 - Olive-defined templates for the participants file. Ranking files accept the eShow `CHOICE #n` list format. The 2025 matrix format is supported as a second parser only if D&A still has data in that shape. Otherwise it is dropped.
-- Validation report per file: unknown names (with fuzzy suggestions from the alias table and current entities), duplicate emails, missing emails, rows with zero rankings, suppliers ranked by nobody, participants who ranked nobody.
-- Alias mapping screen: unresolved raw names on the left, Combobox of entities on the right. Saved aliases persist across years.
+- Validation report per file: unknown names (with fuzzy suggestions from the alias table and current entities; never a name whose numbers differ), duplicate emails, missing emails, rows with zero rankings, suppliers ranked by nobody, participants who ranked nobody, names read through a saved alias, and for roster files the fields each apply changes and who is not in the file.
+- Alias mapping screen: unresolved raw names on the left, Combobox of entities on the right. Saved aliases persist across years. A name on the roster always beats a saved alias. The Imports page lists saved mappings with Remove (D195).
 - Re-import replaces that file's rankings and re-validates. Nothing is matched until all four files are green or explicitly accepted with warnings.
 
 Added, editing people in the app:

@@ -57,9 +57,10 @@ export async function listAdmins(
       .where(isNull(adminInvites.acceptedAt))
       .orderBy(asc(adminInvites.createdAt)),
   ]);
+  const adminEmails = new Set(adminRows.map((admin) => admin.email.toLowerCase()));
   return {
     admins: adminRows.sort((a, b) => compareNames(a.name, b.name)),
-    invites: inviteRows.map(({ revokedAt, ...row }) => ({
+    invites: inviteRows.filter((row) => !row.revokedAt || !adminEmails.has(row.email.toLowerCase())).map(({ revokedAt, ...row }) => ({
       ...row,
       expired: row.expiresAt <= now,
       revoked: revokedAt !== null,
@@ -101,8 +102,9 @@ export async function getInviteByToken(
 
 export type AdminSessionItem = {
   id: string;
-  /** "Chrome on macOS", from the user agent. The raw string, token, and IP stay on the server. */
+  /** "Chrome on macOS", from the user agent. The raw string and token stay on the server. */
   device: string;
+  ipAddress: string | null;
   signedInAt: Date;
   /** Better Auth moves this forward when it refreshes the session (at most hourly, D73). */
   lastActiveAt: Date;
@@ -118,6 +120,7 @@ export async function listAdminSessions(
     .select({
       id: sessions.id,
       userAgent: sessions.userAgent,
+      ipAddress: sessions.ipAddress,
       createdAt: sessions.createdAt,
       updatedAt: sessions.updatedAt,
     })
@@ -127,6 +130,7 @@ export async function listAdminSessions(
     .map((row) => ({
       id: row.id,
       device: describeUserAgent(row.userAgent),
+      ipAddress: row.ipAddress,
       signedInAt: row.createdAt,
       lastActiveAt: row.updatedAt,
       current: row.id === input.currentSessionId,

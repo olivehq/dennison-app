@@ -9,7 +9,7 @@ import { getActivityPage, parseActivityParams } from "@/server/audit/queries";
 import { ActivityFilters } from "./activity-filters";
 import { ActivitySummaryStats } from "./activity-summary";
 import { ActivityTimeline } from "./activity-timeline";
-import { activityQuery, groupByDay, isFiltered, summaryStats } from "./activity-view";
+import { activityQuery, emptyActivityText, groupByDay, isFiltered, summaryStats } from "./activity-view";
 
 export default async function ActivityPage({
   params,
@@ -30,6 +30,7 @@ export default async function ActivityPage({
   const firstShown = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const lastShown = Math.min(total, page * pageSize);
   const filtered = isFiltered(filters);
+  const empty = emptyActivityText(filters);
 
   return (
     <>
@@ -45,10 +46,8 @@ export default async function ActivityPage({
             <EmptyMedia variant="icon">
               <HistoryIcon />
             </EmptyMedia>
-            <EmptyTitle>{filtered ? "No changes match these filters" : "No changes yet"}</EmptyTitle>
-            <EmptyDescription>
-              {filtered ? "Clear a filter or widen the dates." : "Imports, matching runs, and schedule edits will show here."}
-            </EmptyDescription>
+            <EmptyTitle>{empty.title}</EmptyTitle>
+            <EmptyDescription>{empty.description}</EmptyDescription>
           </EmptyHeader>
           {filtered ? (
             <EmptyContent>

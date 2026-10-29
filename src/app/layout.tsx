@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { Atkinson_Hyperlegible_Next, Schibsted_Grotesk } from "next/font/google";
 import { headers } from "next/headers";
-import { ThemeProvider } from "next-themes";
-import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
@@ -24,9 +22,9 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  // Set by src/proxy.ts. Reading headers also makes every page render per
-  // request, which a nonce-based CSP needs (Next.js CSP guide).
-  const nonce = (await headers()).get("x-nonce") ?? undefined;
+  // Reading headers makes every page render per request, which the
+  // nonce-based CSP from src/proxy.ts needs (Next.js CSP guide).
+  await headers();
   return (
     <html
       lang="en"
@@ -34,10 +32,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`${atkinson.variable} ${schibsted.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col">
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange nonce={nonce}>
-          <TooltipProvider>{children}</TooltipProvider>
-          <Toaster />
-        </ThemeProvider>
+        {/* The theme provider and toasts live in the admin and sign-in layouts (src/app/app-theme.tsx). */}
+        <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
   );

@@ -22,6 +22,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { participantSchema } from "@/lib/schemas/roster";
 import { saveParticipant } from "@/server/roster/actions";
+import { fullNameFor } from "@/server/roster/display-name";
 import { applyActionError } from "../_roster/form-errors";
 
 type FormInput = z.input<typeof participantSchema>;
@@ -53,8 +54,8 @@ function defaults(participant: ParticipantFormData | null): FormInput {
   };
 }
 
-function participantName(participant: ParticipantFormData): string {
-  return participant.displayName || `${participant.firstName} ${participant.lastName}`.trim();
+function participantName(participant: Pick<ParticipantFormData, "firstName" | "lastName" | "email">): string {
+  return fullNameFor(participant) || participant.email;
 }
 
 type ParticipantDialogProps = {
@@ -95,13 +96,13 @@ export function ParticipantDialog({ eventId, participant, hasLiveLink = false, o
       if (result.error.code === "locked") router.refresh();
       return;
     }
-    const emailChanged = editing && participant.email !== values.email;
+    const name = participantName(values);
     toast.success(
       editing
-        ? emailChanged
-          ? "Participant saved. Their old link was revoked because the email changed."
-          : "Participant saved."
-        : `${values.firstName} ${values.lastName} added.`,
+        ? result.data.linksRevoked > 0
+          ? `${name} saved. Their old link was revoked because the email changed.`
+          : `${name} saved.`
+        : `${name} added.`,
     );
     onOpenChange(false);
   };

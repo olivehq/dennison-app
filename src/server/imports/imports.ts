@@ -33,7 +33,7 @@ import {
   type ParsedParticipant,
   type ParsedSupplier,
 } from "./parsers";
-import { rankingsOfKindFor } from "./queries";
+import { listSavedNameMappings, rankingsOfKindFor } from "./queries";
 import { emailIn, normaliseName } from "./resolve";
 import {
   analyzeRankings,
@@ -125,12 +125,21 @@ async function upsertGlobalAlias(db: Db, alias: GlobalAliasInput): Promise<void>
 }
 
 type Evaluation =
-  | { status: "failed"; report: ImportValidationReport }
+  /** `refused`: the file is empty or belongs on another card, so a new upload is refused rather than stored. */
+  | { status: "failed"; report: ImportValidationReport; refused?: string }
   | { status: "validated"; report: ImportValidationReport; parsed: ParsedFile };
 
-async function evaluate(db: Db, eventId: string, kind: ImportKind, buffer: Buffer | Uint8Array): Promise<Evaluation> {
-  const outcome = parseImportFile(kind, buffer);
-  if (!outcome.ok) return { status: "failed", report: failedReport(outcome.message) };
+async function evaluate(
+  db: Db,
+  eventId: string,
+  kind: ImportKind,
+  buffer: Buffer | Uint8Array,
+  fileName: string,
+): Promise<Evaluation> {
+  const outcome = parseImportFile(kind, buffer, fileName);
+  if (!outcome.ok) {
+    return { status: "failed", report: failedReport(outcome.message), ...(outcome.refuse ? { refused: outcome.message } : {}) };
+  }
   if (isStructuralFailure(outcome.parsed)) {
     return { status: "failed", report: failedReport(outcome.parsed.errors.map((error) => error.message).join(" ")) };
   }
@@ -144,6 +153,11 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
   const loaded = await loadEditableEvent(db, input.eventId);
   if (!loaded.ok) return loaded.error;
 
+  // An empty file or one for another card is refused before anything is stored.
+  const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer, input.filename);
+  if (evaluation.status === "failed" && evaluation.refused) return fail("validation", evaluation.refused);
+  const state = importStateFor(evaluation.status, evaluation.report);
+
   const importId = randomUUID();
   const key = importFileKey(input.eventId, importId, input.filename);
   await putFile({ key, body: input.buffer, contentType: contentTypeFor(input.filename) });
@@ -151,8 +165,6 @@ export async function createImport(db: Db, input: CreateImportInput): Promise<Ac
   // Until the row commits, nothing points at the file: every way out but
   // success deletes it, so no failure leaves a file no import tracks.
   try {
-    const evaluation = await evaluate(db, input.eventId, input.kind, input.buffer);
-    const state = importStateFor(evaluation.status, evaluation.report);
     const saved = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
       await tx.insert(imports).values({
         id: importId,
@@ -198,7 +210,7 @@ async function readStoredFile(row: Import): Promise<Buffer | null> {
 async function evaluateStored(db: Db, row: Import): Promise<Evaluation> {
   const buffer = await readStoredFile(row);
   return buffer
-    ? evaluate(db, row.eventId, row.kind, buffer)
+    ? evaluate(db, row.eventId, row.kind, buffer, row.fileName)
     : { status: "failed", report: failedReport("The uploaded file is no longer in storage. Upload it again.") };
 }
 
@@ -360,6 +372,60 @@ export async function saveAliases(
   if (!saved.ok) return saved;
   const revalidated = await revalidatePending(db, input.eventId);
   return ok({ aliasIds: saved.data, imports: revalidated });
+}
+
+/**
+ * Removes a saved name mapping the admin sees in the list for this event, then
+ * re-validates this event's pending imports once. This event's alias takes
+ * its cross-year copy with it when that copy still points at the same person
+ * (this save wrote it); a copy a later save pointed elsewhere stays. A
+ * cross-year mapping is shared by every event, so removing it here removes it
+ * everywhere. Only mappings that apply here can be removed from here.
+ */
+export async function removeAlias(
+  db: Db,
+  input: { eventId: string; aliasId: string; adminId: string },
+): Promise<ActionResult<{ aliasId: string; imports: RevalidatedImport[] }>> {
+  const removed = await inEventTransaction(db, input.eventId, "edit", async (tx) => {
+    const mapping = (await listSavedNameMappings(input.eventId, tx)).find((entry) => entry.id === input.aliasId);
+    if (!mapping) throw new Refused(fail("not_found", "That saved name is already gone. Reload the page."));
+    const [row] = await tx.delete(nameAliases).where(eq(nameAliases.id, mapping.id)).returning();
+    // A cross-year mapping is shared, and another event's admin holds a different
+    // event lock: they may have removed it between the list above and this delete.
+    if (!row) throw new Refused(fail("not_found", "That saved name is already gone. Reload the page."));
+    if (mapping.scope === "event" && mapping.crossYear) {
+      await tx
+        .delete(nameAliases)
+        .where(
+          and(
+            isNull(nameAliases.eventId),
+            eq(nameAliases.entityType, row.entityType),
+            eq(nameAliases.entityId, row.entityId),
+            sql`lower(${nameAliases.rawText}) = lower(${row.rawText})`,
+          ),
+        );
+    }
+    await recordAudit(tx, {
+      eventId: input.eventId,
+      adminId: input.adminId,
+      action: "alias.remove",
+      entityType: "name_alias",
+      entityId: row.id,
+      before: {
+        raw: row.rawText,
+        entityType: row.entityType,
+        entityId: row.entityId,
+        mapsTo: mapping.mapsTo,
+        scope: mapping.scope,
+        crossYear: mapping.crossYear,
+        source: row.source,
+      },
+    });
+    return row.id;
+  });
+  if (!removed.ok) return removed;
+  const revalidated = await revalidatePending(db, input.eventId);
+  return ok({ aliasId: removed.data, imports: revalidated });
 }
 
 // ---------------------------------------------------------------------------
@@ -547,28 +613,29 @@ export async function applyImport(
 
   const buffer = await readStoredFile(row);
   if (!buffer) return fail("not_found", "The uploaded file is no longer in storage. Upload it again.");
-  const outcome = parseImportFile(row.kind, buffer);
+  const outcome = parseImportFile(row.kind, buffer, row.fileName);
   if (!outcome.ok) return fail("validation", outcome.message);
-  const context = await loadContext(db, row.eventId);
   const parsed = outcome.parsed;
-  const analysis = parsed.kind === "ranking" && isRankingKind(row.kind) ? analyzeRankings(row.kind, parsed, context) : null;
-  const report = analysis ? analysis.report : validateParsed(row.kind, parsed, context);
-  const state = importStateFor("validated", report);
-  if (state !== "ready") {
-    // Show the current problems on the import page, unless it moved meanwhile.
-    await writeFreshReport(db, row, { statusToo: false });
-    return fail(
-      "validation",
-      state === "needs_mapping"
-        ? "Map every unknown name before applying this file."
-        : "Fix the errors in the file and upload it again.",
-    );
-  }
 
   // Lock the event row while it is editable (D85): a lock or archive since the
   // check above is refused, and applies of one event run one at a time.
   // `event` has the settings (the biztech rule) as they are under the lock.
+  // The roster and saved name mappings are read and the file checked under the
+  // same lock, so a mapping removed or a roster change saved just before this
+  // apply is what it uses, never what it saw before taking the lock (D195).
   const applied = await inEventTransaction(db, row.eventId, "edit", async (tx, event) => {
+    // Applies of one event run one at a time under this lock, so the status read
+    // here is the one the compare-and-set below sees. Checking it first saves a
+    // stale apply from writing everything before it fails, and from a wrong
+    // "map every unknown name" for an import that is already applied or gone.
+    const [now] = await tx.select({ status: imports.status }).from(imports).where(eq(imports.id, row.id));
+    if (!now) throw new Refused(fail("not_found", "That import no longer exists."));
+    if (now.status !== row.status) throw new Refused(fail("conflict", STATUS_CHANGED_MESSAGE));
+    const context = await loadContext(tx, row.eventId);
+    const analysis = parsed.kind === "ranking" && isRankingKind(row.kind) ? analyzeRankings(row.kind, parsed, context) : null;
+    const report = analysis ? analysis.report : validateParsed(row.kind, parsed, context);
+    const state = importStateFor("validated", report);
+    if (state !== "ready") return { notReady: state } as const;
     const result: ApplySummary = {
       kind: row.kind,
       created: 0,
@@ -608,10 +675,20 @@ export async function applyImport(
       before: { status: row.status },
       after: { status: "applied", ...result },
     });
-    return result;
+    return { summary: result } as const;
   });
   if (!applied.ok) return applied;
-  const summary = applied.data;
+  if ("notReady" in applied.data) {
+    // Show the current problems on the import page, unless it moved meanwhile.
+    await writeFreshReport(db, row, { statusToo: false });
+    return fail(
+      "validation",
+      applied.data.notReady === "needs_mapping"
+        ? "Map every unknown name before applying this file."
+        : "Fix the errors in the file and upload it again.",
+    );
+  }
+  const { summary } = applied.data;
   // A roster change can resolve (or break) names in ranking files waiting to be applied.
   if (!isRankingKind(row.kind)) await revalidatePending(db, row.eventId);
   return ok({ importId: row.id, summary });

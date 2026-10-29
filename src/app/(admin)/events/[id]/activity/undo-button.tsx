@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ActivityUndo } from "@/server/audit/queries";
 import { undoAuditAction } from "@/server/schedule/actions";
+import { affectedText } from "../schedule/schedule-model";
 
 export function UndoButton({ auditEventId, sentence, undo }: { auditEventId: string; sentence: string; undo: ActivityUndo }) {
   const router = useRouter();
@@ -36,8 +37,7 @@ export function UndoButton({ auditEventId, sentence, undo }: { auditEventId: str
       router.refresh();
       return;
     }
-    const affected = result.data.affected.map((p) => `${p.name}: ${p.before} → ${p.after}.`).join(" ");
-    toast.success("Change undone.", { description: affected });
+    toast.success("Change undone.", { description: affectedText(result.data.affected) || undefined });
   };
 
   return (

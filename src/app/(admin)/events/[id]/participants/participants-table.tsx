@@ -28,6 +28,7 @@ import {
   type LinkInfo,
   type StatusFilter,
 } from "../_roster/types";
+import { fullNameFor } from "@/server/roster/display-name";
 import { ParticipantDialog, type ParticipantFormData } from "./participant-dialog";
 
 export type ParticipantTableRow = ParticipantFormData & {
@@ -159,7 +160,7 @@ export function ParticipantsTable({
             const item = row.original;
             return (
               <RosterRowActions
-                name={item.displayLabel}
+                name={fullNameFor(item) || item.displayLabel}
                 withdrawn={item.status === "withdrawn"}
                 lockedReason={lockedReason}
                 linksBlockedReason={linksBlockedReason}

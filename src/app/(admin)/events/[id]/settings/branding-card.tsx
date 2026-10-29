@@ -137,7 +137,12 @@ export function BrandingCard({
         return;
       }
       // The saved page remounts this card (its key is the saved branding), clearing the form.
-      toast.success("Branding saved. Participant schedule pages now show it.");
+      const cleared = !values.primaryColor && !values.accentColor && !previewLogo;
+      toast.success(
+        cleared
+          ? "Branding removed. Participant schedule pages show the plain header."
+          : "Branding saved. Participant schedule pages now show it.",
+      );
     }),
   );
 

@@ -271,7 +271,60 @@ export function withdrawnNote(model: ScheduleModel, a: Pick<ScheduleAppointment,
   return `${names.length ? names.join(" and ") : "Someone in this meeting"} withdrew. Replace or remove this meeting before locking.`;
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * What the lock dialog says it produced. A second lock keeps the links the first
+ * one issued. A contact whose link was revoked gets none, so the text never
+ * claims everyone has a link while someone doesn't.
+ */
+export function lockOutcomeText(input: { desks: number; issued: number; kept: number; revoked?: number }): string {
+  const { issued, kept, revoked = 0 } = input;
+  const desks = `${plural(input.desks, "desk")} assigned`;
+  let links: string;
+  if (issued === 0 && kept > 0) {
+    links = revoked > 0 ? `. ${plural(kept, "link")} kept.` : `. Everyone already has a link (${plural(kept, "link")}).`;
+  } else if (issued > 0 && kept > 0) {
+    links = `. ${plural(issued, "participant link")} issued, ${kept} kept.`;
+  } else if (issued > 0) {
+    links = ` and ${plural(issued, "participant link")} issued.`;
+  } else {
+    links = ".";
+  }
+  const note = revoked > 0 ? ` ${plural(revoked, "person has", "people have")} a revoked link and got no new one. Use Regenerate on the roster.` : "";
+  return `${desks}${links}${note}`;
+}
+
+/** "1 needs attention", "3 need attention": the count headline on the Quality tab and view. */
+export function needAttentionText(n: number): string {
+  return `${n} ${n === 1 ? "needs" : "need"} attention`;
+}
+
+/** The Quality view headline, with every count agreeing with its noun. */
+export function qualityVerdict(input: {
+  appointments: number;
+  slots: number;
+  suppliersAtTarget: number;
+  totalSuppliers: number;
+  supplierTarget: number;
+  buyersInRange: number;
+  totalBuyers: number;
+  buyerMin: number;
+  buyerMax: number;
+  outOfRange: number;
+}): string {
+  const i = input;
+  const suppliers =
+    i.suppliersAtTarget === i.totalSuppliers
+      ? `Every supplier has ${i.supplierTarget}. `
+      : `${i.suppliersAtTarget} of ${plural(i.totalSuppliers, "supplier")} ${i.totalSuppliers === 1 ? "has" : "have"} ${i.supplierTarget}. `;
+  return (
+    `${plural(i.appointments, "appointment")} over ${plural(i.slots, "slot")}. ` +
+    suppliers +
+    `${i.buyersInRange} of ${plural(i.totalBuyers, "buyer")} ${i.totalBuyers === 1 ? "is" : "are"} within ${i.buyerMin} to ${i.buyerMax}` +
+    (i.outOfRange ? `; ${needAttentionText(i.outOfRange)}.` : ".")
+  );
+}
 
 export function healthText(person: Person, targets: Targets): string {
   const c = person.count;
@@ -412,6 +465,59 @@ export function lanesFor(
     }
     return false;
   });
+}
+
+/**
+ * The empty state when the filters leave no lane. The text names the filters
+ * that are on ("No buyer free in slot 3 has a count problem."), so combining
+ * Free in with another filter never claims the whole slot is busy.
+ */
+export function emptyLanesText(input: {
+  mode: "supplier" | "buyer";
+  free: number;
+  q: string;
+  flagged: boolean;
+  withdrawnOnly: boolean;
+  mostlyNeither: boolean;
+}): { title: string; description: string } {
+  const { mode, free, flagged, withdrawnOnly, mostlyNeither } = input;
+  const q = input.q.trim();
+  const wanted = [
+    flagged ? "a count problem" : null,
+    withdrawnOnly ? "a meeting with someone who withdrew" : null,
+    mostlyNeither ? "mostly Neither meetings" : null,
+  ].filter(Boolean);
+  const noun = mode === "supplier" ? "supplier desk" : "buyer";
+  if (free && !q && wanted.length === 0) {
+    return {
+      title: `No one free in slot ${free}`,
+      description:
+        mode === "supplier"
+          ? `Every supplier desk is booked in slot ${free}. Open slots live with buyers below target.`
+          : `Every buyer is in a meeting in slot ${free}.`,
+    };
+  }
+  if (q && !free && wanted.length === 0) {
+    return {
+      title: "No matches",
+      description: `Nothing matches “${q}”. Search covers supplier names, buyer organizations and titles.`,
+    };
+  }
+  if (!q && !free && wanted.length === 0) return { title: "No matches", description: "Nobody in this view matches." };
+  return {
+    title: "No matches",
+    description: `No ${noun}${free ? ` free in slot ${free}` : ""}${q ? ` matching “${q}”` : ""}${
+      wanted.length ? ` has ${wanted.join(" and ")}` : ""
+    }.`,
+  };
+}
+
+/** The line in the By slot board's free list when no buyer is shown. */
+export function emptyFreeBuyersText(input: { anyFree: boolean; q: string; flagged: boolean }): string {
+  if (!input.anyFree) return "Every buyer has a meeting in this slot.";
+  const q = input.q.trim();
+  if (input.flagged) return `No free buyer${q ? " matching your search" : ""} has a count problem.`;
+  return "No free buyer matches your search.";
 }
 
 /** Free in a slot: active and without a meeting then. The one rule behind the timeline filter and the slot board. */
@@ -562,7 +668,23 @@ export type EditPreview = {
   lines: string[];
   /** Meeting counts before and after for everyone the edit touches, buyers first. */
   counts: { personId: string; name: string; before: number; after: number }[];
+  /** True when a replace removes a pinned meeting: the replacement is booked unpinned (D116). */
+  dropsPin: boolean;
 };
+
+/** The pin toast detail: a pin is a reviewed marker (D148); only Re-run and keep existing carries meetings forward. */
+export const PIN_NOTE = "Marked as reviewed. Re-run and keep existing keeps this meeting; Run matching clears pins.";
+
+/** Shown in the replace preview and its confirm, and what the pin toast backs up. */
+export const PIN_DROP_NOTE = "This meeting is pinned. Replacing it removes the pin.";
+
+/** The toast detail after a save: only the counts that moved ("Medtronic: 9 → 8."). Empty when none did. */
+export function affectedText(affected: readonly { name: string; before: number; after: number }[]): string {
+  return affected
+    .filter((p) => p.before !== p.after)
+    .map((p) => `${p.name}: ${p.before} → ${p.after}.`)
+    .join(" ");
+}
 
 /** Describes an edit from the client model, so admins see what changes before Save. */
 export function describeEdit(model: ScheduleModel, draft: EditDraft): EditPreview {
@@ -583,6 +705,7 @@ export function describeEdit(model: ScheduleModel, draft: EditDraft): EditPrevie
     const delta = (draft.add ? 1 : 0) - (removed ? 1 : 0);
     if (delta !== 0) counts.push({ personId: supplier.id, name: supplierName, before: supplier.count, after: supplier.count + delta });
   }
-  return { lines, counts };
+  const kept = removed && draft.add ? appointmentsOf(model, draft.supplierId).get(draft.slot) : undefined;
+  return { lines, counts, dropsPin: kept?.buyerId === removed?.id && kept?.pinned === true };
 }
 

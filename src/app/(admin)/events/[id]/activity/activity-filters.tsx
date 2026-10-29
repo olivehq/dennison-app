@@ -53,8 +53,18 @@ export function ActivityFilters({
   );
   const selectedPerson = people.find((p) => p.value === params.person) ?? null;
 
+  // Two edits in quick succession (a paste, autofill) both arrive before the page for the first one renders.
+  // Each edit builds on the last URL pushed, not on the props, which are still the old page until the
+  // navigation settles. Once it has, the props are the truth again (Back, Forward, a shortcut link).
+  const latest = React.useRef(params);
+  React.useEffect(() => {
+    if (!pending) latest.current = params;
+  }, [pending, params]);
+
   const navigate = (changes: Partial<ActivityFilterParams>) => {
-    startTransition(() => router.push(`${pathname}${activityQuery({ ...params, ...changes })}`, { scroll: false }));
+    const next = { ...latest.current, ...changes };
+    latest.current = next;
+    startTransition(() => router.push(`${pathname}${activityQuery(next)}`, { scroll: false }));
   };
 
   const filtered = isFiltered(params);

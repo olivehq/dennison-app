@@ -1,3 +1,4 @@
+import { getSessionCookie } from "better-auth/cookies";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
@@ -32,7 +33,10 @@ export const getSession = cache(async function getSession(): Promise<SessionData
 /** The current session, or a redirect to /login that comes back to this page and its filters. */
 export async function requireSession(): Promise<SessionData> {
   const session = await getSession();
-  if (!session) redirect(loginPathFor((await headers()).get(NEXT_PATH_HEADER)));
+  if (!session) {
+    const requestHeaders = await headers();
+    redirect(loginPathFor(requestHeaders.get(NEXT_PATH_HEADER), Boolean(getSessionCookie(requestHeaders))));
+  }
   return session;
 }
 

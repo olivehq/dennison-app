@@ -12,7 +12,7 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
   return (
     <div className="flex flex-col gap-2 border-t pt-6">
       <p className="text-sm text-muted-foreground">
-        A draft with no participants can be deleted. Events with data can be archived from the overview instead.
+        A draft with no participants, suppliers, or imports can be deleted. Events with data can be archived instead.
       </p>
       <ConfirmDialog
         title="Delete this event?"
@@ -29,6 +29,7 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
           const result = await deleteEvent(eventId);
           if (!result.ok) {
             toast.error(result.error.message);
+            router.refresh();
             return;
           }
           toast.success("Event deleted.");

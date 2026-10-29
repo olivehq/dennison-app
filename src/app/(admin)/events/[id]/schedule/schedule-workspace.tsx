@@ -52,11 +52,13 @@ import {
   attentionCount,
   buildModel,
   busyCount,
+  emptyLanesText,
   filtersFor,
   healthOf,
   isBelowTarget,
   isLockedStatus,
   lanesFor,
+  needAttentionText,
   laneTotal,
   normalizeQuery,
   personLabel,
@@ -85,17 +87,6 @@ import {
   timelineSpan,
 } from "./timeline-geometry";
 import { Timeline } from "./timeline";
-
-/** The empty state under the toggles when no lane is left. */
-function emptyFilterText(on: { flagged: boolean; withdrawnOnly: boolean; mostlyNeither: boolean }): string {
-  const wanted = [
-    on.flagged ? "a count problem" : null,
-    on.withdrawnOnly ? "a meeting with someone who withdrew" : null,
-    on.mostlyNeither ? "mostly Neither meetings" : null,
-  ].filter(Boolean);
-  if (wanted.length === 0) return "Nobody in this view matches.";
-  return `Nobody in this view has ${wanted.join(" and ")}.`;
-}
 
 /** One checkbox row in the Filters popover. */
 function FilterCheckbox({
@@ -354,6 +345,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
       timelineMode ? lanesFor(model, timelineMode, { q: deferredQ, free, flagged, withdrawnOnly, mostlyNeither }, targets) : [],
     [model, timelineMode, deferredQ, free, flagged, withdrawnOnly, mostlyNeither, targets],
   );
+  const emptyText = emptyLanesText({ mode: timelineMode ?? "buyer", free, q: deferredQ, flagged, withdrawnOnly, mostlyNeither });
   const phase = phaseAt(clock.minute, slots);
   const liveSlot = slotAtMinute(clock.minute, slots);
   const activeBuyers = model.buyers.filter((b) => !b.withdrawn);
@@ -523,7 +515,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
                 key={v.id}
                 value={v.id}
                 className="px-2.5 font-semibold max-sm:grow max-sm:px-2"
-                aria-label={v.id === "quality" && attention ? `${v.label}, ${attention} need attention` : v.label}
+                aria-label={v.id === "quality" && attention ? `${v.label}, ${needAttentionText(attention)}` : v.label}
               >
                 {"short" in v ? v.short : v.label}
                 {v.id === "quality" && attention ? (
@@ -677,16 +669,8 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
               <EmptyMedia variant="icon">
                 <SearchXIcon />
               </EmptyMedia>
-              <EmptyTitle>{free ? `No one free in slot ${free}` : "No matches"}</EmptyTitle>
-              <EmptyDescription>
-                {free
-                  ? timelineMode === "supplier"
-                    ? `Every supplier desk is booked in slot ${free}. Open slots live with buyers below target.`
-                    : `Every buyer is in a meeting in slot ${free}${deferredQ ? " among those matching your search" : ""}.`
-                  : deferredQ
-                    ? `Nothing matches “${deferredQ.trim()}”. Search covers supplier names, buyer organizations and titles.`
-                    : emptyFilterText({ flagged, withdrawnOnly, mostlyNeither })}
-              </EmptyDescription>
+              <EmptyTitle>{emptyText.title}</EmptyTitle>
+              <EmptyDescription>{emptyText.description}</EmptyDescription>
             </EmptyHeader>
             <EmptyContent className="flex-row flex-wrap justify-center">
               {free && timelineMode === "supplier" ? (

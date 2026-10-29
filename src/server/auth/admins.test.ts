@@ -5,6 +5,7 @@ import { adminInvites, admins, sessions, twoFactors } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { clearLoggedEmails, getLoggedEmails } from "@/lib/email/adapter";
 import { listAudit } from "@/server/audit/audit";
+import { listAdmins } from "./queries";
 import { createInvite, resendInvite, resetTwoFactor } from "./admins";
 
 let db: Db;
@@ -82,4 +83,13 @@ it("records only the sign-out when two-factor was already off", async () => {
   const signedOut = await listAudit({ eventId: null, filters: { action: "admin.sessions_sign_out", entityId: "plain" } }, db);
   expect(signedOut.rows).toHaveLength(1);
   expect(signedOut.rows[0].after).toEqual({ count: 2 });
+});
+
+it("hides revoked invite history only once its email has an admin", async () => {
+  const result = await createInvite(db, { email: "history@example.com", name: "History", invitedBy: "active" });
+  if (!result.ok) throw new Error(result.error.message);
+  await db.update(adminInvites).set({ revokedAt: new Date() }).where(eq(adminInvites.id, result.data.inviteId));
+  expect((await listAdmins(db)).invites.some((row) => row.id === result.data.inviteId)).toBe(true);
+  await db.insert(admins).values({ id: "history", email: "history@example.com", name: "History" });
+  expect((await listAdmins(db)).invites.some((row) => row.id === result.data.inviteId)).toBe(false);
 });

@@ -249,14 +249,18 @@ describe("sessions", () => {
     const phone = await signIn("list@example.com", IPHONE_SAFARI);
     const here = await signIn("list@example.com", MAC_CHROME);
     // The phone was used more recently than this browser.
-    await db.update(sessions).set({ updatedAt: new Date(Date.now() + 60_000) }).where(eq(sessions.id, phone.sessionId));
+    await db.update(sessions).set({ updatedAt: new Date(Date.now() + 60_000), ipAddress: "192.0.2.42" }).where(eq(sessions.id, phone.sessionId));
 
     const list = await listAdminSessions({ adminId, currentSessionId: here.sessionId }, db);
     expect(list.map((s) => [s.device, s.current])).toEqual([
       ["Chrome on macOS", true],
       ["Safari on iPhone", false],
     ]);
-    expect(Object.keys(list[0]).sort()).toEqual(["current", "device", "id", "lastActiveAt", "signedInAt"]);
+    expect(Object.keys(list[0]).sort()).toEqual(["current", "device", "id", "ipAddress", "lastActiveAt", "signedInAt"]);
+
+    expect(list[1].ipAddress).toBe("192.0.2.42");
+    expect(list[0].signedInAt).toBeInstanceOf(Date);
+    expect(list[0].lastActiveAt).toBeInstanceOf(Date);
 
     // An expired session is not listed.
     await db.update(sessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(sessions.id, phone.sessionId));

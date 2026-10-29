@@ -8,8 +8,10 @@ import { safeNextPath } from "@/app/(auth)/auth-errors";
 export const NEXT_PATH_HEADER = "x-next-path";
 
 /** `/login`, with `next` set to the request's path when it is a safe one other than the default. */
-export function loginPathFor(requestPath: string | null): string {
+export function loginPathFor(requestPath: string | null, sessionEnded = false): string {
   const next = safeNextPath(requestPath ?? undefined, "");
-  if (next === "" || next === "/") return "/login";
-  return `/login?${new URLSearchParams({ next })}`;
+  const params = new URLSearchParams();
+  if (next !== "" && next !== "/") params.set("next", next);
+  if (sessionEnded) params.set("sessionEnded", "1");
+  return params.size ? `/login?${params}` : "/login";
 }
