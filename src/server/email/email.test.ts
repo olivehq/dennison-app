@@ -38,6 +38,7 @@ import { listContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
 import {
   createCampaign,
   duplicateCampaign,
+  emailSetup,
   NOT_LOCKED_MESSAGE,
   REGENERATE_HINT,
   previewCampaign,
@@ -45,6 +46,8 @@ import {
   sendCampaign,
   sendTest,
   TEST_DRAFT_ONLY,
+  RETRY_EXAMPLE_SENDER_MESSAGE,
+  SEND_EXAMPLE_SENDER_MESSAGE,
   TEST_EXAMPLE_SENDER_MESSAGE,
   TEST_NO_API_KEY_MESSAGE,
   TEST_SEND_ADMINS_ONLY,
@@ -499,10 +502,41 @@ describe("sending", () => {
   it("refuses to send in production when email is not configured", async () => {
     const refused = await sendCampaign(db, { campaignId: campaign.id, adminId: seeded.adminId }, { isProduction: true });
     expect(!refused.ok && refused.error.message).toBe(
-      "Email is not configured for this deployment. Add RESEND_API_KEY.",
+      "Email isn't set up yet. Add RESEND_API_KEY in Vercel, then redeploy.",
     );
     const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
     expect(row.status).toBe("draft");
+  });
+
+  it("refuses to send in production from an example.com address, and sends nothing", async () => {
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    try {
+      const saved = await updateCampaign(db, {
+        campaignId: campaign.id,
+        adminId: seeded.adminId,
+        fields: fieldsOf(campaign, { fromEmail: "schedule@example.com" }),
+      });
+      if (!saved.ok) throw new Error(saved.error.message);
+      campaign = saved.data;
+      const refused = await sendCampaign(db, { campaignId: campaign.id, adminId: seeded.adminId }, { isProduction: true });
+      expect(!refused.ok && refused.error).toMatchObject({ code: "internal", message: SEND_EXAMPLE_SENDER_MESSAGE });
+      expect(SEND_EXAMPLE_SENDER_MESSAGE).toContain("EMAIL_FROM");
+      const [row] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaign.id));
+      expect(row.status).toBe("draft");
+      expect(await messagesOf(campaign.id)).toHaveLength(0);
+    } finally {
+      vi.mocked(isEmailConfigured).mockReset();
+    }
+  });
+
+  it("tells the page what production needs", () => {
+    vi.mocked(isEmailConfigured).mockReturnValue(false);
+    expect(emailSetup(true)).toEqual({ configured: false, refuseExampleSender: true });
+    // Development uses the logger adapter on purpose.
+    expect(emailSetup(false)).toEqual({ configured: true, refuseExampleSender: false });
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    expect(emailSetup(true)).toEqual({ configured: true, refuseExampleSender: true });
+    vi.mocked(isEmailConfigured).mockReset();
   });
 
   it("sends one message per recipient, records ids and hashes, and moves the event to sent", async () => {
@@ -601,6 +635,19 @@ describe("sending", () => {
 
     const nothing = await resendToBounced(db, { campaignId: campaign.id, adminId: seeded.adminId });
     expect(!nothing.ok && nothing.error.code).toBe("validation");
+  });
+
+  it("refuses a production retry from an example.com sender and says to duplicate the campaign", async () => {
+    vi.mocked(isEmailConfigured).mockReturnValue(true);
+    try {
+      expect(campaign.fromEmail).toBe("schedule@example.com");
+      const before = (await messagesOf(campaign.id)).length;
+      const refused = await resendToBounced(db, { campaignId: campaign.id, adminId: seeded.adminId }, { isProduction: true });
+      expect(!refused.ok && refused.error).toMatchObject({ code: "internal", message: RETRY_EXAMPLE_SENDER_MESSAGE });
+      expect(await messagesOf(campaign.id)).toHaveLength(before);
+    } finally {
+      vi.mocked(isEmailConfigured).mockReset();
+    }
   });
 
   it("duplicates as a reminder draft with the same copy", async () => {
@@ -781,7 +828,7 @@ describe("revoked links (decision a)", () => {
     expect(!refused.ok && refused.error.message).toContain(REGENERATE_HINT);
     expect(await campaignStatus(only.data.id)).toBe("draft");
 
-    // Resend to bounced leaves out a bounced person whose link was revoked since.
+    // Retry delivery leaves out a bounced person whose link was revoked since.
     const bouncedBuyer = other.buyers[2];
     await db
       .update(emailMessages)
@@ -824,7 +871,7 @@ describe("batches", () => {
     const detail = await getCampaign(created.data.id, db);
     expect(detail?.messages.find((m) => m.status === "failed")?.reason).toBe("Resend is down");
 
-    // Failed messages count for "Resend to bounced".
+    // Failed messages count for "Retry delivery".
     const retry = await resendToBounced(db, { campaignId: created.data.id, adminId: big.adminId });
     expect(retry.ok && retry.data).toMatchObject({ recipients: 29, sent: 29 });
   });

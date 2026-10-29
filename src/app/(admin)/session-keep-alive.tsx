@@ -4,15 +4,23 @@ import * as React from "react";
 import { usePathname } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 
-/**
- * Counts moving around the admin pages as activity for the 12-hour session
- * (scope 2.1). The auth route can set cookies, unlike a page render, so it
- * refreshes the session and the cookie together (at most once an hour).
- */
+/** Refresh visible admin tabs, including long edits on a single page. */
 export function SessionKeepAlive() {
   const pathname = usePathname();
   React.useEffect(() => {
-    void authClient.getSession().catch(() => undefined);
+    const refresh = () => {
+      if (document.visibilityState === "visible") {
+        void authClient.getSession().catch(() => undefined);
+      }
+    };
+    refresh();
+    // Better Auth refreshes at most once an hour; sessions expire after 12 hours.
+    const interval = window.setInterval(refresh, 15 * 60 * 1000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [pathname]);
   return null;
 }

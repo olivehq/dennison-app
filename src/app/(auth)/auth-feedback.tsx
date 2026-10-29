@@ -99,6 +99,7 @@ export function AuthFeedbackAlert({ feedback, waitSeconds }: { feedback: AuthFee
           <AlertDescription>Check your connection and try again.</AlertDescription>
         </Alert>
       );
+    case "restart":
     case "error":
       return (
         <Alert variant="destructive">

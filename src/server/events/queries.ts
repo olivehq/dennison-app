@@ -1,7 +1,8 @@
 import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, type Db } from "@/db/client";
-import { appointments, auditEvents, events, matchRuns, participants, suppliers, type Event } from "@/db/schema";
+import { appointments, auditEvents, events, participants, suppliers, type Event } from "@/db/schema";
+import { findActiveRun } from "@/server/matching/runs";
 import { cachePerRender } from "@/server/render-cache";
 
 const uuidSchema = z.uuid();
@@ -95,22 +96,29 @@ export type EventCounts = {
   activeRunId: string | null;
 };
 
+/**
+ * Active buyers and suppliers of the event, shared per render, so the
+ * overview's counts and the matching readiness on one page count them once.
+ */
+export const countActiveRoster = cachePerRender(
+  async (db: Db, eventId: string): Promise<{ participants: number; suppliers: number }> => {
+    const [[participantRow], [supplierRow]] = await Promise.all([
+      db
+        .select({ value: count() })
+        .from(participants)
+        .where(and(eq(participants.eventId, eventId), eq(participants.status, "active"))),
+      db
+        .select({ value: count() })
+        .from(suppliers)
+        .where(and(eq(suppliers.eventId, eventId), eq(suppliers.status, "active"))),
+    ]);
+    return { participants: Number(participantRow?.value ?? 0), suppliers: Number(supplierRow?.value ?? 0) };
+  },
+);
+
 export async function getEventCounts(id: string, db: Db = getDb()): Promise<EventCounts> {
-  const [[participantRow], [supplierRow], [activeRun]] = await Promise.all([
-    db
-      .select({ value: count() })
-      .from(participants)
-      .where(and(eq(participants.eventId, id), eq(participants.status, "active"))),
-    db
-      .select({ value: count() })
-      .from(suppliers)
-      .where(and(eq(suppliers.eventId, id), eq(suppliers.status, "active"))),
-    db
-      .select({ id: matchRuns.id })
-      .from(matchRuns)
-      .where(and(eq(matchRuns.eventId, id), eq(matchRuns.isActive, true)))
-      .limit(1),
-  ]);
+  // The active run is the one the layout already read in this render.
+  const [roster, activeRun] = await Promise.all([countActiveRoster(db, id), findActiveRun(db, id)]);
 
   let appointmentCount = 0;
   if (activeRun) {
@@ -122,8 +130,7 @@ export async function getEventCounts(id: string, db: Db = getDb()): Promise<Even
   }
 
   return {
-    participants: participantRow?.value ?? 0,
-    suppliers: supplierRow?.value ?? 0,
+    ...roster,
     appointments: appointmentCount,
     activeRunId: activeRun?.id ?? null,
   };

@@ -19,7 +19,7 @@ import { hashForContact, scheduleHashesForEvent } from "./schedule-hash";
 /**
  * Hands a campaign's messages to the email provider in batches and records
  * what happened to each (D185). The first send calls `deliverCampaign`;
- * "Resend to bounced" calls `retryRecipients`. Nothing here changes the
+ * "Retry delivery" calls `retryRecipients`. Nothing here changes the
  * campaign's status; the caller owns that (`transitionCampaign`).
  *
  * Every batch gets a key, saved on its messages with the hand-off time
@@ -83,7 +83,7 @@ export function deliveryProblems(d: Delivered) {
   };
 }
 
-/** Statuses "Resend to bounced" retries: the message never reached the person. */
+/** Statuses "Retry delivery" retries: the message never reached the person. */
 export const RESENDABLE_STATUSES: readonly EmailMessageStatus[] = ["bounced", "failed"];
 
 type MessageState = { status: EmailMessageStatus; sentAt: Date | null; batchKey: string | null };
@@ -99,7 +99,7 @@ function isRetryableUncertain(message: MessageState, now: Date): message is Mess
 }
 
 /**
- * True when "Resend to bounced" may send this message's recipient the
+ * True when "Retry delivery" may send this message's recipient the
  * campaign again: it bounced or failed; or it is queued and was never handed
  * to the provider (no `sentAt`); or its batch had no answer and can still be
  * retried under the same key. Any other queued message with a hand-off time

@@ -208,7 +208,7 @@ export function ParticipantsTable({
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="all">Any biztech</SelectItem>
+              <SelectItem value="all">All biztech</SelectItem>
               <SelectItem value="in">Opted in</SelectItem>
               <SelectItem value="out">Opted out</SelectItem>
             </SelectGroup>
@@ -219,6 +219,7 @@ export function ParticipantsTable({
       <ParticipantDialog
         eventId={eventId}
         participant={editing}
+        hasLiveLink={editing?.link?.state === "active"}
         open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
       />

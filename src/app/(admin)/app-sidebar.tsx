@@ -381,7 +381,7 @@ export function AppSidebar({
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
                   AW
                 </span>
-                <span className="font-display text-base font-bold tracking-[-0.01em]">Appointment matching</span>
+                <span className="font-display text-base font-bold tracking-[-0.01em]">AW appointment matching</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { adminInvites, admins, sessions, type AdminInvite } from "@/db/schema";
+import { adminInvites, admins, sessions, twoFactors, type AdminInvite } from "@/db/schema";
 import { isEmailConfigured, sendEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
 import { fail, ok, type ActionResult } from "@/lib/errors";
@@ -117,18 +117,25 @@ function escapeHtml(text: string): string {
  * otherwise a local invite could not be accepted. No other link is logged.
  */
 async function sendInviteEmail(
+  db: Db,
   invite: { email: string; name: string },
   token: string,
   inviterName: string,
+  inviterId: string,
 ): Promise<{ delivered: boolean }> {
+  // Recheck immediately before delivery, including invites that predate an account.
+  const [recipient] = await db.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.email, invite.email));
+  if (recipient) throw new Error("An account already exists for this invite.");
+  const [sender] = await db.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.id, inviterId));
+  if (!sender || sender.disabledAt) throw new Error("The inviting admin is disabled or missing.");
   const url = inviteUrl(token);
   const delivered = isEmailConfigured();
   await sendEmail({
     to: invite.email,
     from: env.EMAIL_FROM,
-    subject: `${inviterName} invited you to the AW Appointment Show admin`,
-    html: `<p>Hi ${escapeHtml(invite.name)},</p><p>${escapeHtml(inviterName)} invited you to help run the AW Appointment Show schedule. The link works for 7 days.</p><p><a href="${url}">Accept the invitation</a></p>`,
-    text: `Hi ${invite.name},\n\n${inviterName} invited you to help run the AW Appointment Show schedule. The link works for 7 days.\n\n${url}`,
+    subject: `${inviterName} invited you to AW appointment matching`,
+    html: `<p>Hi ${escapeHtml(invite.name)},</p><p>${escapeHtml(inviterName)} invited you to administer AW appointment matching. The link works for 7 days.</p><p><a href="${url}">Accept the invitation</a></p>`,
+    text: `Hi ${invite.name},\n\n${inviterName} invited you to administer AW appointment matching. The link works for 7 days.\n\n${url}`,
     tags: { kind: "admin_invite" },
   });
   if (!delivered && env.NODE_ENV === "development") {
@@ -147,6 +154,8 @@ export async function createInvite(
   input: { email: string; name: string; invitedBy: string },
 ): Promise<ActionResult<InviteSent>> {
   const email = input.email.toLowerCase();
+  const [actor] = await db.select().from(admins).where(eq(admins.id, input.invitedBy));
+  if (!actor || actor.disabledAt) return fail("unauthorized", "Your account is unavailable. Sign in again or contact an active admin.");
 
   const [existingAdmin] = await db.select({ id: admins.id }).from(admins).where(eq(admins.email, email));
   if (existingAdmin) {
@@ -185,7 +194,7 @@ export async function createInvite(
 
   let delivered: boolean;
   try {
-    ({ delivered } = await sendInviteEmail(invite, token, await getAdminName(db, input.invitedBy)));
+    ({ delivered } = await sendInviteEmail(db, invite, token, await getAdminName(db, input.invitedBy), input.invitedBy));
   } catch {
     return fail("internal", "The invite was saved but the email did not send. Try resending it.");
   }
@@ -196,10 +205,15 @@ export async function resendInvite(
   db: Db,
   input: { inviteId: string; actorId: string },
 ): Promise<ActionResult<InviteSent>> {
+  const [actor] = await db.select().from(admins).where(eq(admins.id, input.actorId));
+  if (!actor || actor.disabledAt) return fail("unauthorized", "Your account is unavailable. Sign in again or contact an active admin.");
   const [invite] = await db.select().from(adminInvites).where(eq(adminInvites.id, input.inviteId));
   if (!invite) return fail("not_found", "That invite no longer exists.");
   if (invite.acceptedAt) return fail("conflict", "That invite was already accepted.");
   if (invite.revokedAt) return fail("conflict", "That invite was revoked. Send a new invite instead.");
+
+  const [existingAdmin] = await db.select({ id: admins.id }).from(admins).where(eq(admins.email, invite.email));
+  if (existingAdmin) return fail("conflict", "That person already has an account. A new invite cannot be sent.");
 
   const { token, tokenHash } = generateToken();
   const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
@@ -208,7 +222,7 @@ export async function resendInvite(
     const updated = await tx
       .update(adminInvites)
       .set({ tokenHash, expiresAt })
-      .where(and(eq(adminInvites.id, invite.id), isNull(adminInvites.revokedAt)))
+      .where(and(eq(adminInvites.id, invite.id), isNull(adminInvites.revokedAt), isNull(adminInvites.acceptedAt)))
       .returning({ id: adminInvites.id });
     if (updated.length === 0) return false;
     await recordAudit(tx, {
@@ -226,7 +240,7 @@ export async function resendInvite(
 
   let delivered: boolean;
   try {
-    ({ delivered } = await sendInviteEmail(invite, token, await getAdminName(db, input.actorId)));
+    ({ delivered } = await sendInviteEmail(db, invite, token, await getAdminName(db, input.actorId), input.actorId));
   } catch {
     return fail("internal", "The invite was refreshed but the email did not send. Try again.");
   }
@@ -343,5 +357,38 @@ export async function enableAdminAccount(
       after: { disabledAt: null, email: target.email },
     });
     return ok({ userId: target.id });
+  });
+}
+
+/**
+ * Turns off two-factor sign-in for an admin who lost both their authenticator
+ * app and their backup codes, and signs them out everywhere, so the next
+ * sign-in takes the password alone (D189). Run by an operator with
+ * `pnpm reset-two-factor <email>`; there is no button for it, because any
+ * admin could then remove another's second factor. Returns null for an
+ * unknown email.
+ */
+export async function resetTwoFactor(db: Db, email: string): Promise<{ adminId: string; wasEnabled: boolean } | null> {
+  return db.transaction(async (tx) => {
+    const [admin] = await tx
+      .select({ id: admins.id, twoFactorEnabled: admins.twoFactorEnabled })
+      .from(admins)
+      .where(eq(admins.email, email.toLowerCase()))
+      .for("update");
+    if (!admin) return null;
+    await tx.delete(twoFactors).where(eq(twoFactors.userId, admin.id));
+    await tx.update(admins).set({ twoFactorEnabled: false }).where(eq(admins.id, admin.id));
+    const signedOut = await tx.delete(sessions).where(eq(sessions.userId, admin.id)).returning({ id: sessions.id });
+    // Record what really changed: a turn-off, or (when it was already off) only the sign-out.
+    await recordAudit(tx, {
+      eventId: null,
+      adminId: null,
+      action: admin.twoFactorEnabled ? "admin.two_factor_disable" : "admin.sessions_sign_out",
+      entityType: "admin",
+      entityId: admin.id,
+      after: admin.twoFactorEnabled ? undefined : { count: signedOut.length },
+      note: "Reset by an operator with pnpm reset-two-factor. All sessions were signed out.",
+    });
+    return { adminId: admin.id, wasEnabled: admin.twoFactorEnabled };
   });
 }

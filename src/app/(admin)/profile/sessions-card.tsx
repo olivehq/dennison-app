@@ -76,16 +76,23 @@ export function SessionsCard({ sessions }: { sessions: AdminSessionItem[] }) {
                 </div>
               </div>
               {session.current ? null : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pendingId !== null}
-                  onClick={() => signOutOne(session)}
-                  aria-label={`Sign out ${session.device}`}
-                >
-                  {pendingId === session.id ? <Spinner data-icon="inline-start" /> : null}
-                  Sign out
-                </Button>
+                <ConfirmDialog
+                  title="Sign out this session?"
+                  description="That browser will need to sign in again."
+                  confirmLabel="Sign out"
+                  onConfirm={() => signOutOne(session)}
+                  trigger={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pendingId !== null}
+                      aria-label={`Sign out ${session.device}`}
+                    >
+                      {pendingId === session.id ? <Spinner data-icon="inline-start" /> : null}
+                      Sign out
+                    </Button>
+                  }
+                />
               )}
             </li>
           ))}

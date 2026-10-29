@@ -4,12 +4,13 @@ import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { isEmailConfigured } from "@/lib/email/adapter";
 import { isEditorCompatibleHtml, sanitizeEmailHtml } from "@/lib/email/sanitize-html";
 import { eventAllows } from "@/lib/event-gates";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
+import { emailSetup } from "@/server/email/campaigns";
 import { getAudienceOptions, getCampaign } from "@/server/email/queries";
 import { getEvent } from "@/server/events/queries";
 import { eventSectionHref } from "../../event-sections";
@@ -17,13 +18,14 @@ import { DuplicateAsReminderButton } from "../campaign-buttons";
 import {
   AUDIENCE_LABELS,
   CampaignStatusBadge,
+  emailSetupReason,
   KIND_LABELS,
   MESSAGE_STATUS_LABELS,
   NOT_DELIVERED_NOTICE,
   recipients,
 } from "../labels";
 import { CampaignEditor } from "./campaign-editor";
-import { DeliveryTable, ResendBouncedButton, type DeliveryTableRow } from "./delivery-table";
+import { DeliveryTable, RefreshStatusButton, RetryDeliveryButton, type DeliveryTableRow } from "./delivery-table";
 import { EmailPreview } from "./email-preview";
 
 const NOT_LOCKED = "Lock the schedule before sending so every link is final.";
@@ -39,7 +41,10 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
   const { campaign, messages, stats } = detail;
   const canSend = eventAllows("locked", event.status);
   const archived = event.status === "archived";
+  const setup = emailSetup();
   const sendBlockedReason = archived ? ARCHIVED : canSend ? null : NOT_LOCKED;
+  // Retrying delivery sends mail too, so it needs the same setup as a first send.
+  const retryBlockedReason = sendBlockedReason ?? emailSetupReason(setup, campaign.fromEmail, { retry: true });
   const at = (date: Date) => formatTimestamp(date, event.timezone);
   const backHref = eventSectionHref(event.id, "emails");
 
@@ -58,10 +63,10 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
           </Button>
           {campaign.status === "draft" ? null : (
             <>
-              <ResendBouncedButton
+              <RetryDeliveryButton
                 campaignId={campaign.id}
                 count={detail.resendable}
-                disabledReason={sendBlockedReason}
+                disabledReason={retryBlockedReason}
               />
               <DuplicateAsReminderButton campaignId={campaign.id} disabledReason={archived ? ARCHIVED : null} />
             </>
@@ -93,6 +98,7 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
           // Designed HTML the visual editor would flatten opens as source, so a save can't lose it.
           initialHtmlMode={!isEditorCompatibleHtml(campaign.htmlBody)}
           sendBlockedReason={sendBlockedReason}
+          emailSetup={setup}
           archived={archived}
           adminEmail={admin.email}
           testSentLabel={campaign.testSentAt ? `Test sent ${at(campaign.testSentAt)}.` : null}
@@ -141,7 +147,12 @@ export default async function CampaignPage({ params }: { params: Promise<{ id: s
         <Card className="min-w-0">
           <CardHeader>
             <CardTitle className="font-display text-lg font-bold">Delivery</CardTitle>
-            <CardDescription>Updated as Resend reports each email. Sent campaigns can&apos;t be edited.</CardDescription>
+            <CardDescription>
+              Statuses update when you reload the page or use Refresh status. Sent campaigns can&apos;t be edited.
+            </CardDescription>
+            <CardAction>
+              <RefreshStatusButton />
+            </CardAction>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">

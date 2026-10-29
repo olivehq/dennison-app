@@ -116,7 +116,7 @@ function summaryLines(summary: ApplySummary): string[] {
       lines.push(`${summary.optedIn} opted in to biztech, ${summary.optedOut} opted out.`);
     }
     if (summary.aliasesSaved > 0) {
-      lines.push(`${plural(summary.aliasesSaved, "spelling")} saved as automatic aliases for next time.`);
+      lines.push(`${plural(summary.aliasesSaved, "spelling")} saved as aliases, reused for later files of this event and next year's files with the same name.`);
     }
   }
   if (summary.eventAdvanced) lines.push("The event moved from Draft to Imported.");
@@ -186,6 +186,8 @@ export function ApplyPanel(props: ApplyPanelProps) {
           </span>
         }
         confirmLabel="Apply import"
+        // Ranking files replace the rankings already stored, which can't be undone.
+        destructive={props.kind !== "participants" && props.kind !== "suppliers"}
         onConfirm={apply}
         trigger={<Button disabled={blocked !== null}>Apply import</Button>}
       />

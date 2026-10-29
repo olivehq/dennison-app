@@ -273,6 +273,7 @@ export function SuppliersTable({
       <SupplierDialog
         eventId={eventId}
         supplier={editing}
+        liveLinks={{ adminContact: editing?.adminLink?.state === "active", attendeeContact: editing?.attendeeLink?.state === "active" }}
         open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
       />

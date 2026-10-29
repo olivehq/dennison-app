@@ -70,7 +70,7 @@ export function RunMatchingButtons({
       <ConfirmDialog
         title="Re-run and keep existing appointments?"
         description="This keeps the appointments in the active schedule where they are and fills every open slot, whether the slot opened through a removal, a replacement, or a withdrawal. Pinned appointments stay pinned. It only adds meetings, except that appointments with a withdrawn buyer or supplier are left out. The result is a new run you can compare before activating."
-        confirmLabel="Re-run and keep existing"
+        confirmLabel="Re-run and keep existing appointments"
         onConfirm={() => run(true)}
         trigger={
           <Button size="lg" variant="outline" disabled={disabled || !hasActiveRun}>
@@ -116,6 +116,7 @@ export function ActivateRunButton({
         .filter(Boolean)
         .join(" ")}
       confirmLabel="Activate this run"
+      destructive
       onConfirm={async () => {
         const result = await activateRunAction({ runId, expectedActiveRunId, expectedVersion });
         if (!result.ok) {
@@ -123,7 +124,7 @@ export function ActivateRunButton({
           router.refresh();
           return;
         }
-        toast.success("Run activated", { description: "The schedule now shows this run." });
+        toast.success("Run activated.", { description: "The schedule now shows this run." });
       }}
       trigger={
         <Button size="sm" variant="outline" disabled={disabled}>

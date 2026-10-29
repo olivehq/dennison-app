@@ -36,6 +36,13 @@
       "when": 1793293073988,
       "tag": "0004_branding_file_cleanup_email_batches",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793295956879,
+      "tag": "0005_two_factor",
+      "breakpoints": true
     }
   ]
 }

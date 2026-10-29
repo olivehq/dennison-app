@@ -32,12 +32,12 @@ export function UndoButton({ auditEventId, sentence, undo }: { auditEventId: str
   const confirm = async () => {
     const result = await undoAuditAction({ auditEventId });
     if (!result.ok) {
-      toast.error("Couldn't undo this change", { description: result.error.message });
+      toast.error("Couldn't undo this change.", { description: result.error.message });
       router.refresh();
       return;
     }
-    const affected = result.data.affected.map((p) => `${p.name}: ${p.before} → ${p.after}`).join(". ");
-    toast.success("Change undone", { description: affected });
+    const affected = result.data.affected.map((p) => `${p.name}: ${p.before} → ${p.after}.`).join(" ");
+    toast.success("Change undone.", { description: affected });
   };
 
   return (

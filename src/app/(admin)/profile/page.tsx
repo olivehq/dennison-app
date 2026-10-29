@@ -6,6 +6,7 @@ import { AppearanceCard } from "./appearance-card";
 import { PasswordForm } from "./password-form";
 import { ProfileSection } from "./profile-section";
 import { SessionsCard } from "./sessions-card";
+import { TwoFactorCard } from "./two-factor-card";
 
 export default async function ProfilePage() {
   const { user, session } = await requireSession();
@@ -28,6 +29,13 @@ export default async function ProfilePage() {
         </ProfileSection>
         <ProfileSection id="password-title" title="Password" description="Use at least 10 characters.">
           <PasswordForm email={user.email} />
+        </ProfileSection>
+        <ProfileSection
+          id="two-factor-title"
+          title="Two-factor sign-in"
+          description="Optional. Asks for a code from your phone after your password."
+        >
+          <TwoFactorCard enabled={user.twoFactorEnabled === true} email={user.email} />
         </ProfileSection>
         <ProfileSection
           id="sessions-title"

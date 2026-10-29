@@ -198,7 +198,7 @@ export function NameMappingTable({ eventId, importId, names, entities, lockedRea
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Pick who each name means. Saved names are remembered for this event, so next year&apos;s file maps itself.
+          Pick who each name means. Saved names are reused for later files of this event and for next year&apos;s files with the same name.
         </p>
         {withSuggestion.length > 0 ? (
           <ConfirmDialog

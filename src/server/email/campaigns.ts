@@ -13,14 +13,21 @@ import { getEvent } from "@/server/events/queries";
 import { advanceStatus } from "@/server/events/status";
 import { transitionCampaign } from "./campaign-status";
 import { deliverCampaign, deliveryProblems, errorText, isResendable, retryRecipients, type Delivered } from "./delivery";
-import { findUnknownFields, renderEmail, SAMPLE_MERGE_VALUES, type MergeValues } from "./merge";
+import {
+  EMAIL_NOT_CONFIGURED_MESSAGE,
+  findUnknownFields,
+  isExampleAddress,
+  renderEmail,
+  SAMPLE_MERGE_VALUES,
+  type MergeValues,
+} from "./merge";
 import { audienceContactsFor, listAudienceContacts, resolveAudience, withLinks, type Recipient } from "./recipients";
 
 export { emailDocument } from "./merge";
 
 /**
  * Campaigns: create, edit while draft, duplicate, preview, test, send, and
- * resend to bounced (scope 2.7). Every send goes through the email adapter;
+ * retry delivery (scope 2.7). Every send goes through the email adapter;
  * nothing here logs a message body.
  */
 
@@ -29,7 +36,7 @@ export const NOT_LOCKED_MESSAGE = "Lock the schedule before sending so every lin
 /** Why someone with a revoked link got nothing, and what to do. */
 export const REGENERATE_HINT = "Use Regenerate on the roster to give someone a new link.";
 
-export const EMAIL_NOT_CONFIGURED_MESSAGE = "Email is not configured for this deployment. Add RESEND_API_KEY.";
+export { EMAIL_NOT_CONFIGURED_MESSAGE };
 
 /**
  * In production the logger adapter would "send" to the server log and mark
@@ -45,10 +52,34 @@ export const TEST_NO_API_KEY_MESSAGE =
 export const TEST_EXAMPLE_SENDER_MESSAGE =
   "The test email was not sent: the From email is on example.com, which no mail provider will send from. Verify your sending domain in Resend, then change the From email on this campaign to an address on it. Set EMAIL_FROM in Vercel so new campaigns start with it.";
 
-/** True for example.com, example.org, example.net, and their subdomains: reserved names nobody can verify. */
-function isExampleDomain(address: string): boolean {
-  const domain = address.slice(address.lastIndexOf("@") + 1).trim().toLowerCase();
-  return /(^|\.)example\.(com|org|net)$/.test(domain);
+export const SEND_EXAMPLE_SENDER_MESSAGE =
+  "Nothing was sent: the From email is on example.com, which no mail provider will send from. Verify your sending domain in Resend, then change the From email on this campaign to an address on it. Set EMAIL_FROM in Vercel so new campaigns start with it.";
+
+/**
+ * What the campaign page needs to know before the admin clicks. Mail can only
+ * really go out when a provider key is set; a development or test server uses
+ * the logger adapter on purpose, so only production refuses.
+ */
+export type EmailSetup = {
+  /** False only in production without RESEND_API_KEY: nothing can be sent or tested. */
+  configured: boolean;
+  /** True in production: a From address on example.com is refused. */
+  refuseExampleSender: boolean;
+};
+
+export function emailSetup(isProduction: boolean = env.isProduction): EmailSetup {
+  return { configured: !emailNotConfigured(isProduction), refuseExampleSender: isProduction };
+}
+
+/** A sent campaign can't be edited, so a retry from example.com means sending a copy. */
+export const RETRY_EXAMPLE_SENDER_MESSAGE =
+  "Nothing was sent: this campaign's From email is on example.com, which no mail provider will send from. Duplicate it, change the From email to an address on your verified sending domain, and send the copy.";
+
+/** Why a real send or retry can't go out from this sender in production, or null. The API key is checked first. */
+function sendProblem(isProduction: boolean, fromEmail: string, { retry = false } = {}): string | null {
+  if (emailNotConfigured(isProduction)) return EMAIL_NOT_CONFIGURED_MESSAGE;
+  if (isProduction && isExampleAddress(fromEmail)) return retry ? RETRY_EXAMPLE_SENDER_MESSAGE : SEND_EXAMPLE_SENDER_MESSAGE;
+  return null;
 }
 
 /**
@@ -58,7 +89,7 @@ function isExampleDomain(address: string): boolean {
 function testSendProblem(isProduction: boolean, fromEmail: string): string | null {
   if (!isProduction) return null;
   if (!isEmailConfigured()) return TEST_NO_API_KEY_MESSAGE;
-  if (isExampleDomain(fromEmail)) return TEST_EXAMPLE_SENDER_MESSAGE;
+  if (isExampleAddress(fromEmail)) return TEST_EXAMPLE_SENDER_MESSAGE;
   return null;
 }
 
@@ -83,7 +114,7 @@ const DEFAULT_NAMES: Record<EmailCampaignKind, string> = {
   update: "Schedule update",
 };
 
-/** "AW Appointment Show <schedule@example.com>" -> name and address. */
+/** "AW appointment matching <schedule@example.com>" -> name and address. */
 export function parseSender(value: string): { fromName: string; fromEmail: string } {
   const match = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(value);
   if (match) return { fromName: match[1].trim() || match[2].trim(), fromEmail: match[2].trim() };
@@ -543,13 +574,13 @@ export async function sendCampaign(
   input: { campaignId: string; adminId: string },
   options: { isProduction?: boolean } = {},
 ): Promise<ActionResult<SendResult>> {
-  if (emailNotConfigured(options.isProduction ?? env.isProduction)) {
-    return fail("internal", EMAIL_NOT_CONFIGURED_MESSAGE);
-  }
+  const isProduction = options.isProduction ?? env.isProduction;
   const loaded = await loadSendable(db, input.campaignId);
   if (!loaded.ok) return loaded;
   const { campaign, event } = loaded.data;
   if (campaign.status !== "draft") return fail("conflict", "This campaign was already sent.");
+  const problem = sendProblem(isProduction, campaign.fromEmail);
+  if (problem) return fail("internal", problem);
   const fields = campaignFieldsSchema.safeParse(campaign);
   if (!fields.success) return fromZod(fields.error);
   const unknown = findUnknownFields(`${campaign.subject} ${campaign.htmlBody}`);
@@ -597,8 +628,8 @@ export async function sendCampaign(
   try {
     delivered = await deliverCampaign(db, claimed, recipients);
   } catch (error) {
-    // Never leave the campaign in "sending": mark it failed so "Resend to
-    // bounced" can pick up everyone who didn't get it.
+    // Never leave the campaign in "sending": mark it failed so "Retry
+    // delivery" can pick up everyone who didn't get it.
     const failureReason = errorText(error);
     console.error(`[email] campaign ${campaign.id}: delivery stopped: ${failureReason}`);
     await markSendFailed(db, {
@@ -609,7 +640,7 @@ export async function sendCampaign(
       before,
       after: { ...summary, failureReason },
     });
-    return fail("internal", `Sending stopped before it finished: ${failureReason} Use Resend to bounced to retry.`);
+    return fail("internal", `Sending stopped before it finished: ${failureReason} Use Retry delivery to try again.`);
   }
   const { sent } = delivered;
   const failed = notConfirmed(delivered);
@@ -654,7 +685,7 @@ export async function sendCampaign(
     });
     return fail(
       "internal",
-      `${sent} of ${recipients.length} emails went out, but the result was not saved, so the campaign is marked failed. Check the delivery table, then use Resend to bounced for anyone who didn't get it.`,
+      `${sent} of ${recipients.length} emails went out, but the result was not saved, so the campaign is marked failed. Check the delivery table, then use Retry delivery for anyone who didn't get it.`,
     );
   }
   return ok({
@@ -681,16 +712,16 @@ export async function resendToBounced(
   input: { campaignId: string; adminId: string },
   options: { isProduction?: boolean } = {},
 ): Promise<ActionResult<SendResult>> {
-  if (emailNotConfigured(options.isProduction ?? env.isProduction)) {
-    return fail("internal", EMAIL_NOT_CONFIGURED_MESSAGE);
-  }
+  const isProduction = options.isProduction ?? env.isProduction;
   const loaded = await loadSendable(db, input.campaignId);
   if (!loaded.ok) return loaded;
   const { campaign, event } = loaded.data;
   if (campaign.status === "sending") return fail("conflict", "This campaign is already being sent.");
   if (campaign.status !== "sent" && campaign.status !== "failed") {
-    return fail("conflict", "Send the campaign before resending to bounced addresses.");
+    return fail("conflict", "Send the campaign before retrying delivery.");
   }
+  const problem = sendProblem(isProduction, campaign.fromEmail, { retry: true });
+  if (problem) return fail("internal", problem);
   // Claim it like a first send, so two clicks can't both pick the same
   // bounced recipients. The status goes back when this finishes.
   const claim = await claimCampaign(db, campaign, campaign.status);

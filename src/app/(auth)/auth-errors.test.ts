@@ -86,6 +86,37 @@ describe("classifyAuthError", () => {
       message: describeAuthError(error(400, "INVALID_TOKEN"), "x"),
     });
   });
+
+  it("sends an expired or exhausted two-factor step back to the password", () => {
+    for (const code of ["INVALID_TWO_FACTOR_COOKIE", "TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE"]) {
+      expect(classifyAuthError(error(401, code, "Invalid two factor cookie"), "x", null, now)).toEqual({
+        kind: "restart",
+        message: "Your sign-in timed out or had too many wrong codes. Enter your email and password again.",
+      });
+    }
+  });
+
+  it("explains a two-factor lockout, which also comes as a 429, without the rate-limit countdown", () => {
+    expect(classifyAuthError(error(429, "ACCOUNT_TEMPORARILY_LOCKED"), "x", 30, now)).toEqual({
+      kind: "error",
+      message: "Too many wrong codes for this account. Wait 15 minutes, then sign in again.",
+    });
+  });
+
+  it("says plainly when a code or backup code is wrong", () => {
+    expect(describeAuthError(error(401, "INVALID_CODE", "Invalid code"), "x")).toMatch(/^That code didn't work/);
+    expect(describeAuthError(error(401, "INVALID_BACKUP_CODE", "Invalid backup code"), "x")).toMatch(
+      /^That backup code didn't work/,
+    );
+  });
+
+  it("shows the breached-password message from the server, and a retry when the check couldn't run", () => {
+    const breached = "This password appears in a known data breach. Choose a different one.";
+    expect(describeAuthError(error(400, "PASSWORD_COMPROMISED", breached), "x")).toBe(breached);
+    expect(describeAuthError(error(500, undefined, "Failed to check password. Please try again later."), "x")).toBe(
+      "We couldn't check this password against known data breaches. Try again in a minute.",
+    );
+  });
 });
 
 describe("rate-limit countdown", () => {

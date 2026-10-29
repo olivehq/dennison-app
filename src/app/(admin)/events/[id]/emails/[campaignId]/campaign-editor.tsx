@@ -31,11 +31,12 @@ import {
   type CampaignFieldsInput,
   type EmailAudience,
 } from "@/lib/schemas/email";
+import type { EmailSetup } from "@/server/email/campaigns";
 import { previewCampaignAction, sendCampaignAction, sendTestAction, updateCampaignAction } from "@/server/email/actions";
 import { findUnknownFields } from "@/server/email/merge";
 import type { AudienceOptions } from "@/server/email/queries";
 import { applyActionError } from "../../_roster/form-errors";
-import { AUDIENCE_LABELS, recipients, sentMessage, skippedRevokedMessage } from "../labels";
+import { AUDIENCE_LABELS, emailSetupReason, recipients, sentMessage, skippedRevokedMessage } from "../labels";
 import { EmailPreview } from "./email-preview";
 import { RecipientPicker } from "./recipient-picker";
 import { RichTextEditor } from "./rich-text-editor";
@@ -54,6 +55,8 @@ type CampaignEditorProps = {
   initialHtmlMode: boolean;
   /** Null when sending is allowed; otherwise why not. */
   sendBlockedReason: string | null;
+  /** Whether this deployment can really send mail; the buttons say why not before anyone clicks. */
+  emailSetup: EmailSetup;
   /** The event is archived: nothing can be saved or sent, and `sendBlockedReason` says so. */
   archived: boolean;
   adminEmail: string;
@@ -67,6 +70,7 @@ export function CampaignEditor({
   options,
   initialHtmlMode,
   sendBlockedReason,
+  emailSetup,
   archived,
   adminEmail,
   testSentLabel,
@@ -85,9 +89,9 @@ export function CampaignEditor({
     resolver: zodResolver(campaignFieldsSchema),
     defaultValues: initial,
   });
-  const [audience, selected, subject, htmlBody] = useWatch({
+  const [audience, selected, subject, htmlBody, fromEmail] = useWatch({
     control,
-    name: ["audience", "selectedRecipients", "subject", "htmlBody"],
+    name: ["audience", "selectedRecipients", "subject", "htmlBody", "fromEmail"],
   });
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
@@ -166,21 +170,26 @@ export function CampaignEditor({
     const notify = result.data.delivered ? toast.success : toast.warning;
     notify(sentMessage(result.data.sent, result.data.delivered));
     if (result.data.failed > 0) {
-      toast.error(`${recipients(result.data.failed)} could not be sent. Use "Resend to bounced" to try again.`);
+      toast.error(`${recipients(result.data.failed)} could not be sent. Use Retry delivery to try again.`);
     }
     if (result.data.skippedRevoked > 0) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
   };
 
   // On an archived event nothing saves either; the footer line says why.
   const archivedTitle = archived ? (sendBlockedReason ?? undefined) : undefined;
+  // A test goes out through the same provider and sender as the real send, so both wait on the same setup.
+  const setupReason = emailSetupReason(emailSetup, fromEmail ?? "");
   const sendDisabledReason =
     sendBlockedReason ??
+    setupReason ??
     (unknownFields.length > 0
       ? "Fix the unknown merge fields first."
       : recipientCount === 0
-        ? audience === "changed_since_last_send"
-          ? "Nobody's schedule changed since their last email."
-          : "Nobody in this audience has an email address."
+        ? audience === "selected"
+          ? "Pick at least one person."
+          : audience === "changed_since_last_send"
+            ? "Nobody's schedule changed since their last email."
+            : "Nobody in this audience has an email address."
         : null);
 
   return (
@@ -330,10 +339,10 @@ export function CampaignEditor({
                 type="button"
                 variant="outline"
                 onClick={onTest}
-                disabled={isSubmitting || archived}
-                title={archivedTitle}
+                disabled={isSubmitting || archived || setupReason !== null}
+                title={archivedTitle ?? setupReason ?? undefined}
               >
-                Send test to me
+                Send test
               </Button>
               <Button type="button" onClick={onSend} disabled={isSubmitting || sendDisabledReason !== null}>
                 <SendIcon data-icon="inline-start" />
@@ -420,6 +429,7 @@ export function CampaignEditor({
         title={`Send to ${recipients(recipientCount)}?`}
         description="Each person gets their own copy with their private schedule link. Sent emails can't be recalled."
         confirmLabel={`Send to ${recipients(recipientCount)}`}
+        destructive
         onConfirm={send}
       />
     </>
@@ -463,7 +473,7 @@ function SendTestDialog({
         setErrorText(result.error.fieldErrors?.toEmail?.[0] ?? result.error.message);
         return;
       }
-      if (result.data.delivered) toast.success(`Test sent to ${result.data.toEmail}`);
+      if (result.data.delivered) toast.success(`Test sent to ${result.data.toEmail}.`);
       else toast.warning(`Test logged, not sent. This server has no email provider set up, so nothing went to ${result.data.toEmail}.`);
       onOpenChange(false);
     } finally {
@@ -476,7 +486,7 @@ function SendTestDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} noValidate className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>Send a test</DialogTitle>
+            <DialogTitle>Send a test email</DialogTitle>
             <DialogDescription>
               {recipient
                 ? `Uses ${recipient.name}'s details and link, with "[Test]" before the subject.`

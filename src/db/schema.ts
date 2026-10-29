@@ -40,6 +40,8 @@ export const admins = pgTable("admins", {
   updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   disabledAt: timestamptz("disabled_at"),
   invitedBy: text("invited_by"),
+  // Better Auth's twoFactor plugin. Optional per admin (D189).
+  twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
 });
 
 export const sessions = pgTable(
@@ -102,6 +104,25 @@ export const rateLimits = pgTable("rate_limits", {
   count: integer("count").notNull(),
   lastRequest: bigint("last_request", { mode: "number" }).notNull(),
 });
+
+// The twoFactor plugin's model: an admin's authenticator secret and backup
+// codes, both encrypted with BETTER_AUTH_SECRET. `verified` stays false until
+// the first code from the app is accepted. One row per admin.
+export const twoFactors = pgTable(
+  "two_factors",
+  {
+    id: text("id").primaryKey(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => admins.id, { onDelete: "cascade" }),
+    verified: boolean("verified").notNull().default(true),
+    failedVerificationCount: integer("failed_verification_count").notNull().default(0),
+    lockedUntil: timestamptz("locked_until"),
+  },
+  (table) => [uniqueIndex("two_factors_user_id_idx").on(table.userId)],
+);
 
 export const adminInvites = pgTable(
   "admin_invites",
@@ -400,6 +421,9 @@ export const appointments = pgTable(
     ),
     uniqueIndex("appointments_run_pair_key").on(table.runId, table.buyerId, table.supplierId),
     index("appointments_run_idx").on(table.runId),
+    // Supplier-side lookups within a run (sidebar counts, supplier schedules, D190).
+    // The buyer side is covered by appointments_run_pair_key.
+    index("appointments_run_supplier_idx").on(table.runId, table.supplierId),
   ],
 );
 

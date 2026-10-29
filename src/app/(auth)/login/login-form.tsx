@@ -12,16 +12,25 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { authClient } from "@/lib/auth-client";
 import { loginSchema, type LoginInput } from "@/lib/schemas/auth";
 import { AuthFeedbackAlert, AuthNotice, AuthSubmitButton, useAuthFeedback } from "../auth-feedback";
+import { TwoFactorStep } from "./two-factor-step";
 
+/**
+ * Email and password, then, for an admin with two-factor sign-in on, a code
+ * from their authenticator app or a backup code. Both steps go to `next`,
+ * which the page has already made a safe same-site path.
+ */
 export function LoginForm({ next, sessionEnded }: { next: string; sessionEnded: boolean }) {
   const router = useRouter();
-  const { feedback, waitSeconds, run } = useAuthFeedback();
+  const authFeedback = useAuthFeedback();
+  const { feedback, waitSeconds, run } = authFeedback;
+  const [step, setStep] = React.useState<"password" | "two-factor">("password");
   const [showPassword, setShowPassword] = React.useState(false);
   const [capsLock, setCapsLock] = React.useState(false);
   const {
     register,
     handleSubmit,
     setFocus,
+    resetField,
     formState: { errors, isSubmitting },
   } = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -37,15 +46,38 @@ export function LoginForm({ next, sessionEnded }: { next: string; sessionEnded: 
     if (credentialsInvalid && !isSubmitting) setFocus("password", { shouldSelect: true });
   }, [credentialsInvalid, isSubmitting, setFocus]);
 
-  const onSubmit = async (values: LoginInput) => {
-    const failed = await run(
-      (fetchOptions) => authClient.signIn.email({ email: values.email, password: values.password, fetchOptions }),
-      "Sign-in failed. Try again in a moment.",
-    );
-    if (failed) return;
+  const finish = React.useCallback(() => {
     router.push(next);
     router.refresh();
+  }, [next, router]);
+
+  const onSubmit = async (values: LoginInput) => {
+    let needsCode = false;
+    const failed = await run(async (fetchOptions) => {
+      const result = await authClient.signIn.email({ email: values.email, password: values.password, fetchOptions });
+      needsCode = !!result.data && "twoFactorRedirect" in result.data && result.data.twoFactorRedirect === true;
+      return result;
+    }, "Sign-in failed. Try again in a moment.");
+    if (failed) return;
+    if (needsCode) {
+      setStep("two-factor");
+      return;
+    }
+    finish();
   };
+
+  if (step === "two-factor") {
+    return (
+      <TwoFactorStep
+        feedback={authFeedback}
+        onSignedIn={finish}
+        onRestart={() => {
+          setStep("password");
+          resetField("password");
+        }}
+      />
+    );
+  }
 
   const trackCapsLock = (event: React.KeyboardEvent<HTMLInputElement>) =>
     setCapsLock(event.getModifierState("CapsLock"));

@@ -1,8 +1,9 @@
 import { and, count, desc, eq } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { admins, appointments, matchRuns, participants, rankings, suppliers, type MatchRun } from "@/db/schema";
+import { admins, appointments, matchRuns, rankings, type MatchRun } from "@/db/schema";
 import type { QualityStats } from "@/engine";
 import type { ActionResult } from "@/lib/errors";
+import { countActiveRoster } from "@/server/events/queries";
 import {
   compareRuns,
   diffAppointments,
@@ -104,15 +105,8 @@ export type MatchingCounts = {
 
 /** What the matching page shows before a run: who is on the roster and how many rankings are loaded. */
 export async function getMatchingReadiness(eventId: string, db: Db = getDb()): Promise<MatchingCounts> {
-  const [[buyerRow], [supplierRow], rankingRows] = await Promise.all([
-    db
-      .select({ value: count() })
-      .from(participants)
-      .where(and(eq(participants.eventId, eventId), eq(participants.status, "active"))),
-    db
-      .select({ value: count() })
-      .from(suppliers)
-      .where(and(eq(suppliers.eventId, eventId), eq(suppliers.status, "active"))),
+  const [roster, rankingRows] = await Promise.all([
+    countActiveRoster(db, eventId),
     db
       .select({ rankerType: rankings.rankerType, value: count() })
       .from(rankings)
@@ -121,8 +115,8 @@ export async function getMatchingReadiness(eventId: string, db: Db = getDb()): P
   ]);
   const byType = new Map(rankingRows.map((r) => [r.rankerType, Number(r.value)]));
   return {
-    buyers: Number(buyerRow?.value ?? 0),
-    suppliers: Number(supplierRow?.value ?? 0),
+    buyers: roster.participants,
+    suppliers: roster.suppliers,
     buyerRankings: byType.get("buyer") ?? 0,
     supplierRankings: byType.get("supplier") ?? 0,
   };

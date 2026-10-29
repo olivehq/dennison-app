@@ -1,13 +1,14 @@
 "use client";
 
 import * as React from "react";
-import { RotateCwIcon } from "lucide-react";
+import { RefreshCwIcon, RotateCwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { createDataTableColumnHelper, DataTable } from "@/components/app/data-table";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { resendToBouncedAction } from "@/server/email/actions";
 import {
   MESSAGE_STATUS_LABELS,
@@ -92,7 +93,7 @@ export function DeliveryTable({ rows }: { rows: DeliveryTableRow[] }) {
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                <SelectItem value="all">Any status</SelectItem>
+                <SelectItem value="all">All statuses</SelectItem>
                 {STATUS_OPTIONS.map((status) => (
                   <SelectItem key={status} value={status}>
                     {MESSAGE_STATUS_LABELS[status]}
@@ -107,7 +108,7 @@ export function DeliveryTable({ rows }: { rows: DeliveryTableRow[] }) {
   );
 }
 
-export function ResendBouncedButton({
+export function RetryDeliveryButton({
   campaignId,
   count,
   disabledReason,
@@ -121,16 +122,26 @@ export function ResendBouncedButton({
   const trigger = (
     <Button variant="outline" disabled={count === 0 || disabledReason !== null} title={disabledReason ?? undefined}>
       <RotateCwIcon data-icon="inline-start" />
-      Resend to bounced
+      Retry delivery
     </Button>
   );
-  if (count === 0 || disabledReason !== null) return trigger;
+  if (count === 0) return trigger;
+  // A visible reason, not only a tooltip: keyboard and touch users can't hover a disabled button.
+  if (disabledReason !== null) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        {trigger}
+        <p className="max-w-xs text-right text-xs text-muted-foreground">{disabledReason}</p>
+      </div>
+    );
+  }
 
   return (
     <ConfirmDialog
-      title={`Resend to ${recipients(count)}?`}
+      title={`Retry delivery to ${recipients(count)}?`}
       description="Sends this campaign again to everyone whose last email bounced, failed, or never went out, at the address on the roster now. Fix any wrong addresses on the Participants or Suppliers page first."
-      confirmLabel={`Send to ${recipients(count)}`}
+      confirmLabel="Retry delivery"
+      destructive
       onConfirm={async () => {
         const result = await resendToBouncedAction({ campaignId });
         if (!result.ok) {
@@ -145,5 +156,17 @@ export function ResendBouncedButton({
       }}
       trigger={trigger}
     />
+  );
+}
+
+/** Delivery statuses change as Resend reports them; the page only shows what it loaded, so this loads it again. */
+export function RefreshStatusButton() {
+  const router = useRouter();
+  const [pending, startTransition] = React.useTransition();
+  return (
+    <Button variant="outline" size="sm" disabled={pending} onClick={() => startTransition(() => router.refresh())}>
+      {pending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+      Refresh status
+    </Button>
   );
 }

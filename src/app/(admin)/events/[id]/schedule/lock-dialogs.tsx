@@ -169,7 +169,7 @@ export function UnlockDialog({
         else toast.error(result.error.message);
         return;
       }
-      toast.success("Schedule unlocked", { description: "Editing and re-running are available again." });
+      toast.success("Schedule unlocked.", { description: "Editing and re-running are available again." });
       setPending(false);
       close(false);
     } finally {

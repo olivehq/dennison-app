@@ -32,6 +32,7 @@ import {
 } from "./edits";
 import { lockSchedule, planDesks, reassignDesks, unlockSchedule } from "./lock";
 import { getScheduleView } from "./queries";
+import { getScheduleViewSnapshot } from "./views";
 import { loadPersonSchedule } from "./snapshot";
 
 let db: Db;
@@ -128,6 +129,19 @@ describe("getScheduleView", () => {
     }
     expect(view.health.suppliersOffTarget).toEqual([]);
     expect(Array.isArray(view.health.buyersBelowMin)).toBe(true);
+  });
+
+  it("getScheduleViewSnapshot reads the same view (a savepoint inside a transaction still works)", async () => {
+    const view = await getScheduleView(seeded.eventId, db);
+    expect(await getScheduleViewSnapshot(seeded.eventId, db)).toEqual(view);
+    expect(await db.transaction((tx) => getScheduleViewSnapshot(seeded.eventId, tx))).toEqual(view);
+    expect(await getScheduleViewSnapshot("not-a-uuid", db)).toBeNull();
+  });
+
+  it("getScheduleViewSnapshot pairs the run version with its own appointments when a save lands during the read", async () => {
+    const before = (await rows()).length;
+    const [view] = await Promise.all([getScheduleViewSnapshot(seeded.eventId, db), removeOne()]);
+    expect(view?.run?.version === 1 ? before : before - 1).toBe(view?.appointments.length);
   });
 
   it("loadPersonSchedule shows OPEN gaps and no ranks", async () => {

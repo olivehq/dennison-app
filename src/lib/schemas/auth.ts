@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { emailSchema } from "./roster";
 
+/** Shown when a new password is in Have I Been Pwned's breach list (D189). */
+export const BREACHED_PASSWORD_MESSAGE = "This password appears in a known data breach. Choose a different one.";
+/** Shown when the breach check could not reach its service, so the password was refused. */
+export const BREACH_CHECK_UNAVAILABLE_MESSAGE =
+  "We couldn't check this password against known data breaches. Try again in a minute.";
+/** Better Auth's message prefix for that failure, which carries no code. */
+export const BREACH_CHECK_FAILED_PREFIX = "Failed to check password";
+
 export const passwordSchema = z
   .string()
   .min(10, "Use at least 10 characters.")

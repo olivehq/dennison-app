@@ -397,6 +397,21 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
     </Toggle>
   );
 
+  // It opens the matching page, where the run happens, so the label says "Go to".
+  const matchingButton = locked ? (
+    <Button variant="outline" size="lg" disabled>
+      <RefreshCwIcon data-icon="inline-start" />
+      Go to matching
+    </Button>
+  ) : (
+    <Button variant="outline" size="lg" asChild>
+      <Link href={eventSectionHref(eventId, "matching")}>
+        <RefreshCwIcon data-icon="inline-start" />
+        Go to matching
+      </Link>
+    </Button>
+  );
+
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <PageHeader
@@ -405,12 +420,18 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
         title="Schedule"
         actions={
           <>
-            <Button variant="outline" size="lg" asChild>
-              <Link href={eventSectionHref(eventId, "matching")}>
-                <RefreshCwIcon data-icon="inline-start" />
-                Run matching
-              </Link>
-            </Button>
+            {locked ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={0} className="rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                    {matchingButton}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>Unlock the schedule to run matching again.</TooltipContent>
+              </Tooltip>
+            ) : (
+              matchingButton
+            )}
             {locked ? (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -442,7 +463,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
                   <EllipsisIcon />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuContent align="end" className="w-48">
                 {/* Desks are fixed once the schedule is locked (D17). */}
                 {locked ? null : (
                   <DropdownMenuItem onSelect={() => setReassignOpen(true)}>
@@ -453,7 +474,7 @@ export function ScheduleWorkspace({ data, serverNow }: { data: WorkspaceData; se
                 <DropdownMenuItem asChild>
                   <Link href={eventSectionHref(eventId, "exports")}>
                     <DownloadIcon />
-                    Export
+                    Go to exports
                   </Link>
                 </DropdownMenuItem>
               </DropdownMenuContent>

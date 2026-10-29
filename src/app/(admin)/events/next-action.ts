@@ -32,7 +32,7 @@ export const NEXT_ACTION: Record<EventStatus, NextAction> = {
     title: "Run the show",
     description: "Follow the live timeline. Changes after sending go out as update emails.",
     segment: "schedule",
-    label: "Open the schedule",
+    label: "Go to schedule",
   },
   archived: {
     title: "Download the records",

@@ -4,7 +4,7 @@ import { getSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
 import { getActiveRun } from "@/server/matching/queries";
 import { isEventEditable } from "@/server/events/editable";
-import { getScheduleView, type ScheduleRun, type ScheduleView } from "@/server/schedule/views";
+import { getScheduleViewSnapshot, type ScheduleRun, type ScheduleView } from "@/server/schedule/views";
 import { recordExport } from "./actions";
 import { eventYear } from "./common";
 import { EXPORT_CONTENT_TYPES, exportFilename, needsRun, type ExportKind } from "./kinds";
@@ -72,9 +72,9 @@ export type ExportBuilder<K extends GetExportKind> = (
 
 /**
  * One GET export from request to response. Checks the session (401), loads the
- * event and, for the run-based kinds, the schedule view once (404, 409), calls
- * `build`, writes the audit row with the run id and version of that same view,
- * and returns the download. The audit row goes before the response so a
+ * event and, for the run-based kinds, the schedule view once, as one snapshot
+ * (404, 409), calls `build`, writes the audit row with the run id and version
+ * of that same view, and returns the download. The audit row goes before the response so a
  * streamed file cannot outrun it. Any failure is logged without names, emails,
  * or tokens and answered with a short 500.
  */
@@ -92,7 +92,7 @@ export async function exportRoute<K extends GetExportKind>(
     let event: Event | null;
     let view: ActiveScheduleView | null = null;
     if (needsRun(kind)) {
-      const loaded = await getScheduleView(eventId);
+      const loaded = await getScheduleViewSnapshot(eventId);
       event = loaded?.event ?? null;
       if (loaded?.run) view = { ...loaded, run: loaded.run };
     } else {

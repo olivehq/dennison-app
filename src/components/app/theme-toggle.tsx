@@ -31,7 +31,8 @@ export function ThemeToggle({ variant = "icon", className }: ThemeToggleProps) {
     return (
       <DropdownMenuItem onSelect={toggle} className={className}>
         <ThemeIcons />
-        Switch theme
+        <span className="dark:hidden">Use dark theme</span>
+        <span className="hidden dark:inline">Use light theme</span>
       </DropdownMenuItem>
     );
   }

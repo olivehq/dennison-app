@@ -77,6 +77,11 @@ export function renderTemplate(html: string, values: MergeValues): string {
     .join("");
 }
 
+export { isExampleAddress } from "@/lib/email/example-address";
+
+/** Shown on the send buttons and returned by the server when production has no email provider. */
+export const EMAIL_NOT_CONFIGURED_MESSAGE = "Email isn't set up yet. Add RESEND_API_KEY in Vercel, then redeploy.";
+
 /** Values for a test send or a preview when there is nobody to borrow them from. */
 export const SAMPLE_MERGE_VALUES: MergeValues = {
   first_name: "Alex",
@@ -85,7 +90,7 @@ export const SAMPLE_MERGE_VALUES: MergeValues = {
   supplier_name: "",
   desk: "",
   schedule_link: "https://example.com/s/sample-link",
-  event_name: "AW Appointment Show",
+  event_name: "AW appointment matching",
   event_date: "Tuesday, November 10, 2026",
 };
 

@@ -13,8 +13,8 @@ const SECURITY_HEADERS = [
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
 
-/** Participant links carry the token in the URL: never send it on, never index it (D44). */
-const PARTICIPANT_HEADERS = [
+/** Participant, invite and password-reset links carry the token in the URL: never send it on, never index it (D44). */
+const TOKEN_HEADERS = [
   { key: "Referrer-Policy", value: "no-referrer" },
   { key: "X-Robots-Tag", value: "noindex, nofollow" },
 ];
@@ -34,7 +34,9 @@ const nextConfig: NextConfig = {
     return [
       { source: "/:path*", headers: SECURITY_HEADERS },
       // Later entries win for the same key, so this overrides the Referrer-Policy above.
-      { source: "/s/:path*", headers: PARTICIPANT_HEADERS },
+      { source: "/s/:path*", headers: TOKEN_HEADERS },
+      { source: "/invite/:path*", headers: TOKEN_HEADERS },
+      { source: "/reset-password", headers: TOKEN_HEADERS },
     ];
   },
 };

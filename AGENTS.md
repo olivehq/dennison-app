@@ -25,6 +25,7 @@ Admin workspace and participant schedule pages for the AW appointment show, buil
 | Generate a migration after a schema change | `pnpm db:generate` |
 | Apply migrations | `pnpm db:migrate` |
 | Seed a demo event with 2025 data | `pnpm db:seed` |
+| Turn off two-factor sign-in for an admin who lost their app and backup codes | `pnpm reset-two-factor <email>` (signs them out everywhere, writes an audit row) |
 | Create the first admin (no invite needed) | `pnpm create-admin <email> "<name>"` (prompts for the password, or reads `ADMIN_PASSWORD`; a password argument is refused) |
 | Build | `pnpm build` |
 | All checks | `pnpm check` (typecheck, lint, test) |

@@ -72,7 +72,7 @@ export function useEditErrors() {
 }
 
 function affectedLine(result: EditResult): string {
-  return result.affected.map((p) => `${p.name}: ${p.before} → ${p.after}`).join(". ");
+  return result.affected.map((p) => `${p.name}: ${p.before} → ${p.after}.`).join(" ");
 }
 
 export function PersonSheet(props: PersonSheetProps) {
@@ -144,7 +144,7 @@ export function PersonSheet(props: PersonSheetProps) {
         picker.pick === "buyer" && picker.removeBuyerId
           ? `Replaced ${picker.removeBuyerName} with ${candidate.name}`
           : `Added ${candidate.name}`;
-      if (finish(result, `${verb} in slot ${picker.slot}`)) {
+      if (finish(result, `${verb} in slot ${picker.slot}.`)) {
         setDraft(null);
         onPickerChange(null);
         const removed = removeBuyerId ? model.personById.get(removeBuyerId) : undefined;
@@ -167,7 +167,7 @@ export function PersonSheet(props: PersonSheetProps) {
     try {
       const result = await removeAppointmentAction({ runId, version, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId });
       const supplier = model.personById.get(a.supplierId);
-      finish(result, `Removed. ${supplier?.name ?? "The supplier"} is open in slot ${a.slot}`);
+      finish(result, `Removed. ${supplier?.name ?? "The supplier"} is open in slot ${a.slot}.`);
     } finally {
       setBusyRow(null);
     }

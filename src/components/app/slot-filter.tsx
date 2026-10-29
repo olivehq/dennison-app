@@ -6,13 +6,17 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 
 type SlotFilterProps = {
   slots: { slot: number; start: string }[];
-  /** A slot number, or 0 for any slot. */
+  /** A slot number, or 0 for no slot filter. */
   value: number;
   onChange: (slot: number) => void;
   className?: string;
 };
 
-/** "Free in: any slot / Slot 1, 3:10 PM / …". Keeps people with no meeting in the chosen slot. */
+/**
+ * "Free in: Any slot / Slot 1, 3:10 PM / …". Keeps people with no meeting in the chosen slot. The
+ * default says "Any slot", not "All slots" as other filters do: "Free in all slots" would read as
+ * "has no meetings at all" (D187).
+ */
 export function SlotFilter({ slots, value, onChange, className }: SlotFilterProps) {
   const labelId = React.useId();
   const current = slots.find((s) => s.slot === value);

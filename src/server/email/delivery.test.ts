@@ -10,7 +10,7 @@ import { hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/sta
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule, unlockSchedule } from "@/server/schedule/lock";
-import { STALE_SEND_HOURS, STALE_SEND_REPAIR_REASON, transitionCampaign } from "./campaign-status";
+import { STALE_SEND_HOURS, STALE_SEND_REASON, transitionCampaign } from "./campaign-status";
 import { createCampaign, resendToBounced, sendCampaign } from "./campaigns";
 import { deliverCampaign, isResendable, retryRecipients, RETRY_WINDOW_HOURS } from "./delivery";
 import { resolveAudience, type Recipient } from "./recipients";
@@ -123,7 +123,7 @@ describe("a batch with no answer from the provider", () => {
     expect(after.every((m) => m.request === null)).toBe(true);
   });
 
-  it("is retried by Resend to bounced, which keeps the key, and the campaign ends sent", async () => {
+  it("is retried by Retry delivery, which keeps the key, and the campaign ends sent", async () => {
     const { seeded, campaign, recipients } = await lockedCampaign();
     const provider = fakeProvider(["lose-response"]);
 
@@ -308,7 +308,7 @@ describe("a send stuck in sending", () => {
       adminId: null,
       entityType: "email_campaign",
       before: { status: "sending" },
-      after: { status: "failed", failureReason: STALE_SEND_REPAIR_REASON },
+      after: { status: "failed", failureReason: STALE_SEND_REASON },
     });
   });
 

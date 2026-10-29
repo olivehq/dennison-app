@@ -261,6 +261,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
       const to = str(after.name);
       return from && to ? `Changed their name from "${from}" to "${to}"` : "Changed their name";
     }
+    case "admin.two_factor_enable":
+      return "Turned on two-factor sign-in";
+    case "admin.two_factor_disable":
+      return "Turned off two-factor sign-in";
     case "admin.password_change":
       return after.otherSessionsSignedOut === true
         ? "Changed their password and signed out their other sessions"

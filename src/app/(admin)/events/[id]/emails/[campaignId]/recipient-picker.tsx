@@ -107,6 +107,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
           </Button>
           <Button
             type="button"
+            disabled={pickedCount === 0}
             onClick={() => {
               onChange(pickedKeys(contacts, picked));
               onOpenChange(false);

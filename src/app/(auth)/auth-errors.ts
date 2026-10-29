@@ -1,3 +1,5 @@
+import { BREACH_CHECK_FAILED_PREFIX, BREACH_CHECK_UNAVAILABLE_MESSAGE } from "@/lib/schemas/auth";
+
 /** The error half of a Better Auth client result. */
 export type AuthClientError = {
   code?: string;
@@ -7,10 +9,19 @@ export type AuthClientError = {
 };
 
 const RATE_LIMITED = "Too many attempts from this connection. Wait 10 minutes, then try again.";
+const TWO_FACTOR_LOCKED = "Too many wrong codes for this account. Wait 15 minutes, then sign in again.";
+const SIGN_IN_AGAIN = "Your sign-in timed out or had too many wrong codes. Enter your email and password again.";
+
+/** Two-factor errors that end the pending sign-in, so the form goes back to email and password. */
+const TWO_FACTOR_RESTART_CODES = new Set(["INVALID_TWO_FACTOR_COOKIE", "TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE"]);
 
 /** Plain-words copy for the errors our auth forms can hit. Falls back to the server message, then `fallback`. */
 export function describeAuthError(error: AuthClientError, fallback: string): string {
+  if (error.code === "ACCOUNT_TEMPORARILY_LOCKED") return TWO_FACTOR_LOCKED;
   if (error.status === 429) return RATE_LIMITED;
+  // The breached-password check could not reach Have I Been Pwned. It carries no code.
+  if (error.status === 500 && error.message?.startsWith(BREACH_CHECK_FAILED_PREFIX)) return BREACH_CHECK_UNAVAILABLE_MESSAGE;
+  if (error.code && TWO_FACTOR_RESTART_CODES.has(error.code)) return SIGN_IN_AGAIN;
   switch (error.code) {
     case "INVALID_EMAIL_OR_PASSWORD":
     case "INVALID_PASSWORD":
@@ -25,6 +36,10 @@ export function describeAuthError(error: AuthClientError, fallback: string): str
     case "USER_ALREADY_EXISTS":
     case "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL":
       return "An account with this email already exists. Sign in instead.";
+    case "INVALID_CODE":
+      return "That code didn't work. Enter the newest code from your authenticator app.";
+    case "INVALID_BACKUP_CODE":
+      return "That backup code didn't work. Check it, or use a code from your authenticator app.";
     default:
       return error.message || fallback;
   }
@@ -36,6 +51,8 @@ export type AuthFeedback =
   /** `retryAt` is epoch milliseconds, or null when the server sent no usable `X-Retry-After`. */
   | { kind: "rate-limited"; retryAt: number | null }
   | { kind: "network" }
+  /** The two-factor step ended (expired, or too many wrong codes): start sign-in over. */
+  | { kind: "restart"; message: string }
   | { kind: "error"; message: string };
 
 /** Better Auth's rate limiter sends `X-Retry-After` in whole seconds. Anything else is ignored. */
@@ -52,6 +69,8 @@ export function classifyAuthError(
   retryAfterSeconds: number | null,
   now: number,
 ): AuthFeedback {
+  if (error.code === "ACCOUNT_TEMPORARILY_LOCKED") return { kind: "error", message: TWO_FACTOR_LOCKED };
+  if (error.code && TWO_FACTOR_RESTART_CODES.has(error.code)) return { kind: "restart", message: SIGN_IN_AGAIN };
   if (error.status === 429) {
     return { kind: "rate-limited", retryAt: retryAfterSeconds === null ? null : now + retryAfterSeconds * 1000 };
   }

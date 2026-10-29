@@ -102,7 +102,7 @@ export type CampaignDetail = {
   sentByName: string | null;
   messages: DeliveryRow[];
   stats: StatusCounts;
-  /** Recipients "Resend to bounced" would send to, before leaving out revoked links. */
+  /** Recipients "Retry delivery" would send to, before leaving out revoked links. */
   resendable: number;
 };
 

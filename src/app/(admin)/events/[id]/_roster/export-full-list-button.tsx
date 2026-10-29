@@ -1,9 +1,8 @@
-import { DownloadIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { eventYear } from "@/server/exports/common";
 import { exportFilename } from "@/server/exports/kinds";
+import { DownloadButton } from "../exports/download-button";
 
-/** The "Export full list" link in the Participants and Suppliers page headers. Includes withdrawn people, whatever the filters show. */
+/** The "Export full list" button in the Participants and Suppliers page headers. Includes withdrawn people, whatever the filters show. */
 export function ExportFullListButton({
   eventId,
   eventDate,
@@ -15,11 +14,10 @@ export function ExportFullListButton({
 }) {
   const segment = kind === "participants_full" ? "participants" : "suppliers";
   return (
-    <Button variant="outline" asChild>
-      <a href={`/api/exports/${eventId}/${segment}`} download={exportFilename(kind, eventYear(eventDate))}>
-        <DownloadIcon data-icon="inline-start" />
-        Export full list
-      </a>
-    </Button>
+    <DownloadButton
+      href={`/api/exports/${eventId}/${segment}`}
+      filename={exportFilename(kind, eventYear(eventDate))}
+      label="Export full list"
+    />
   );
 }

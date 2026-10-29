@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import type { z } from "zod";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -52,16 +53,24 @@ function defaults(participant: ParticipantFormData | null): FormInput {
   };
 }
 
+function participantName(participant: ParticipantFormData): string {
+  return participant.displayName || `${participant.firstName} ${participant.lastName}`.trim();
+}
+
 type ParticipantDialogProps = {
   eventId: string;
   /** Null to add a participant. */
   participant: ParticipantFormData | null;
+  /** The participant holds a link that works now. Changing their email revokes it, so saving asks first. */
+  hasLiveLink?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
 
-export function ParticipantDialog({ eventId, participant, open, onOpenChange }: ParticipantDialogProps) {
+export function ParticipantDialog({ eventId, participant, hasLiveLink = false, open, onOpenChange }: ParticipantDialogProps) {
   const router = useRouter();
+  // Values waiting on the "Change email?" confirm.
+  const [confirming, setConfirming] = React.useState<{ values: FormOutput; name: string } | null>(null);
   const editing = participant !== null;
   const {
     register,
@@ -79,7 +88,7 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
     if (open) reset(defaults(participant));
   }, [open, participant, reset]);
 
-  const onSubmit = async (values: FormOutput) => {
+  const save = async (values: FormOutput) => {
     const result = await saveParticipant({ ...values, eventId, id: participant?.id });
     if (!result.ok) {
       applyActionError(result.error, setError, FIELDS);
@@ -95,6 +104,14 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
         : `${values.firstName} ${values.lastName} added.`,
     );
     onOpenChange(false);
+  };
+
+  const onSubmit = async (values: FormOutput) => {
+    if (editing && hasLiveLink && participant.email !== values.email) {
+      setConfirming({ values, name: participantName(participant) });
+      return;
+    }
+    await save(values);
   };
 
   return (
@@ -175,6 +192,17 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
           </DialogFooter>
         </form>
       </DialogContent>
+      <ConfirmDialog
+        open={confirming !== null}
+        onOpenChange={(next) => !next && setConfirming(null)}
+        title={`Change ${confirming?.name ?? "their"}'s email?`}
+        description="Their current schedule link stops working. Send them the new link from Emails after saving."
+        confirmLabel="Change email"
+        destructive
+        onConfirm={async () => {
+          if (confirming) await save(confirming.values);
+        }}
+      />
     </Dialog>
   );
 }

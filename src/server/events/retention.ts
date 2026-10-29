@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, lt, notLike, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, notInArray, notLike, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
@@ -16,7 +16,7 @@ import {
 } from "@/db/schema";
 import { endOfDayInTimezone } from "@/lib/time";
 import { recordAudit } from "@/server/audit/audit";
-import { failStaleSends, STALE_SEND_HOURS } from "@/server/email/campaign-status";
+import { repairStaleSends, STALE_SEND_HOURS } from "@/server/email/campaign-status";
 import { deleteQueuedFilesNow, queueFileDeletions } from "@/server/files/cleanup";
 import { wasParticipantDataDeleted } from "./queries";
 import { hasSendInProgress } from "./status";
@@ -62,9 +62,6 @@ export type RetentionResult = {
   deleted: RetentionCounts;
 };
 
-/** The reason a stale send's `email.send` audit row gives. */
-export const STALE_SEND_REASON = `The send stopped without finishing and was still marked sending after ${STALE_SEND_HOURS} hours, so the retention job marked it failed.`;
-
 function isDue(event: Event, now: Date): boolean {
   return event.settings.retainData !== true && retentionDeadline(event) <= now;
 }
@@ -102,10 +99,7 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
       // A campaign mid-send still writes messages for this event. The daily
       // cron tries again once the send has finished. One stuck for hours
       // died with its request and would block deletion forever.
-      const staleSends = await failStaleSends(tx, event.id, now);
-      for (const id of staleSends) {
-        console.warn(`[retention] event ${event.id}: campaign ${id} was stuck sending, marked it failed.`);
-      }
+      const staleSends = await repairStaleSends(tx, event.id, now);
       if (await hasSendInProgress(tx, event.id)) {
         console.warn(`[retention] event ${event.id}: skipped, an email send is in progress. The next run retries.`);
         return null;
@@ -154,6 +148,8 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
                 eq(auditEvents.eventId, event.id),
                 // Event-level rows (name, settings, retention) hold no personal data.
                 notLike(auditEvents.action, "event.%"),
+                // The stale-send rows just written hold only their reason.
+                notInArray(auditEvents.id, staleSends.map((s) => s.auditId)),
                 or(isNotNull(auditEvents.before), isNotNull(auditEvents.after), isNotNull(auditEvents.note)),
               ),
             )
@@ -167,19 +163,6 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
         (await wasParticipantDataDeleted(event.id, tx))
       ) {
         return null;
-      }
-
-      // After the redaction above, so these rows keep their reason.
-      for (const id of staleSends) {
-        await recordAudit(tx, {
-          eventId: event.id,
-          adminId: null,
-          action: "email.send",
-          entityType: "email_campaign",
-          entityId: id,
-          before: { status: "sending" },
-          after: { status: "failed", failureReason: STALE_SEND_REASON },
-        });
       }
 
       // With the import rows gone nothing points at the files; the queue keeps them until storage confirms.

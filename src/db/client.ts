@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
+import { attachDatabasePool } from "@vercel/functions";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { drizzle as drizzlePglite, type PgliteDatabase } from "drizzle-orm/pglite";
 import { drizzle as drizzlePostgres, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -21,17 +22,77 @@ type Connection =
   | { kind: "pglite"; db: PgliteDatabase<Schema>; client: PGlite }
   | { kind: "postgres"; db: PostgresJsDatabase<Schema>; client: postgres.Sql };
 
-const globalStore = globalThis as unknown as { __awDbConnection?: Connection };
+const globalStore = globalThis as unknown as { __awDbConnection?: Connection; __awDbPoolWarned?: boolean };
 
 let connection: Connection | undefined;
 let injectedDb: Db | undefined;
 
+/** Connections per instance on Neon's pooled endpoint. Fluid compute serves concurrent requests from one instance. */
+const POOLED_MAX_CONNECTIONS = 5;
+/** Seconds before postgres.js closes an idle connection. */
+const IDLE_TIMEOUT_SECONDS = 20;
+
+/** True for Neon's pooled (PgBouncer) endpoint, whose hostname carries "-pooler". */
+export function isPooledUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.includes("-pooler");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * postgres.js has no pool events, so `attachDatabasePool` can't recognise it.
+ * This reports the end of every query and transaction as the "release" event
+ * of the pg pool shape it expects, so the instance stays alive until the idle
+ * connections close instead of being suspended with them open.
+ */
+export function releaseEvents(client: postgres.Sql, idleTimeoutMillis: number) {
+  const listeners: (() => void)[] = [];
+  const release = () => listeners.forEach((listener) => listener());
+  const { unsafe, begin } = client;
+  // `then(release, release)` rather than `finally`, so a failed query is not
+  // also an unhandled rejection. postgres.js sends a query a tick after its
+  // first `then`, so drizzle's `.values()` right after this still applies.
+  client.unsafe = ((...args: Parameters<typeof unsafe>) => {
+    const query = unsafe(...args);
+    query.then(release, release);
+    return query;
+  }) as typeof unsafe;
+  client.begin = ((...args: Parameters<typeof begin>) => {
+    const done = (begin as (...a: unknown[]) => Promise<unknown>)(...args);
+    done.then(release, release);
+    return done;
+  }) as typeof begin;
+  return {
+    options: { idleTimeoutMillis },
+    on(event: "release", listener: () => void) {
+      if (event === "release") listeners.push(listener);
+    },
+  };
+}
+
 function openConnection(): Connection {
   if (env.DATABASE_URL) {
-    // One connection per serverless instance. `prepare: false` keeps the Neon
-    // pooler (transaction mode) happy. Idle and old connections are closed
-    // before Neon or a suspended instance drops them under us.
-    const client = postgres(env.DATABASE_URL, { max: 1, prepare: false, idle_timeout: 20, max_lifetime: 60 * 30 });
+    // `prepare: false` keeps the Neon pooler (transaction mode) happy. Idle
+    // and old connections are closed before Neon or a suspended instance
+    // drops them under us. On the pooled endpoint each instance keeps a few
+    // connections, so a matching run or a send holding a transaction does not
+    // queue the participant pages behind it; the pooler multiplexes them. A
+    // direct endpoint gets one, since its connection limit is per compute.
+    const pooled = isPooledUrl(env.DATABASE_URL);
+    if (!pooled && env.isProduction && !globalStore.__awDbPoolWarned) {
+      globalStore.__awDbPoolWarned = true;
+      console.warn("[db] DATABASE_URL is not Neon's pooled endpoint (hostname with -pooler), so each instance uses one connection. Use the pooled URL in production.");
+    }
+    const client = postgres(env.DATABASE_URL, {
+      max: pooled ? POOLED_MAX_CONNECTIONS : 1,
+      prepare: false,
+      idle_timeout: IDLE_TIMEOUT_SECONDS,
+      max_lifetime: 60 * 30,
+    });
+    // Inert outside Vercel. Wraps the client before drizzle sees it.
+    if (pooled) attachDatabasePool(releaseEvents(client, IDLE_TIMEOUT_SECONDS * 1000));
     return { kind: "postgres", client, db: drizzlePostgres({ client, schema }) };
   }
   // PGlite does not create parent directories itself.
