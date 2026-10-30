@@ -38,7 +38,7 @@ const raw = parsed.data;
 
 type ParsedEnv = z.infer<typeof envSchema>;
 
-/** Runtime production requirements. Vercel previews may omit email credentials. */
+/** Runtime production requirements: a production server refuses to start without these. */
 export function productionEnvProblems(values: ParsedEnv): string[] {
   if (values.NODE_ENV !== "production") return [];
   const problems: string[] = [];
@@ -58,16 +58,29 @@ export function productionEnvProblems(values: ParsedEnv): string[] {
       problems.push(`${name} must be set to a random secret of at least 32 characters in production. Generate one with openssl rand -base64 32.`);
     }
   }
-  if (values.VERCEL_ENV === "production") {
-    for (const name of ["RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"] as const) {
-      if (!values[name]?.trim()) problems.push(`${name} must be set for Vercel production. Set the Resend ${name === "RESEND_API_KEY" ? "API key with send access" : "webhook signing secret for /api/webhooks/resend"}.`);
-    }
-    // Invites and password resets go out from EMAIL_FROM; Resend refuses example.com.
-    if (isExampleAddress(values.EMAIL_FROM)) {
-      problems.push('EMAIL_FROM must be an address on your verified Resend domain for Vercel production, for example "AW appointment matching <schedule@yourdomain.com>".');
-    }
-  }
   return problems;
+}
+
+/**
+ * Email settings Vercel production should have, reported as warnings, not
+ * refusals: the app runs without them (sends stay disabled with "Email isn't
+ * set up yet", and invite and password reset emails only go to the server log)
+ * until D&A's sending domain is ready. Previews may omit them.
+ */
+export function productionEnvWarnings(values: ParsedEnv): string[] {
+  if (values.NODE_ENV !== "production" || values.VERCEL_ENV !== "production") return [];
+  const warnings: string[] = [];
+  if (!values.RESEND_API_KEY?.trim()) {
+    warnings.push("RESEND_API_KEY is not set, so no email is sent. Set the Resend API key with send access.");
+  }
+  if (!values.RESEND_WEBHOOK_SECRET?.trim()) {
+    warnings.push("RESEND_WEBHOOK_SECRET is not set, so delivery updates from Resend are refused. Set the signing secret of the webhook at /api/webhooks/resend.");
+  }
+  // Invites and password resets go out from EMAIL_FROM; Resend refuses example.com.
+  if (isExampleAddress(values.EMAIL_FROM)) {
+    warnings.push('EMAIL_FROM is an example.com address, which Resend refuses. Set an address on the verified sending domain, for example "AW appointment matching <schedule@yourdomain.com>".');
+  }
+  return warnings;
 }
 
 // Fail fast when a production server starts without what it needs. `next
@@ -79,6 +92,8 @@ if (raw.NODE_ENV === "production" && !isProductionBuild && typeof window === "un
   if (problems.length > 0) {
     throw new Error(`Invalid production environment:\n${problems.join("\n")}`);
   }
+  const warnings = productionEnvWarnings(raw);
+  if (warnings.length > 0) console.warn(`[env] Email is not set up:\n${warnings.join("\n")}`);
 }
 
 /**
