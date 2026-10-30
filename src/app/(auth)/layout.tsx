@@ -35,10 +35,10 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
           <AwMark />
           <div className="flex max-w-xl flex-col gap-4">
             <p className="font-display text-5xl leading-[1.05] font-extrabold tracking-[-0.03em] text-balance">
-              Schedules for the AW appointment show.
+              Every meeting, matched and scheduled.
             </p>
             <p className="text-base text-muted-foreground">
-              Imports, matching, the schedule, and participant emails in one place.
+              Load the files, run matching, check the schedule, then send each participant their link.
             </p>
             <SlotRuler />
           </div>

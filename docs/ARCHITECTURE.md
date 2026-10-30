@@ -76,6 +76,7 @@ Allowed list. Each is built from shadcn primitives. Add a new one only when it h
 - `BrandedHeader`: the top of the participant page (event, date, name, desk, logo, primary color). Used by `/s/[token]` and the branding preview on the settings page.
 - `SlotFilter`: free-in-slot select.
 - `ConfirmDialog`: AlertDialog with a typed confirmation for destructive actions.
+- `BrandMark`: the slot-ruler tile beside the product name. Used by the sign-in layout and the admin sidebar.
 - `ThemeToggle`: light and dark. `variant="icon"` for toolbars, `variant="menu"` for a dropdown menu item (the account menu).
 
 ## Theme

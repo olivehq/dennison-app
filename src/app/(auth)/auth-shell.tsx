@@ -1,18 +1,14 @@
 import Link from "next/link";
 import { cn } from "cn";
+import { BrandMark } from "@/components/app/brand-mark";
 import { Button } from "@/components/ui/button";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-/** The "AW" tile from the admin sidebar, with the product name beside it. */
+/** The brand mark from the admin sidebar, with the product name beside it. */
 export function AwMark({ className }: { className?: string }) {
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
-      <span
-        aria-hidden
-        className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground"
-      >
-        AW
-      </span>
+      <BrandMark />
       <span className="font-display text-base font-bold tracking-[-0.01em]">AW appointment matching</span>
     </div>
   );

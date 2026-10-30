@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 import { toast } from "sonner";
+import { BrandMark } from "@/components/app/brand-mark";
 import { ThemeToggle } from "@/components/app/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -102,6 +103,9 @@ const ACTIVE_ROW = "data-active:font-semibold data-active:shadow-[inset_2px_0_0_
 // Collapsed to the icon rail, group labels slide up by their own height (shadcn assumes h-8)
 // and fade out. They then sit over the row above, so they must not take its clicks.
 const GROUP_LABEL = "h-6 group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:-mt-6";
+
+// A labelled group gets more room above it than its label has to its links, so each label reads with its own group.
+const LABELLED_GROUP = "pt-4 pb-0.5";
 
 // Hides text that only fits the full sidebar.
 const EXPANDED_ONLY = "group-data-[collapsible=icon]:hidden";
@@ -247,7 +251,7 @@ function RecentEvents({ events, onNavigate }: { events: SidebarEventSummary[]; o
   const collapsed = useRailCollapsed();
   return (
     <nav aria-label="Recent events">
-      <SidebarGroup className="py-0.5">
+      <SidebarGroup className={LABELLED_GROUP}>
         <SidebarGroupLabel className={GROUP_LABEL}>Recent events</SidebarGroupLabel>
         <SidebarGroupContent>
           {events.length === 0 ? (
@@ -378,9 +382,7 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild tooltip={collapsed ? "All events" : undefined}>
               <Link href="/events" onClick={closeMobile}>
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
-                  AW
-                </span>
+                <BrandMark />
                 <span className="font-display text-base font-bold tracking-[-0.01em]">AW appointment matching</span>
               </Link>
             </SidebarMenuButton>
@@ -404,7 +406,7 @@ export function AppSidebar({
         {eventId ? (
           <nav aria-label="Event sections">
             {EVENT_SECTION_GROUPS.map((group) => (
-              <SidebarGroup key={group.label ?? "overview"} className="py-0.5">
+              <SidebarGroup key={group.label ?? "overview"} className={group.label ? LABELLED_GROUP : "py-0.5"}>
                 {group.label ? <SidebarGroupLabel className={GROUP_LABEL}>{group.label}</SidebarGroupLabel> : null}
                 <SidebarGroupContent>
                   <SidebarMenu>
@@ -433,7 +435,7 @@ export function AppSidebar({
           <RecentEvents events={recent} onNavigate={closeMobile} />
         )}
         <nav aria-label="Workspace">
-          <SidebarGroup className="py-0.5">
+          <SidebarGroup className={LABELLED_GROUP}>
             <SidebarGroupLabel className={GROUP_LABEL}>Workspace</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
