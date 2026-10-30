@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { productionEnvProblems } from "./env";
+import { productionEnvProblems, productionEnvWarnings } from "./env";
 
 const complete = {
   NODE_ENV: "production" as const,
@@ -42,15 +42,15 @@ describe("productionEnvProblems", () => {
     ]);
   });
 
-  it("requires email credentials on Vercel production, but not previews", () => {
-    expect(productionEnvProblems({ ...complete, VERCEL_ENV: "preview" })).toEqual([]);
-    expect(productionEnvProblems({ ...complete, VERCEL_ENV: "production" }).join(" "))
-      .toMatch(/RESEND_API_KEY.*RESEND_WEBHOOK_SECRET/);
+  it("warns, without refusing to start, when Vercel production has no email settings", () => {
+    expect(productionEnvProblems({ ...complete, VERCEL_ENV: "production" })).toEqual([]);
+    expect(productionEnvWarnings({ ...complete, VERCEL_ENV: "preview" })).toEqual([]);
+    expect(productionEnvWarnings({ ...complete, VERCEL_ENV: "production" }).join(" ")).toMatch(
+      /RESEND_API_KEY is not set.*RESEND_WEBHOOK_SECRET is not set.*EMAIL_FROM is an example\.com address/,
+    );
     const email = { RESEND_API_KEY: "re_key", RESEND_WEBHOOK_SECRET: "whsec_key" };
-    // Resend refuses example.com, so invites and resets would never arrive.
-    expect(productionEnvProblems({ ...complete, ...email, VERCEL_ENV: "production" }).join(" ")).toContain("EMAIL_FROM must be");
     expect(
-      productionEnvProblems({ ...complete, ...email, VERCEL_ENV: "production", EMAIL_FROM: "AW appointment matching <schedule@dennison.ca>" }),
+      productionEnvWarnings({ ...complete, ...email, VERCEL_ENV: "production", EMAIL_FROM: "AW appointment matching <schedule@dennison.ca>" }),
     ).toEqual([]);
   });
 
