@@ -31,11 +31,13 @@ import {
   type CampaignFieldsInput,
   type EmailAudience,
 } from "@/lib/schemas/email";
+import type { EmailSetup } from "@/server/email/campaigns";
 import { previewCampaignAction, sendCampaignAction, sendTestAction, updateCampaignAction } from "@/server/email/actions";
 import { findUnknownFields } from "@/server/email/merge";
 import type { AudienceOptions } from "@/server/email/queries";
 import { applyActionError } from "../../_roster/form-errors";
-import { AUDIENCE_LABELS, recipients, sentMessage, skippedRevokedMessage } from "../labels";
+import { AUDIENCE_LABELS, emailSetupReason, recipients, sentMessage, skippedRevokedMessage } from "../labels";
+import { audienceMembers, sendPlan, skippedNote } from "./audience";
 import { EmailPreview } from "./email-preview";
 import { RecipientPicker } from "./recipient-picker";
 import { RichTextEditor } from "./rich-text-editor";
@@ -43,6 +45,8 @@ import { RichTextEditor } from "./rich-text-editor";
 const FIELDS = ["name", "fromName", "fromEmail", "replyTo", "subject", "htmlBody", "audience", "selectedRecipients"] as const;
 const AUTO_RECIPIENT = "auto";
 const PREVIEW_DELAY_MS = 350;
+const PICK_PERSON = "Pick at least one person.";
+const ALL_REVOKED = "Everyone in this audience has a revoked link. Use Regenerate on the roster to give someone a new link.";
 
 type Preview = { recipient: { key: string; name: string; email: string } | null; subject: string; html: string };
 
@@ -54,6 +58,8 @@ type CampaignEditorProps = {
   initialHtmlMode: boolean;
   /** Null when sending is allowed; otherwise why not. */
   sendBlockedReason: string | null;
+  /** Whether this deployment can really send mail; the buttons say why not before anyone clicks. */
+  emailSetup: EmailSetup;
   /** The event is archived: nothing can be saved or sent, and `sendBlockedReason` says so. */
   archived: boolean;
   adminEmail: string;
@@ -67,6 +73,7 @@ export function CampaignEditor({
   options,
   initialHtmlMode,
   sendBlockedReason,
+  emailSetup,
   archived,
   adminEmail,
   testSentLabel,
@@ -85,9 +92,9 @@ export function CampaignEditor({
     resolver: zodResolver(campaignFieldsSchema),
     defaultValues: initial,
   });
-  const [audience, selected, subject, htmlBody] = useWatch({
+  const [audience, selected, subject, htmlBody, fromEmail] = useWatch({
     control,
-    name: ["audience", "selectedRecipients", "subject", "htmlBody"],
+    name: ["audience", "selectedRecipients", "subject", "htmlBody", "fromEmail"],
   });
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
@@ -101,10 +108,24 @@ export function CampaignEditor({
   const selectedCount = (selected ?? []).filter((key) => contactKeys.has(key)).length;
   const audienceCount = (value: EmailAudience) => (value === "selected" ? selectedCount : options.counts[value]);
   const recipientCount = audienceCount(audience);
+  const emptySelection = audience === "selected" && recipientCount === 0;
   const unknownFields = React.useMemo(() => findUnknownFields(`${subject ?? ""} ${htmlBody ?? ""}`), [subject, htmlBody]);
 
   // A string, so the effect below reruns only when the selection really changes.
   const selectedKeys = audience === "selected" ? (selected ?? []).join(",") : "";
+
+  // Who the audience covers, and how many of them a send reaches: a revoked link is skipped, not counted.
+  const members = React.useMemo(
+    () => audienceMembers(options.contacts, audience, selectedKeys ? selectedKeys.split(",") : []),
+    [options.contacts, audience, selectedKeys],
+  );
+  const { recipients: sendList, sendCount, skipped } = React.useMemo(() => sendPlan(members), [members]);
+  const skippedText = skippedNote(skipped);
+  // Preview as lists only who gets the email; if the audience changes under the choice, fall back to the first person.
+  const previewAs = previewKey === AUTO_RECIPIENT || sendList.some((c) => c.key === previewKey) ? previewKey : AUTO_RECIPIENT;
+  // "First in the audience" means the first person a send reaches, so a revoked
+  // contact never shows up there. With nobody to send to, the server picks.
+  const previewRecipient = previewAs === AUTO_RECIPIENT ? sendList[0]?.key : previewAs;
 
   // The preview follows the editor, audience included, debounced, rendered on the server with real values.
   React.useEffect(() => {
@@ -112,7 +133,7 @@ export function CampaignEditor({
     const timer = setTimeout(async () => {
       const result = await previewCampaignAction({
         campaignId,
-        recipient: previewKey === AUTO_RECIPIENT ? undefined : previewKey,
+        recipient: previewRecipient,
         subject,
         htmlBody,
         audience,
@@ -130,7 +151,7 @@ export function CampaignEditor({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [campaignId, previewKey, subject, htmlBody, audience, selectedKeys]);
+  }, [campaignId, previewRecipient, subject, htmlBody, audience, selectedKeys]);
 
   /** Saves when there are unsaved edits. Returns false and shows errors when the save fails. */
   const save = async (values: CampaignFields, force = false): Promise<boolean> => {
@@ -166,22 +187,32 @@ export function CampaignEditor({
     const notify = result.data.delivered ? toast.success : toast.warning;
     notify(sentMessage(result.data.sent, result.data.delivered));
     if (result.data.failed > 0) {
-      toast.error(`${recipients(result.data.failed)} could not be sent. Use "Resend to bounced" to try again.`);
+      toast.error(`${recipients(result.data.failed)} could not be sent. Use Retry delivery to try again.`);
     }
-    if (result.data.skippedRevoked > 0) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
+    // The confirm already named who was left out; only say more if the server skipped someone it did not.
+    if (result.data.skippedRevoked > skipped.length) toast.warning(skippedRevokedMessage(result.data.skippedRevoked));
   };
 
   // On an archived event nothing saves either; the footer line says why.
   const archivedTitle = archived ? (sendBlockedReason ?? undefined) : undefined;
+  // A test goes out through the same provider and sender as the real send, so both wait on the same setup.
+  const setupReason = emailSetupReason(emailSetup, fromEmail ?? "");
   const sendDisabledReason =
     sendBlockedReason ??
+    setupReason ??
     (unknownFields.length > 0
       ? "Fix the unknown merge fields first."
       : recipientCount === 0
-        ? audience === "changed_since_last_send"
-          ? "Nobody's schedule changed since their last email."
-          : "Nobody in this audience has an email address."
-        : null);
+        ? audience === "selected"
+          ? PICK_PERSON
+          : audience === "changed_since_last_send"
+            ? "Nobody's schedule changed since their last email."
+            : "Nobody in this audience has an email address."
+        : sendCount === 0
+          ? ALL_REVOKED
+          : null);
+  // An empty selection says so under Audience, once; the footer doesn't repeat it.
+  const footerReason = emptySelection && sendDisabledReason === PICK_PERSON ? null : sendDisabledReason;
 
   return (
     <>
@@ -195,14 +226,14 @@ export function CampaignEditor({
             <FieldGroup>
               <Field data-invalid={!!errors.name}>
                 <FieldLabel htmlFor="campaign-name">Campaign name</FieldLabel>
-                <Input id="campaign-name" autoComplete="off" aria-invalid={!!errors.name} {...register("name")} />
+                <Input id="campaign-name" autoComplete="off" disabled={archived} aria-invalid={!!errors.name} {...register("name")} />
                 <FieldDescription>Only admins see this.</FieldDescription>
                 <FieldError errors={[errors.name]} />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field data-invalid={!!errors.fromName}>
                   <FieldLabel htmlFor="campaign-from-name">From name</FieldLabel>
-                  <Input id="campaign-from-name" autoComplete="off" aria-invalid={!!errors.fromName} {...register("fromName")} />
+                  <Input id="campaign-from-name" autoComplete="off" disabled={archived} aria-invalid={!!errors.fromName} {...register("fromName")} />
                   <FieldError errors={[errors.fromName]} />
                 </Field>
                 <Field data-invalid={!!errors.fromEmail}>
@@ -211,6 +242,7 @@ export function CampaignEditor({
                     id="campaign-from-email"
                     type="email"
                     autoComplete="off"
+                    disabled={archived}
                     aria-invalid={!!errors.fromEmail}
                     {...register("fromEmail")}
                   />
@@ -224,6 +256,7 @@ export function CampaignEditor({
                   id="campaign-reply-to"
                   type="email"
                   autoComplete="off"
+                  disabled={archived}
                   aria-invalid={!!errors.replyTo}
                   {...register("replyTo")}
                 />
@@ -239,6 +272,7 @@ export function CampaignEditor({
                     <div className="flex flex-wrap items-center gap-2">
                       <Select
                         value={field.value}
+                        disabled={archived}
                         onValueChange={(value) => {
                           field.onChange(value);
                           if (value === "selected") setPickerOpen(true);
@@ -257,25 +291,32 @@ export function CampaignEditor({
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                      {field.value === "selected" ? (
+                      {field.value === "selected" && !archived ? (
                         <Button type="button" variant="outline" onClick={() => setPickerOpen(true)}>
                           <UsersIcon data-icon="inline-start" />
                           Choose people
                         </Button>
                       ) : null}
                     </div>
-                    <FieldDescription>
-                      {field.value === "changed_since_last_send"
-                        ? `${recipients(recipientCount)} whose appointments, times, or desks changed since the last email they got.`
-                        : `${recipients(recipientCount)}. Withdrawn people and contacts without an email are left out.`}
-                    </FieldDescription>
-                    <FieldError errors={[errors.selectedRecipients]} />
+                    {errors.selectedRecipients ? (
+                      <FieldError>{PICK_PERSON}</FieldError>
+                    ) : (
+                      <FieldDescription>
+                        {emptySelection
+                          ? PICK_PERSON
+                          : `${
+                              field.value === "changed_since_last_send"
+                                ? `${recipients(sendCount)} whose appointments, times, or desks changed since the last email they got.`
+                                : `${recipients(sendCount)}. Withdrawn people and contacts without an email are left out.`
+                            }${skippedText ? ` ${skippedText}` : ""}`}
+                      </FieldDescription>
+                    )}
                   </Field>
                 )}
               />
               <Field data-invalid={!!errors.subject}>
                 <FieldLabel htmlFor="campaign-subject">Subject</FieldLabel>
-                <Input id="campaign-subject" autoComplete="off" aria-invalid={!!errors.subject} {...register("subject")} />
+                <Input id="campaign-subject" autoComplete="off" disabled={archived} aria-invalid={!!errors.subject} {...register("subject")} />
                 <FieldError errors={[errors.subject]} />
               </Field>
               <Controller
@@ -291,6 +332,7 @@ export function CampaignEditor({
                       onChange={field.onChange}
                       onBlur={field.onBlur}
                       invalid={!!errors.htmlBody}
+                      disabled={archived}
                       aria-describedby="campaign-body-help"
                     />
                     <FieldDescription id="campaign-body-help">
@@ -330,18 +372,23 @@ export function CampaignEditor({
                 type="button"
                 variant="outline"
                 onClick={onTest}
-                disabled={isSubmitting || archived}
-                title={archivedTitle}
+                disabled={isSubmitting || archived || setupReason !== null}
+                title={archivedTitle ?? setupReason ?? undefined}
               >
-                Send test to me
+                Send test
               </Button>
-              <Button type="button" onClick={onSend} disabled={isSubmitting || sendDisabledReason !== null}>
+              <Button
+                type="button"
+                onClick={onSend}
+                disabled={isSubmitting || sendDisabledReason !== null}
+                title={sendDisabledReason ?? undefined}
+              >
                 <SendIcon data-icon="inline-start" />
-                Send to {recipients(recipientCount)}
+                Send to {recipients(sendCount)}
               </Button>
             </div>
             <p className="text-sm text-muted-foreground">
-              {sendDisabledReason ?? (testSentLabel ? testSentLabel : "Send yourself a test before sending to everyone.")}
+              {footerReason ?? (testSentLabel ? testSentLabel : "Send yourself a test before sending to everyone.")}
             </p>
           </CardFooter>
         </Card>
@@ -354,14 +401,14 @@ export function CampaignEditor({
           <CardContent className="flex flex-col gap-3">
             <Field>
               <FieldLabel htmlFor="campaign-preview-as">Preview as</FieldLabel>
-              <Select value={previewKey} onValueChange={setPreviewKey}>
+              <Select value={previewAs} onValueChange={setPreviewKey}>
                 <SelectTrigger id="campaign-preview-as" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value={AUTO_RECIPIENT}>First in the audience</SelectItem>
-                    {options.contacts.map((c) => (
+                    {sendList.map((c) => (
                       <SelectItem key={c.key} value={c.key}>
                         {c.name}
                       </SelectItem>
@@ -417,9 +464,10 @@ export function CampaignEditor({
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={`Send to ${recipients(recipientCount)}?`}
-        description="Each person gets their own copy with their private schedule link. Sent emails can't be recalled."
-        confirmLabel={`Send to ${recipients(recipientCount)}`}
+        title={`Send to ${recipients(sendCount)}?`}
+        description={`Each person gets their own copy with their private schedule link. Sent emails can't be recalled.${skippedText ? ` ${skippedText}` : ""}`}
+        confirmLabel={`Send to ${recipients(sendCount)}`}
+        destructive
         onConfirm={send}
       />
     </>
@@ -463,7 +511,7 @@ function SendTestDialog({
         setErrorText(result.error.fieldErrors?.toEmail?.[0] ?? result.error.message);
         return;
       }
-      if (result.data.delivered) toast.success(`Test sent to ${result.data.toEmail}`);
+      if (result.data.delivered) toast.success(`Test sent to ${result.data.toEmail}.`);
       else toast.warning(`Test logged, not sent. This server has no email provider set up, so nothing went to ${result.data.toEmail}.`);
       onOpenChange(false);
     } finally {
@@ -476,7 +524,7 @@ function SendTestDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={submit} noValidate className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>Send a test</DialogTitle>
+            <DialogTitle>Send a test email</DialogTitle>
             <DialogDescription>
               {recipient
                 ? `Uses ${recipient.name}'s details and link, with "[Test]" before the subject.`

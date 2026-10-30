@@ -1,15 +1,18 @@
-import { and, count, desc, eq, inArray, ne, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull, isNull, ne, sql, type SQL } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { admins, imports, rankings, type Import } from "@/db/schema";
+import { admins, imports, nameAliases, participants, rankings, suppliers, type Import } from "@/db/schema";
+import { compareNames } from "@/lib/names";
 import {
   importKindSchema,
   importValidationReportSchema,
   type ImportKind,
   type ImportState,
+  type EntityType,
   type ImportValidationReport,
   type RankingKind,
 } from "@/lib/schemas/import";
 import { cachePerRender } from "@/server/render-cache";
+import { fullNameFor } from "@/server/roster/display-name";
 import { importStateFor, rankingRoles } from "./validate";
 
 export type ImportSummary = {
@@ -130,4 +133,78 @@ export async function countRankingsToReplace(
   if (rankerIds.length === 0) return 0;
   const [row] = await db.select({ n: count() }).from(rankings).where(rankingsOfKindFor(eventId, kind, rankerIds));
   return row?.n ?? 0;
+}
+
+/**
+ * A saved name mapping that can change how this event's files read.
+ * `event`: this event's alias. `crossYear` on it means the cross-year copy
+ * this save wrote (same person) exists and is removed with it. `cross_year`:
+ * a global alias (D76) another save wrote, listed because its name is on this
+ * event's roster; removing it removes it for every event.
+ */
+export type SavedNameMapping = {
+  id: string;
+  scope: "event" | "cross_year";
+  rawText: string;
+  entityType: EntityType;
+  /** Who it resolves to on this event's roster. */
+  mapsTo: string;
+  source: "auto" | "manual";
+  crossYear: boolean;
+};
+
+/** Every saved name mapping that applies to this event, sorted by the text in the file. */
+export async function listSavedNameMappings(eventId: string, db: Db = getDb()): Promise<SavedNameMapping[]> {
+  const [eventRows, globalRows, people, supplierRows] = await Promise.all([
+    db.select().from(nameAliases).where(eq(nameAliases.eventId, eventId)),
+    db.select().from(nameAliases).where(and(isNull(nameAliases.eventId), isNotNull(nameAliases.canonicalName))),
+    db
+      .select({ id: participants.id, firstName: participants.firstName, lastName: participants.lastName, organization: participants.organization })
+      .from(participants)
+      .where(eq(participants.eventId, eventId)),
+    db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(eq(suppliers.eventId, eventId)),
+  ]);
+  const roster: { id: string; entityType: EntityType; canonical: string; label: string }[] = [
+    ...people.map((person) => {
+      const full = fullNameFor(person);
+      return { id: person.id, entityType: "buyer" as const, canonical: full, label: person.organization ? `${full} (${person.organization})` : full };
+    }),
+    ...supplierRows.map((supplier) => ({ id: supplier.id, entityType: "supplier" as const, canonical: supplier.name, label: supplier.name })),
+  ];
+  const labelOf = new Map(roster.map((entity) => [entity.id, entity.label]));
+  const byCanonical = new Map<string, string[]>();
+  for (const entity of roster) {
+    const key = `${entity.entityType}:${entity.canonical.trim().toLowerCase()}`;
+    byCanonical.set(key, [...(byCanonical.get(key) ?? []), entity.id]);
+  }
+  const globalKey = (entityType: EntityType, rawText: string) => `${entityType}:${rawText.trim().toLowerCase()}`;
+  const globalByKey = new Map(globalRows.map((row) => [globalKey(row.entityType, row.rawText), row]));
+
+  const mappings: SavedNameMapping[] = [];
+  const ownedGlobals = new Set<string>();
+  for (const row of eventRows) {
+    const mapsTo = labelOf.get(row.entityId);
+    // An alias for someone no longer on the roster resolves nothing.
+    if (!mapsTo) continue;
+    const copy = globalByKey.get(globalKey(row.entityType, row.rawText));
+    const crossYear = copy !== undefined && copy.entityId === row.entityId;
+    if (crossYear) ownedGlobals.add(copy.id);
+    mappings.push({ id: row.id, scope: "event", rawText: row.rawText, entityType: row.entityType, mapsTo, source: row.source, crossYear });
+  }
+  for (const row of globalRows) {
+    if (ownedGlobals.has(row.id)) continue;
+    // Resolution uses a cross-year alias only when its name is exactly one entity here.
+    const ids = byCanonical.get(globalKey(row.entityType, row.canonicalName!)) ?? [];
+    if (ids.length !== 1) continue;
+    mappings.push({
+      id: row.id,
+      scope: "cross_year",
+      rawText: row.rawText,
+      entityType: row.entityType,
+      mapsTo: labelOf.get(ids[0])!,
+      source: row.source,
+      crossYear: true,
+    });
+  }
+  return mappings.sort((a, b) => compareNames(a.rawText, b.rawText) || compareNames(a.mapsTo, b.mapsTo));
 }

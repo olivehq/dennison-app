@@ -77,6 +77,11 @@ export function renderTemplate(html: string, values: MergeValues): string {
     .join("");
 }
 
+export { isExampleAddress } from "@/lib/email/example-address";
+
+/** Shown on the send buttons and returned by the server when production has no email provider. */
+export const EMAIL_NOT_CONFIGURED_MESSAGE = "Email isn't set up yet. Add RESEND_API_KEY in Vercel, then redeploy.";
+
 /** Values for a test send or a preview when there is nobody to borrow them from. */
 export const SAMPLE_MERGE_VALUES: MergeValues = {
   first_name: "Alex",
@@ -85,6 +90,20 @@ export const SAMPLE_MERGE_VALUES: MergeValues = {
   supplier_name: "",
   desk: "",
   schedule_link: "https://example.com/s/sample-link",
-  event_name: "AW Appointment Show",
+  event_name: "AW appointment matching",
   event_date: "Tuesday, November 10, 2026",
 };
+
+/** Wraps the body so every client gets a readable default font. */
+export function emailDocument(bodyHtml: string): string {
+  return `<div style="font-family: Arial, Helvetica, sans-serif; font-size: 15px; line-height: 1.5; color: #1f1a17;">${bodyHtml}</div>`;
+}
+
+/**
+ * Merges one recipient's values into a subject and an already sanitized body.
+ * The body is sanitized before merging, so a stored body from before the
+ * sanitizer, or an unsaved preview, is cleaned too; merged values are escaped.
+ */
+export function renderEmail(subject: string, safeBody: string, values: MergeValues): { subject: string; html: string } {
+  return { subject: renderText(subject, values), html: emailDocument(renderTemplate(safeBody, values)) };
+}

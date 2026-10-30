@@ -51,7 +51,7 @@ export function parseBiztechFilter(value: string | string[] | undefined): Biztec
   return value === "in" || value === "out" ? value : "all";
 }
 
-/** "Any link", or the state of a contact's newest link. `none` means no link was ever issued. */
+/** "All links", or the state of a contact's newest link. `none` means no link was ever issued. */
 export type LinkFilter = "all" | LinkState | "none";
 
 export function parseLinkFilter(value: string | string[] | undefined): LinkFilter {

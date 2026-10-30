@@ -184,7 +184,7 @@ Postgres, Drizzle schema. Every row scoped to an `event_id` except `admins`.
 | Table | Purpose | Key columns |
 |---|---|---|
 | `admins`, `sessions`, `accounts`, `verifications` | Better Auth tables | admins also get invited_by, disabled_at |
-| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`) |
+| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`), branding jsonb (primary and accent color, logo storage key and type; null until set) |
 | `event_settings` | Per-event tunables | slot_count, slots jsonb `[{n, start, end}]`, supplier_target (9), buyer_min (7), buyer_max (9), buyer_ideal (8), mutual_top_n (10), hotel_rank_cutoff (27), biztech_opt_in_rule |
 | `participants` | Buyers | email (unique per event), first_name, last_name, organization, title, display_name, biztech_opt_in bool, status (`active`, `withdrawn`) |
 | `suppliers` | Suppliers | name, type (`business`, `hotel`), desk_number, desk_override bool, admin_contact (email, name), attendee_contact (email, name), status (`active`, `withdrawn`) |
@@ -197,6 +197,7 @@ Postgres, Drizzle schema. Every row scoped to an `event_id` except `admins`.
 | `access_tokens` | Participant links | contact_type (`buyer`, `supplier_admin`, `supplier_attendee`), entity_id, token_hash, expires_at, revoked_at, last_viewed_at |
 | `email_campaigns` | A send | name, from_name, from_email, reply_to, subject, html_body, audience (`all`, `buyers`, `suppliers`, `selected`, `changed_since_last_send`), kind (`initial`, `reminder`, `update`), sent_at |
 | `email_messages` | One per recipient | campaign_id, access_token_id, to_email, provider_message_id, status (`queued`, `sent`, `delivered`, `bounced`, `complained`, `failed`), events jsonb, schedule_hash (hash of the schedule the person was sent) |
+| `pending_file_deletions` | Added. Stored files no row points at any more, until storage confirms the delete (D184) | storage_key (primary key), created_at, attempts, last_error (error name only), next_attempt_at |
 
 Uniqueness constraints on `appointments` enforce the three hard rules at the database layer, not just in code.
 
@@ -248,7 +249,7 @@ Added, re-running without losing edits:
 
 - The engine accepts a list of pinned appointments. It treats them as already placed and fills only the remaining gaps. Withdrawn people are excluded from the input.
 - On the matching screen, "Re-run and keep existing appointments" pins every appointment in the active run that does not involve a withdrawn person. The new run records the old one as its parent.
-- An admin can also pin or unpin single appointments in the schedule workspace, for example to protect a match a supplier asked for.
+- An admin can also pin or unpin single appointments in the schedule workspace. A pin marks a meeting as reviewed (D148): "Re-run and keep existing appointments" keeps every existing meeting, pinned or not, and "Run matching" starts fresh and clears pins. Replacing a pinned meeting asks first and removes the pin (D193).
 - Before activating a re-run, the screen shows what changed: appointments added, removed, and people whose count moved.
 
 At about 500 appointments the engine runs in well under a second, far inside Vercel's function time limit.
@@ -266,8 +267,8 @@ Engine sign-off requires D&A written approval on the 2025 regression output.
 - Four uploads per event. Files go to Vercel Blob, then a Server Action parses them.
 - Source files are small, about 50 KB for the sample. If a real file nears the Server Action body limit, switch that upload to Vercel Blob client uploads.
 - Olive-defined templates for the participants file. Ranking files accept the eShow `CHOICE #n` list format. The 2025 matrix format is supported as a second parser only if D&A still has data in that shape. Otherwise it is dropped.
-- Validation report per file: unknown names (with fuzzy suggestions from the alias table and current entities), duplicate emails, missing emails, rows with zero rankings, suppliers ranked by nobody, participants who ranked nobody.
-- Alias mapping screen: unresolved raw names on the left, Combobox of entities on the right. Saved aliases persist across years.
+- Validation report per file: unknown names (with fuzzy suggestions from the alias table and current entities; never a name whose numbers differ), duplicate emails, missing emails, rows with zero rankings, suppliers ranked by nobody, participants who ranked nobody, names read through a saved alias, and for roster files the fields each apply changes and who is not in the file.
+- Alias mapping screen: unresolved raw names on the left, Combobox of entities on the right. Saved aliases persist across years. A name on the roster always beats a saved alias. The Imports page lists saved mappings with Remove (D195).
 - Re-import replaces that file's rankings and re-validates. Nothing is matched until all four files are green or explicitly accepted with warnings.
 
 Added, editing people in the app:
@@ -322,7 +323,7 @@ Added:
 Added, sending updates to only the people affected:
 
 - Each sent email stores a hash of the schedule it described. The participants and suppliers pages show a "Changed since last email" flag, and the dashboard shows how many people are affected.
-- "Send update" creates a campaign of kind `update` with the audience `changed_since_last_send`. It uses the same editor and send path as reminders, with a default body that says the schedule changed and links to it.
+- "Draft update" (formerly "Send update") creates a draft campaign of kind `update` with the audience `changed_since_last_send`. It uses the same editor and send path as reminders, with a default body that says the schedule changed and links to it.
 - Exports show when they were generated and warn if the schedule has changed since the last export.
 
 ### 2.8 Tuning and live-run support

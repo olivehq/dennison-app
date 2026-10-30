@@ -9,12 +9,13 @@ import type { ImportKind } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
-import { getImportStatusByKind, listImports, type ImportSummary } from "@/server/imports/queries";
+import { getImportStatusByKind, listImports, listSavedNameMappings, type ImportSummary } from "@/server/imports/queries";
 import { getMatchingGate } from "@/server/matching/readiness";
 import { lockReason } from "../_roster/lock-reason";
 import { eventSectionHref } from "../event-sections";
 import { importHref, KIND_LABELS } from "./import-labels";
 import { ImportsTabs } from "./imports-tabs";
+import { SavedNameMappings } from "./saved-name-mappings";
 import { readinessPanelModel, type ReadinessPanelModel } from "./readiness-panel";
 import { UploadCard } from "./upload-card";
 import { uploadCardState } from "./upload-card-state";
@@ -27,7 +28,8 @@ const STEPS: { title: string; description: string; kinds: ImportKind[] }[] = [
   },
   {
     title: "Step 2. Ranking files",
-    description: "Who wants to meet whom, from the three eShow exports.",
+    description:
+      "Who wants to meet whom, from the three eShow exports. Load these after the roster files are applied. A ranking file uploaded first is checked again when a roster file is applied.",
     kinds: ["buyer_biztech_rankings", "buyer_hotel_rankings", "supplier_rankings"],
   },
 ];
@@ -84,10 +86,11 @@ export default async function ImportsPage({ params }: { params: Promise<{ id: st
   const event = await getEvent(id);
   if (!event) notFound();
 
-  const [byKind, gate, history] = await Promise.all([
+  const [byKind, gate, history, savedMappings] = await Promise.all([
     getImportStatusByKind(event.id),
     getMatchingGate(event.id),
     listImports(event.id),
+    listSavedNameMappings(event.id),
   ]);
   const locked = lockReason(event, "upload or apply files");
 
@@ -140,6 +143,19 @@ export default async function ImportsPage({ params }: { params: Promise<{ id: st
             </div>
           </section>
         ))}
+        {savedMappings.length > 0 ? (
+          <section aria-labelledby="saved-names" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id="saved-names" className="font-display text-base font-bold">
+                Saved name mappings
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                How ranking files read names that nobody on the roster has. A name or organization on the roster always wins over a mapping, so a mapping for a name the roster now has is no longer used.
+              </p>
+            </div>
+            <SavedNameMappings eventId={event.id} mappings={savedMappings} lockedReason={locked} />
+          </section>
+        ) : null}
       </div>
     </>
   );

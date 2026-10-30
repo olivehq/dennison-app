@@ -175,6 +175,20 @@ export async function countManualChanges(db: Db, eventId: string, runId: string)
   return onRun.filter((r) => r.action !== "appointment.undo" && inEffect(r.id)).length;
 }
 
+/**
+ * `getScheduleView` as one snapshot, for the exports: the reads share a
+ * REPEATABLE READ, read-only transaction, so a schedule save between the run
+ * read and the appointment read can't give a file newer than the run version
+ * the export's audit row records (D182). Call it with the app's database, not
+ * a transaction handle: inside a transaction it runs as a savepoint, which keeps
+ * the caller's isolation level, so the snapshot holds only if that caller
+ * already runs at REPEATABLE READ or stricter.
+ */
+export async function getScheduleViewSnapshot(eventId: string, db: Db = getDb()): Promise<ScheduleView | null> {
+  if (!z.uuid().safeParse(eventId).success) return null;
+  return db.transaction((tx) => getScheduleView(eventId, tx), { isolationLevel: "repeatable read", accessMode: "read only" });
+}
+
 /** Everything the workspace page needs in one call. Null when the event does not exist. */
 export async function getScheduleView(eventId: string, db: Db = getDb()): Promise<ScheduleView | null> {
   if (!z.uuid().safeParse(eventId).success) return null;

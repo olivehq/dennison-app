@@ -68,9 +68,20 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
         helper.accessor("name", {
           header: "Name",
           sortFn: "name",
-          cell: ({ row }) => <span className="block max-w-sm font-medium whitespace-normal">{row.original.name}</span>,
+          cell: ({ row }) => (
+            <span className="block max-w-60 truncate font-medium" title={row.original.name}>
+              {row.original.name}
+            </span>
+          ),
         }),
-        helper.accessor("email", { header: "Email" }),
+        helper.accessor("email", {
+          header: "Email",
+          cell: ({ row }) => (
+            <span className="block max-w-64 truncate" title={row.original.email}>
+              {row.original.email}
+            </span>
+          ),
+        }),
         helper.accessor((row) => CONTACT_LABELS[row.contactType], {
           id: "type",
           header: "Type",
@@ -82,7 +93,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>Choose recipients</DialogTitle>
           <DialogDescription>
@@ -107,6 +118,7 @@ export function RecipientPicker({ open, onOpenChange, contacts, value, onChange 
           </Button>
           <Button
             type="button"
+            disabled={pickedCount === 0}
             onClick={() => {
               onChange(pickedKeys(contacts, picked));
               onOpenChange(false);

@@ -24,11 +24,13 @@ import type { EditResult, SwapCandidate } from "@/server/schedule/edits";
 import type { ScheduleSlot } from "@/server/schedule/queries";
 import { EditPreviewPanel, previewSentence } from "./edit-preview";
 import {
+  affectedText,
   describeEdit,
   healthOf,
   healthText,
   openSlotsText,
   personLabel,
+  PIN_NOTE,
   pickerRequestFor,
   sheetRows,
   type EditDraft,
@@ -71,10 +73,6 @@ export function useEditErrors() {
   );
 }
 
-function affectedLine(result: EditResult): string {
-  return result.affected.map((p) => `${p.name}: ${p.before} → ${p.after}`).join(". ");
-}
-
 export function PersonSheet(props: PersonSheetProps) {
   const { person, model, slots, targets, topN, editing, runId, version, focusSlot, picker, onPickerChange, onVersion, onSelect, onClose } =
     props;
@@ -103,18 +101,29 @@ export function PersonSheet(props: PersonSheetProps) {
       return false;
     }
     onVersion(result.data.version);
-    toast.success(success, { description: affectedLine(result.data) });
+    toast.success(success, { description: affectedText(result.data.affected) || undefined });
     return true;
   };
+
+  // The follow-up to a Replace lives in the sheet, not the toast: the open sheet
+  // makes the page behind it inert, so a toast button could not be clicked.
+  const [replacedNote, setReplaced] = React.useState<{
+    sheetPersonId: string;
+    sentence: string;
+    buyerId: string;
+    buyerName: string;
+    slot: number;
+  } | null>(null);
+  // Cleared as soon as the sheet shows someone else or closes, so coming back to
+  // this person never shows a note about a replace that may have been undone since.
+  if (replacedNote && replacedNote.sheetPersonId !== person?.id) setReplaced(null);
+  const replaced = replacedNote && replacedNote.sheetPersonId === person?.id ? replacedNote : null;
 
   // Picking someone opens a preview; Save commits it. Tied to the request so a new picker starts clean.
   const [draft, setDraft] = React.useState<{ request: PickerRequest; candidate: SwapCandidate } | null>(null);
   const activeDraft = draft && draft.request === picker ? draft : null;
   const preview = activeDraft ? describeEdit(model, draftFor(model, activeDraft.request, activeDraft.candidate)) : null;
   const [removing, setRemoving] = React.useState<SheetRow | null>(null);
-  // After a replace: offer to open the schedule of the buyer who lost the slot.
-  const [followUp, setFollowUp] = React.useState<{ personId: string; name: string; slot: number } | null>(null);
-
   const pick = (candidate: SwapCandidate) => {
     if (picker) setDraft({ request: picker, candidate });
   };
@@ -144,18 +153,17 @@ export function PersonSheet(props: PersonSheetProps) {
         picker.pick === "buyer" && picker.removeBuyerId
           ? `Replaced ${picker.removeBuyerName} with ${candidate.name}`
           : `Added ${candidate.name}`;
-      if (finish(result, `${verb} in slot ${picker.slot}`)) {
+      // A withdrawn buyer's sheet has no Add button, so there is nothing to follow up on.
+      const removed = removeBuyerId ? model.personById.get(removeBuyerId) : undefined;
+      const sentence = `${verb} in slot ${picker.slot}.`;
+      if (finish(result, sentence)) {
+        setReplaced(
+          person && removeBuyerId && removed && removeBuyerId !== person.id && !removed.withdrawn
+            ? { sheetPersonId: person.id, sentence, buyerId: removeBuyerId, buyerName: personLabel(removed).primary, slot: picker.slot }
+            : null,
+        );
         setDraft(null);
         onPickerChange(null);
-        const removed = removeBuyerId ? model.personById.get(removeBuyerId) : undefined;
-        // A withdrawn buyer's sheet has no Add button, so there is nothing to follow up on.
-        if (removeBuyerId && removeBuyerId !== person?.id && !removed?.withdrawn) {
-          setFollowUp({
-            personId: removeBuyerId,
-            name: removed ? personLabel(removed).primary : (picker.pick === "buyer" && picker.removeBuyerName) || "the buyer",
-            slot: picker.slot,
-          });
-        }
       }
     });
   };
@@ -164,10 +172,12 @@ export function PersonSheet(props: PersonSheetProps) {
     const a = row.appointment;
     if (!a) return;
     setBusyRow(a.id);
+    // Any other edit makes the note about the last replace stale.
+    setReplaced(null);
     try {
       const result = await removeAppointmentAction({ runId, version, slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId });
       const supplier = model.personById.get(a.supplierId);
-      finish(result, `Removed. ${supplier?.name ?? "The supplier"} is open in slot ${a.slot}`);
+      finish(result, `Removed. ${supplier?.name ?? "The supplier"} is open in slot ${a.slot}.`);
     } finally {
       setBusyRow(null);
     }
@@ -180,6 +190,7 @@ export function PersonSheet(props: PersonSheetProps) {
     const a = row.appointment;
     if (!a) return;
     setBusyRow(a.id);
+    setReplaced(null);
     startTransition(async () => {
       const result = await setPinnedAction({ appointmentId: a.id, pinned: !a.pinned, version });
       setBusyRow(null);
@@ -189,7 +200,7 @@ export function PersonSheet(props: PersonSheetProps) {
       }
       onVersion(result.data.version);
       toast.success(result.data.pinned ? `Pinned slot ${a.slot}.` : `Unpinned slot ${a.slot}.`, {
-        description: result.data.pinned ? "Marked as reviewed. A pin doesn't change matching." : undefined,
+        description: result.data.pinned ? PIN_NOTE : undefined,
       });
     });
   };
@@ -333,6 +344,16 @@ export function PersonSheet(props: PersonSheetProps) {
                   )
                 ) : (
                   <div className="flex flex-col gap-4">
+                    {replaced ? (
+                      <Alert>
+                        <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{replaced.sentence}</span>
+                          <Button size="xs" variant="outline" onClick={() => onSelect(replaced.buyerId, replaced.slot)}>
+                            Open {replaced.buyerName}&apos;s schedule
+                          </Button>
+                        </AlertDescription>
+                      </Alert>
+                    ) : null}
                     <div className="flex flex-col gap-2">
                       <div className="flex items-baseline justify-between gap-2 text-sm">
                         <span className="font-semibold">{healthText(person, targets)}</span>
@@ -409,19 +430,6 @@ export function PersonSheet(props: PersonSheetProps) {
                 confirmLabel="Remove meeting"
                 destructive
                 onConfirm={() => (removing ? remove(removing) : undefined)}
-              />
-              <ConfirmDialog
-                open={followUp !== null}
-                onOpenChange={(open) => !open && setFollowUp(null)}
-                title={followUp ? `Open ${followUp.name}'s schedule?` : "Open schedule?"}
-                description={
-                  followUp ? `${followUp.name} is now open in slot ${followUp.slot}. Open their schedule to fill it.` : undefined
-                }
-                confirmLabel="Open schedule"
-                cancelLabel="Stay here"
-                onConfirm={() => {
-                  if (followUp) onSelect(followUp.personId, followUp.slot);
-                }}
               />
             </>
           ) : (

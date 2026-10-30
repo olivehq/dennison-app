@@ -1,13 +1,16 @@
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, LockIcon } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cn } from "cn";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventStatus } from "@/lib/schemas/event";
 import { formatTimestamp } from "@/lib/time";
+import { getDb } from "@/db/client";
 import { requireSession } from "@/server/auth/session";
 import { getEmailSummary } from "@/server/email/queries";
+import { countEventData } from "@/server/events/events";
 import { getEvent, getEventCounts } from "@/server/events/queries";
 import { EVENT_STATUS_LABELS } from "../event-status-badge";
 import { NEXT_ACTION } from "../next-action";
@@ -20,10 +23,12 @@ import { eventSectionHref } from "./event-sections";
 const STEPS: EventStatus[] = ["draft", "imported", "matched", "locked", "sent"];
 
 function StatusStepper({ status }: { status: EventStatus }) {
-  const current = status === "archived" ? STEPS.length : STEPS.indexOf(status);
+  // An archived event gets a last step of its own, so the stepper always has a current step.
+  const steps: EventStatus[] = status === "archived" ? [...STEPS, "archived"] : STEPS;
+  const current = steps.indexOf(status);
   return (
     <ol className="flex flex-wrap items-center gap-2" aria-label="Event progress">
-      {STEPS.map((step, index) => {
+      {steps.map((step, index) => {
         const done = index < current;
         const active = index === current;
         return (
@@ -40,7 +45,7 @@ function StatusStepper({ status }: { status: EventStatus }) {
               <span className="font-display tabular-nums">{index + 1}</span>
               {EVENT_STATUS_LABELS[step]}
             </span>
-            {index < STEPS.length - 1 ? (
+            {index < steps.length - 1 ? (
               <span className="h-px w-3 bg-border" aria-hidden="true" />
             ) : null}
           </li>
@@ -50,7 +55,19 @@ function StatusStepper({ status }: { status: EventStatus }) {
   );
 }
 
-function CountCard({ label, value, note, href }: { label: string; value: number; note?: string; href: string }) {
+function CountCard({
+  label,
+  value,
+  note,
+  href,
+  viewLabel,
+}: {
+  label: string;
+  value: number;
+  note?: string;
+  href: string;
+  viewLabel: string;
+}) {
   return (
     <Card size="sm" className="min-w-0">
       <CardHeader>
@@ -60,7 +77,9 @@ function CountCard({ label, value, note, href }: { label: string; value: number;
       </CardHeader>
       <CardContent>
         <Button variant="link" size="sm" className="h-auto p-0" asChild>
-          <Link href={href}>View</Link>
+          <Link href={href}>
+            View<span className="sr-only"> {viewLabel}</span>
+          </Link>
         </Button>
       </CardContent>
     </Card>
@@ -84,15 +103,38 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
         label: "Go to emails",
       }
     : NEXT_ACTION[event.status];
-  const canDelete = event.status === "draft" && counts.participants === 0;
+  // The same count deleteEvent checks, so Delete is offered only where the server accepts it.
+  const canDelete = event.status === "draft" && (await countEventData(getDb(), event.id)) === 0;
 
   return (
     <>
+      {event.status === "archived" ? (
+        <Alert>
+          <LockIcon />
+          <AlertTitle>Read-only</AlertTitle>
+          <AlertDescription>This event is archived. Nothing can be edited, and exports stay available. Participant data is still deleted 90 days after the event unless D&amp;A asked to keep it.</AlertDescription>
+        </Alert>
+      ) : null}
       <StatusStepper status={event.status} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <CountCard label="Participants" value={counts.participants} href={eventSectionHref(event.id, "participants")} />
-        <CountCard label="Suppliers" value={counts.suppliers} href={eventSectionHref(event.id, "suppliers")} />
-        <CountCard label="Appointments" value={counts.appointments} href={eventSectionHref(event.id, "schedule")} />
+        <CountCard
+          label="Participants"
+          value={counts.participants}
+          href={eventSectionHref(event.id, "participants")}
+          viewLabel="participants"
+        />
+        <CountCard
+          label="Suppliers"
+          value={counts.suppliers}
+          href={eventSectionHref(event.id, "suppliers")}
+          viewLabel="suppliers"
+        />
+        <CountCard
+          label="Appointments"
+          value={counts.appointments}
+          href={eventSectionHref(event.id, "schedule")}
+          viewLabel="appointments"
+        />
         <CountCard
           label="Changed since last email"
           value={email.changed}
@@ -102,6 +144,7 @@ export default async function EventOverviewPage({ params }: { params: Promise<{ 
               : "No email sent yet"
           }
           href={eventSectionHref(event.id, "emails")}
+          viewLabel="email changes"
         />
       </div>
       <Card className="max-w-xl">

@@ -14,6 +14,7 @@ import {
   upsertSupplier,
   withdrawParticipant,
   withdrawSupplier,
+  type SaveResult,
   type SupplierStatusResult,
 } from "./roster";
 
@@ -26,7 +27,7 @@ function revalidateEvent(eventId: string): void {
   revalidatePath(`/events/${eventId}`, "layout");
 }
 
-export async function saveParticipant(input: unknown): Promise<IdResult> {
+export async function saveParticipant(input: unknown): Promise<ActionResult<SaveResult>> {
   const actor = await requireAdmin();
   const parsed = saveParticipantSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
@@ -59,7 +60,7 @@ export async function restoreParticipantAction(id: unknown): Promise<IdResult> {
   return participantAction(id, (input) => restoreParticipant(getDb(), input));
 }
 
-export async function saveSupplier(input: unknown): Promise<IdResult> {
+export async function saveSupplier(input: unknown): Promise<ActionResult<SaveResult>> {
   const actor = await requireAdmin();
   const parsed = saveSupplierSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);

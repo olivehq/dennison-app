@@ -10,7 +10,7 @@ import {
 import { fail, ok, type ActionResult } from "@/lib/errors";
 import type { ParticipantInput, SupplierInput } from "@/lib/schemas/roster";
 import { recordAudit } from "@/server/audit/audit";
-import { inEventTransaction, loadEditableEvent, Refused } from "@/server/events/editable";
+import { inEventTransaction, Refused } from "@/server/events/editable";
 import { changedSupplierContacts, replaceLinksForChangedEmail } from "@/server/tokens/tokens";
 
 type Actor = { adminId: string };
@@ -29,6 +29,9 @@ export type UpsertSupplierInput = Actor & {
 };
 
 export type ByIdInput = Actor & { id: string };
+
+/** What a save returns. `linksRevoked` counts the links an email change cut off, so the toast says so only when there were some. */
+export type SaveResult = { id: string; linksRevoked: number };
 
 function linkCount(count: number): string {
   return `${count} link${count === 1 ? "" : "s"}`;
@@ -83,13 +86,7 @@ function participantValues(data: ParticipantInput) {
   };
 }
 
-export async function upsertParticipant(
-  db: Db,
-  input: UpsertParticipantInput,
-): Promise<ActionResult<{ id: string }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
-
+export async function upsertParticipant(db: Db, input: UpsertParticipantInput): Promise<ActionResult<SaveResult>> {
   const existing = input.id ? await findParticipant(db, input.id) : null;
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
     return fail("not_found", "That participant no longer exists.");
@@ -116,7 +113,7 @@ export async function upsertParticipant(
         entityId: row.id,
         after: row,
       });
-      return row;
+      return { row, linksRevoked: 0 };
     }
     const [row] = await tx.update(participants).set(values).where(eq(participants.id, current.id)).returning();
     const emailChanged = current.email !== row.email;
@@ -136,10 +133,10 @@ export async function upsertParticipant(
       after: links?.reissued.length ? { ...row, linksReissued: links.reissued } : row,
       note: links ? emailChangeNote("Email changed", links) : null,
     });
-    return row;
+    return { row, linksRevoked: links?.revoked ?? 0 };
   });
   if (!saved.ok) return saved;
-  return ok({ id: saved.data.id });
+  return ok({ id: saved.data.row.id, linksRevoked: saved.data.linksRevoked });
 }
 
 async function setParticipantStatus(
@@ -149,8 +146,6 @@ async function setParticipantStatus(
 ): Promise<ActionResult<{ id: string }>> {
   const existing = await findParticipant(db, input.id);
   if (!existing) return fail("not_found", "That participant no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
   // Rankings, appointments, and links stay; the schedule flags the gaps and
@@ -257,9 +252,7 @@ function supplierValues(data: SupplierInput) {
   };
 }
 
-export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promise<ActionResult<{ id: string }>> {
-  const loaded = await loadEditableEvent(db, input.eventId);
-  if (!loaded.ok) return loaded.error;
+export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promise<ActionResult<SaveResult>> {
 
   const existing = input.id ? await findSupplier(db, input.id) : null;
   if (input.id && (!existing || existing.eventId !== input.eventId)) {
@@ -293,7 +286,7 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
         entityId: row.id,
         after: row,
       });
-      return row;
+      return { row, linksRevoked: 0 };
     }
     const [row] = await tx.update(suppliers).set(values).where(eq(suppliers.id, current.id)).returning();
     const changed = changedSupplierContacts(current, row);
@@ -308,10 +301,10 @@ export async function upsertSupplier(db: Db, input: UpsertSupplierInput): Promis
       after: links.reissued.length ? { ...row, linksReissued: links.reissued } : row,
       note: changed.length ? emailChangeNote("Contact email changed", links) : null,
     });
-    return row;
+    return { row, linksRevoked: links.revoked };
   });
   if (!saved.ok) return saved;
-  return ok({ id: saved.data.id });
+  return ok({ id: saved.data.row.id, linksRevoked: saved.data.linksRevoked });
 }
 
 export type SupplierStatusResult = {
@@ -327,8 +320,6 @@ async function setSupplierStatus(
 ): Promise<ActionResult<SupplierStatusResult>> {
   const existing = await findSupplier(db, input.id);
   if (!existing) return fail("not_found", "That supplier no longer exists.");
-  const loaded = await loadEditableEvent(db, existing.eventId);
-  if (!loaded.ok) return loaded.error;
   if (existing.status === status) return ok({ id: existing.id });
 
   const done = await inEventTransaction(db, existing.eventId, "edit", async (tx) => {

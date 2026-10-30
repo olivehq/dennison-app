@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emailIn, normaliseName, resolveNames, similarity } from "./resolve";
+import { emailIn, normaliseName, numberTokens, resolveNames, sameNumbers, similarity } from "./resolve";
 
 const entities = [
   { id: "hyatt", label: "Hyatt Regency Monterey Hotel & Spa", names: ["Hyatt Regency Monterey Hotel & Spa"] },
@@ -81,7 +81,7 @@ describe("resolveNames", () => {
     expect(result.unresolved).toHaveLength(1);
   });
 
-  it("uses this event's alias first, then a cross-year alias by canonical name, before matching names", () => {
+  it("uses this event's alias, then a cross-year alias by canonical name, for text no one on the roster has", () => {
     const result = resolveNames(
       ["Hyatt Monterey", "MONTEREY HYATT", "Plaza", "eShow", "Gone"],
       entities,
@@ -99,11 +99,45 @@ describe("resolveNames", () => {
     // Global aliases match raw text and canonical name ignoring case.
     expect(result.resolved.get("MONTEREY HYATT")).toBe("hyatt");
     expect(result.resolved.get("Plaza")).toBe("plaza");
-    // A global alias comes before an exact name match.
-    expect(result.resolved.get("eShow")).toBe("slo");
+    // An exact name on the roster beats any alias.
+    expect(result.resolved.get("eShow")).toBe("eshow");
     // A canonical name no entity here has is skipped.
     expect(result.resolved.has("Gone")).toBe(false);
     expect(result.inexact.size).toBe(0);
+    expect(Object.fromEntries(result.viaAlias)).toEqual({ "Hyatt Monterey": "event", "MONTEREY HYATT": "cross_year", Plaza: "cross_year" });
+  });
+
+  it("lets an exact or normalised name beat an event alias and a cross-year alias", () => {
+    const hotels = ["10", "20", "100", "110", "130"].map((n) => ({ id: `h${n}`, label: `${n} Hotel`, names: [`${n} Hotel`] }));
+    const result = resolveNames(
+      ["100 Hotel", "110 hotel", "The 130 Hotel", "200 Hotel"],
+      hotels,
+      [
+        { rawText: "100 Hotel", entityId: "h10" },
+        { rawText: "200 Hotel", entityId: "h20" },
+      ],
+      [
+        { rawText: "110 hotel", canonicalName: "10 Hotel" },
+        { rawText: "The 130 Hotel", canonicalName: "10 Hotel" },
+      ],
+    );
+    expect(result.resolved.get("100 Hotel")).toBe("h100");
+    expect(result.resolved.get("110 hotel")).toBe("h110");
+    expect(result.resolved.get("The 130 Hotel")).toBe("h130");
+    expect(result.inexact.get("The 130 Hotel")).toBe("h130");
+    // No hotel is called "200 Hotel", so the saved mapping still reads it.
+    expect(result.resolved.get("200 Hotel")).toBe("h20");
+    expect(Object.fromEntries(result.viaAlias)).toEqual({ "200 Hotel": "event" });
+  });
+
+  it("never suggests a name whose numbers differ", () => {
+    const hotels = ["10", "20", "100"].map((n) => ({ id: `h${n}`, label: `${n} Hotel`, names: [`${n} Hotel`] }));
+    const result = resolveNames(["110 Hotel", "200 Hotel", "80 Hotel", "Hotel 100", "100 Hotels"], hotels, []);
+    const suggested = Object.fromEntries(result.unresolved.map((u) => [u.raw, u.suggestions.map((s) => s.entityId)]));
+    // The same number in another word order is still suggested.
+    expect(suggested).toEqual({ "110 Hotel": [], "200 Hotel": [], "80 Hotel": [], "Hotel 100": ["h100"], "100 Hotels": ["h100"] });
+    expect(numberTokens("Hall 2 Suite 010")).toEqual(["10", "2"]);
+    expect(sameNumbers("Suite 007", "Suite 7")).toBe(true);
   });
 
   it("sends a shared name to mapping even when a cross-year alias names someone else", () => {

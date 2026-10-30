@@ -4,6 +4,7 @@ import {
   CopyIcon,
   FileWarningIcon,
   InfoIcon,
+  LinkIcon,
   MailXIcon,
   OctagonXIcon,
   TriangleAlertIcon,
@@ -15,19 +16,23 @@ import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDb } from "@/db/client";
 import { isRankingKind, type EntityType, type ImportValidationReport } from "@/lib/schemas/import";
 import { formatTimestamp } from "@/lib/time";
 import { requireSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
-import { countRankingsToReplace, getImport, listImports } from "@/server/imports/queries";
+import { reportIsStale } from "@/server/imports/imports";
+import { countRankingsToReplace, getImport, listImports, listSavedNameMappings } from "@/server/imports/queries";
 import { fullNameFor, listParticipants, listSuppliers } from "@/server/roster/queries";
 import { lockReason } from "../../_roster/lock-reason";
 import { eventSectionHref } from "../../event-sections";
 import { ImportStateBadge, KIND_LABELS, plural } from "../import-labels";
 import { importsHistoryHref } from "../imports-tabs";
+import { SavedNameMappings } from "../saved-name-mappings";
 import { ApplyPanel } from "./apply-panel";
 import { NameMappingTable, type EntityOption } from "./name-mapping-table";
 import { ReportSection } from "./report-section";
+import { StaleReportAlert } from "./stale-report-alert";
 
 const FORMAT_LABELS = {
   template: "Olive template",
@@ -78,6 +83,14 @@ function ReportSections({ report, ranking }: { report: ImportValidationReport; r
       hint: "Names that match nobody on the roster. Map them in the table below.",
       icon: <UserRoundSearchIcon />,
       items: report.unknownNames.map((n) => `“${n.raw}” on ${rowsText(n.rows)}`),
+    },
+    {
+      title: "Read through a saved name",
+      hint: "No one on the roster has these names, so a saved mapping decided who they are. If one is wrong, remove it below and the file is checked again.",
+      icon: <LinkIcon />,
+      items: (report.aliasedNames ?? []).map(
+        (n) => `“${n.raw}” as ${n.name} on ${rowsText(n.rows)}, saved ${n.scope === "event" ? "for this event" : "in another event"}`,
+      ),
     },
     {
       title: "Duplicates",
@@ -153,14 +166,28 @@ export default async function ImportDetailPage({
   // What an apply replaces, for the confirmation. Reports from before replace-per-ranker have no ranker list.
   const rankersKnown = report !== null && report.rankersInFile.length === report.counts.rankers;
 
-  const [history, participants, suppliers, replacing] = await Promise.all([
+  const aliased = report?.aliasedNames ?? [];
+  const [history, participants, suppliers, replacing, savedMappings, stale] = await Promise.all([
     listImports(event.id),
     needsMapping ? listParticipants(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
     needsMapping ? listSuppliers(event.id, { includeWithdrawn: true }) : Promise.resolve([]),
     detail.state === "ready" && rankersKnown && isRankingKind(detail.kind)
       ? countRankingsToReplace(event.id, detail.kind, report.rankersInFile)
       : Promise.resolve(null),
+    aliased.length > 0 ? listSavedNameMappings(event.id) : Promise.resolve([]),
+    report && detail.status === "validated" ? reportIsStale(getDb(), detail.id) : Promise.resolve(false),
   ]);
+  // The saved mappings this file was read through, so a wrong one can be removed here.
+  // Keyed the way the resolver reads them: this event's aliases match the exact
+  // text, cross-year ones ignore case (resolve.ts buildIndex).
+  const mappingKey = (scope: string, entityType: string, raw: string) =>
+    `${scope}:${entityType}:${scope === "event" ? raw.trim() : raw.trim().toLowerCase()}`;
+  const aliasedKeys = new Set(aliased.map((n) => mappingKey(n.scope, n.entityType, n.raw)));
+  const usedMappings = savedMappings.filter((m) => aliasedKeys.has(mappingKey(m.scope, m.entityType, m.rawText)));
+  // Names nobody on the roster has (not shared ones): often a roster file that isn't loaded yet.
+  const missingTypes = new Set(
+    needsMapping && report ? report.unknownNames.filter((n) => !n.ambiguous).map((n) => n.entityType) : [],
+  );
   const newerExists = history.some(
     (item) => item.kind === detail.kind && item.state !== "ignored" && item.createdAt > detail.createdAt,
   );
@@ -222,6 +249,7 @@ export default async function ImportDetailPage({
         rows={report?.counts.rows ?? 0}
         rankings={report?.counts.rankings ?? 0}
         rankers={report?.counts.rankers ?? 0}
+        rosterChanges={report?.rosterChanges ?? null}
         replacing={replacing}
         biztechFromFile={event.settings.biztechOptInRule === "from_biztech_file"}
         eventIsDraft={event.status === "draft"}
@@ -236,6 +264,7 @@ export default async function ImportDetailPage({
         <h2 id="report-heading" className="font-display text-lg font-bold">
           Validation report
         </h2>
+        {stale ? <StaleReportAlert importId={detail.id} lockedReason={locked} /> : null}
         {report ? (
           <ReportSections report={report} ranking={ranking} />
         ) : (
@@ -247,11 +276,31 @@ export default async function ImportDetailPage({
         )}
       </section>
 
+      {usedMappings.length > 0 ? (
+        <section className="flex flex-col gap-3" aria-labelledby="saved-names-heading">
+          <h2 id="saved-names-heading" className="font-display text-lg font-bold">
+            Saved names this file used
+          </h2>
+          <SavedNameMappings eventId={event.id} mappings={usedMappings} lockedReason={locked} />
+        </section>
+      ) : null}
+
       {needsMapping && report ? (
         <section className="flex flex-col gap-3" aria-labelledby="mapping-heading">
           <h2 id="mapping-heading" className="font-display text-lg font-bold">
             Map unknown names <span className="tabular-nums text-muted-foreground">({plural(report.unknownNames.length, "name")})</span>
           </h2>
+          {[...missingTypes].map((type) => (
+            <Alert key={type}>
+              <InfoIcon />
+              <AlertTitle>Load the {type === "supplier" ? "suppliers" : "participants"} file first?</AlertTitle>
+              <AlertDescription>
+                {type === "supplier"
+                  ? "These names aren't on the supplier list yet. If they're in a suppliers file you haven't loaded, upload and apply it first; this file is checked again automatically."
+                  : "These names aren't on the participant list yet. If they're in a participants file you haven't loaded, upload and apply it first; this file is checked again automatically."}
+              </AlertDescription>
+            </Alert>
+          ))}
           <NameMappingTable
             eventId={event.id}
             importId={detail.id}

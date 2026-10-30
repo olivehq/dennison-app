@@ -1,10 +1,14 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { APIError } from "better-auth/api";
 import type { Db } from "@/db/client";
-import { admins, sessions } from "@/db/schema";
+import { admins, rateLimits, sessions } from "@/db/schema";
 import { fail, ok, type ActionResult } from "@/lib/errors";
-import { SlidingWindowLimiter } from "@/lib/rate-limit";
-import type { ChangePasswordInput } from "@/lib/schemas/auth";
+import {
+  BREACH_CHECK_FAILED_PREFIX,
+  BREACH_CHECK_UNAVAILABLE_MESSAGE,
+  BREACHED_PASSWORD_MESSAGE,
+  type ChangePasswordInput,
+} from "@/lib/schemas/auth";
 import { recordAudit } from "@/server/audit/audit";
 import type { Auth } from "./auth";
 import { describeUserAgent } from "./user-agent";
@@ -21,11 +25,12 @@ export async function updateAdminName(
 ): Promise<ActionResult<{ name: string }>> {
   return db.transaction(async (tx) => {
     const [current] = await tx
-      .select({ name: admins.name })
+      .select({ name: admins.name, disabledAt: admins.disabledAt })
       .from(admins)
       .where(eq(admins.id, input.adminId))
       .for("update");
     if (!current) return fail("not_found", "Your account no longer exists. Sign in again.");
+    if (current.disabledAt) return fail("unauthorized", "Your account is disabled. Contact an active admin.");
     if (current.name === input.name) return ok({ name: input.name });
 
     await tx.update(admins).set({ name: input.name, updatedAt: new Date() }).where(eq(admins.id, input.adminId));
@@ -42,18 +47,27 @@ export async function updateAdminName(
   });
 }
 
-/**
- * Server-side calls skip Better Auth's own rate limit (it runs on the HTTP
- * route only), so a stolen session could guess the current password here
- * without one. Five tries per admin per 10 minutes, the same as sign-in. Held
- * in memory per instance, like the participant-link limiter in src/proxy.ts.
- */
+// Server-side Better Auth calls skip its HTTP limiter. Share counters across instances.
 const PASSWORD_ATTEMPTS = { limit: 5, windowMs: 10 * 60 * 1000 };
-let passwordAttempts = new SlidingWindowLimiter(PASSWORD_ATTEMPTS.limit, PASSWORD_ATTEMPTS.windowMs);
 
-/** Starts the attempt counts over. For tests. */
-export function resetPasswordAttemptsForTests(): void {
-  passwordAttempts = new SlidingWindowLimiter(PASSWORD_ATTEMPTS.limit, PASSWORD_ATTEMPTS.windowMs);
+async function consumePasswordAttempt(db: Db, adminId: string): Promise<number> {
+  const key = `admin-password-change:${adminId}`;
+  const now = Date.now();
+  const expired = sql`${rateLimits.lastRequest} <= ${now - PASSWORD_ATTEMPTS.windowMs}`;
+  // The unique key and conditional upsert serialize concurrent attempts, including first use.
+  const [allowed] = await db.insert(rateLimits).values({
+    id: key, key, count: 1, lastRequest: now,
+  }).onConflictDoUpdate({
+    target: rateLimits.key,
+    set: {
+      count: sql`case when ${expired} then 1 else ${rateLimits.count} + 1 end`,
+      lastRequest: now,
+    },
+    setWhere: sql`${expired} or ${rateLimits.count} < ${PASSWORD_ATTEMPTS.limit}`,
+  }).returning({ key: rateLimits.key });
+  if (allowed) return 0;
+  const [blocked] = await db.select().from(rateLimits).where(eq(rateLimits.key, key));
+  return Math.max(1, Math.ceil((blocked.lastRequest + PASSWORD_ATTEMPTS.windowMs - now) / 1000));
 }
 
 const WRONG_CURRENT_PASSWORD =
@@ -73,9 +87,11 @@ export async function changeAdminPassword(
     "currentPassword" | "newPassword" | "revokeOtherSessions"
   >,
 ): Promise<ActionResult<{ otherSessionsSignedOut: boolean }>> {
-  const limited = passwordAttempts.hit(input.adminId);
-  if (!limited.allowed) {
-    const minutes = Math.ceil(limited.retryAfterSeconds / 60);
+  const [admin] = await db.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.id, input.adminId));
+  if (!admin || admin.disabledAt) return fail("unauthorized", "Your account is unavailable. Sign in again or contact an active admin.");
+  const retryAfterSeconds = await consumePasswordAttempt(db, input.adminId);
+  if (retryAfterSeconds > 0) {
+    const minutes = Math.ceil(retryAfterSeconds / 60);
     return fail(
       "rate_limited",
       `Too many tries. Wait ${minutes === 1 ? "a minute" : `${minutes} minutes`}, then try again.`,
@@ -102,8 +118,14 @@ export async function changeAdminPassword(
         return fail("validation", "Check the highlighted fields.", { newPassword: ["Use at most 128 characters."] });
       case "CREDENTIAL_ACCOUNT_NOT_FOUND":
         return fail("not_found", "This account has no password to change. Use Forgot password on the sign-in page to set one.");
+      case "PASSWORD_COMPROMISED":
+        return fail("validation", "Check the highlighted fields.", { newPassword: [BREACHED_PASSWORD_MESSAGE] });
       default:
         if (error.statusCode === 401) return fail("unauthorized", "Your session ended. Sign in again, then retry.");
+        // The breach check could not reach its service (D189); that failure carries no code.
+        if (error.statusCode === 500 && error.message.startsWith(BREACH_CHECK_FAILED_PREFIX)) {
+          return fail("internal", BREACH_CHECK_UNAVAILABLE_MESSAGE);
+        }
         throw error;
     }
   }
@@ -132,6 +154,8 @@ export async function endOtherSessions(
     return fail("validation", "That's this browser. To sign out here, use Sign out in the menu.");
   }
   return db.transaction(async (tx) => {
+    const [admin] = await tx.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.id, input.adminId)).for("update");
+    if (!admin || admin.disabledAt) return fail("unauthorized", "Your account is unavailable. Sign in again or contact an active admin.");
     const ended = await tx
       .delete(sessions)
       .where(

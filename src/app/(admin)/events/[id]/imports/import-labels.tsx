@@ -1,14 +1,8 @@
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
-import type { ImportKind, ImportState } from "@/lib/schemas/import";
+import { IMPORT_KIND_LABELS, type ImportKind, type ImportState } from "@/lib/schemas/import";
 
-export const KIND_LABELS: Record<ImportKind, string> = {
-  participants: "Participants",
-  suppliers: "Suppliers",
-  buyer_biztech_rankings: "Buyer biztech rankings",
-  buyer_hotel_rankings: "Buyer hotel rankings",
-  supplier_rankings: "Supplier rankings",
-};
+export const KIND_LABELS: Record<ImportKind, string> = IMPORT_KIND_LABELS;
 
 /** One line under each upload card title. */
 export const KIND_SUMMARIES: Record<ImportKind, string> = {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { safeNextPath } from "./auth-errors";
+import {
+  classifyAuthError,
+  describeAuthError,
+  formatCountdown,
+  parseRetryAfter,
+  safeNextPath,
+  secondsUntil,
+  waitCopy,
+} from "./auth-errors";
 
 describe("safeNextPath", () => {
   it("keeps a same-site path with its query and hash", () => {
@@ -36,5 +44,102 @@ describe("safeNextPath", () => {
     ]) {
       expect(safeNextPath(next), next).toBe("/events");
     }
+  });
+});
+
+describe("parseRetryAfter", () => {
+  it("reads whole seconds", () => {
+    expect(parseRetryAfter("540")).toBe(540);
+    expect(parseRetryAfter(" 60 ")).toBe(60);
+  });
+
+  it("ignores a missing, zero, or malformed value", () => {
+    for (const value of [null, undefined, "", "0", "-5", "1.5", "soon", "Wed, 21 Oct 2026 07:28:00 GMT"]) {
+      expect(parseRetryAfter(value), String(value)).toBeNull();
+    }
+  });
+});
+
+describe("classifyAuthError", () => {
+  const now = 1_000_000;
+  const error = (status: number, code?: string, message?: string) => ({ status, statusText: "", code, message });
+
+  it("turns a 429 into a retry time from the header", () => {
+    expect(classifyAuthError(error(429), "x", 90, now)).toEqual({ kind: "rate-limited", retryAt: now + 90_000 });
+    expect(classifyAuthError(error(429), "x", null, now)).toEqual({ kind: "rate-limited", retryAt: null });
+  });
+
+  it("groups the wrong-credentials codes", () => {
+    for (const code of ["INVALID_EMAIL_OR_PASSWORD", "INVALID_PASSWORD", "USER_NOT_FOUND"]) {
+      expect(classifyAuthError(error(401, code), "x", null, now)).toEqual({ kind: "invalid-credentials" });
+    }
+  });
+
+  it("keeps the server message for anything else, such as a disabled account", () => {
+    expect(classifyAuthError(error(403, "ACCOUNT_DISABLED", "This account is disabled."), "x", null, now)).toEqual({
+      kind: "error",
+      message: "This account is disabled.",
+    });
+    expect(classifyAuthError(error(500), "Try again.", null, now)).toEqual({ kind: "error", message: "Try again." });
+    expect(classifyAuthError(error(400, "INVALID_TOKEN"), "x", null, now)).toEqual({
+      kind: "error",
+      message: describeAuthError(error(400, "INVALID_TOKEN"), "x"),
+    });
+  });
+
+  it("sends an expired or exhausted two-factor step back to the password", () => {
+    for (const code of ["INVALID_TWO_FACTOR_COOKIE", "TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE"]) {
+      expect(classifyAuthError(error(401, code, "Invalid two factor cookie"), "x", null, now)).toEqual({
+        kind: "restart",
+        message: "Your sign-in timed out or had too many wrong codes. Enter your email and password again.",
+      });
+    }
+  });
+
+  it("explains a two-factor lockout, which also comes as a 429, without the rate-limit countdown", () => {
+    expect(classifyAuthError(error(429, "ACCOUNT_TEMPORARILY_LOCKED"), "x", 30, now)).toEqual({
+      kind: "error",
+      message: "Too many wrong codes for this account. Wait 15 minutes, then sign in again.",
+    });
+  });
+
+  it("says plainly when a code or backup code is wrong", () => {
+    expect(describeAuthError(error(401, "INVALID_CODE", "Invalid code"), "x")).toMatch(/^That code didn't work/);
+    expect(describeAuthError(error(401, "INVALID_BACKUP_CODE", "Invalid backup code"), "x")).toMatch(
+      /^That backup code didn't work/,
+    );
+  });
+
+  it("shows the breached-password message from the server, and a retry when the check couldn't run", () => {
+    const breached = "This password appears in a known data breach. Choose a different one.";
+    expect(describeAuthError(error(400, "PASSWORD_COMPROMISED", breached), "x")).toBe(breached);
+    expect(describeAuthError(error(500, undefined, "Failed to check password. Please try again later."), "x")).toBe(
+      "We couldn't check this password against known data breaches. Try again in a minute.",
+    );
+  });
+});
+
+describe("rate-limit countdown", () => {
+  it("counts whole seconds down to zero", () => {
+    expect(secondsUntil(10_000, 0)).toBe(10);
+    expect(secondsUntil(10_000, 9_001)).toBe(1);
+    expect(secondsUntil(10_000, 10_000)).toBe(0);
+    expect(secondsUntil(10_000, 20_000)).toBe(0);
+  });
+
+  it("formats minutes and padded seconds", () => {
+    expect(formatCountdown(0)).toBe("0:00");
+    expect(formatCountdown(9)).toBe("0:09");
+    expect(formatCountdown(65)).toBe("1:05");
+    expect(formatCountdown(600)).toBe("10:00");
+  });
+
+  it("uses seconds under a minute and rounds longer waits up", () => {
+    expect(waitCopy(1)).toBe("Wait 1 second, then try again.");
+    expect(waitCopy(9)).toBe("Wait 9 seconds, then try again.");
+    expect(waitCopy(59)).toBe("Wait 59 seconds, then try again.");
+    expect(waitCopy(60)).toBe("Wait 1 minute, then try again.");
+    expect(waitCopy(61)).toBe("Wait 2 minutes, then try again.");
+    expect(waitCopy(null)).toBe("Wait 10 minutes, then try again.");
   });
 });

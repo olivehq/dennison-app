@@ -16,6 +16,22 @@ export const rankingKinds = [
 
 export const rankingKindSchema = z.enum(rankingKinds);
 
+/** The upload card titles, also used in messages that send a file to another card. */
+export const IMPORT_KIND_LABELS = {
+  participants: "Participants",
+  suppliers: "Suppliers",
+  buyer_biztech_rankings: "Buyer biztech rankings",
+  buyer_hotel_rankings: "Buyer hotel rankings",
+  supplier_rankings: "Supplier rankings",
+} as const satisfies Record<z.infer<typeof importKindSchema>, string>;
+
+/**
+ * "Save all suggested" takes a name only when its top suggestion scores at
+ * least this and no other suggestion ties it. Suggestions never pair names
+ * whose numbers differ, so what's left is a spelling difference.
+ */
+export const BULK_MAPPING_MIN_SCORE = 0.97;
+
 /** `template` is an Olive roster template; `list` and `matrix` are the two ranking shapes (D18). */
 export const importFormatSchema = z.enum(["template", "list", "matrix"]);
 
@@ -66,6 +82,36 @@ const duplicateValueSchema = z.object({
   rows: z.array(z.number().int()),
 });
 
+/** One field a roster file changes, with how many people and the first few names (shown before apply). */
+const fieldChangeSchema = z.object({
+  field: z.string(),
+  count: z.number().int(),
+  names: z.array(z.string()),
+});
+
+/** Roster kinds: what applying the file changes for people already on the roster, worked out at validation. */
+const rosterChangesSchema = z.object({
+  /** Rows that match someone on the roster and change at least one field. */
+  updated: z.number().int(),
+  /** Rows that match someone on the roster and change nothing. */
+  unchanged: z.number().int(),
+  fields: z.array(fieldChangeSchema),
+  /** People who have both an organization and a title and lose one of them. */
+  cleared: z.array(z.object({ name: z.string(), fields: z.array(z.string()) })),
+  /** People on the roster with no row in the file. They are kept as is. */
+  missing: z.array(z.string()),
+});
+
+/** A name in the file that resolved through a saved alias rather than a name on the roster. */
+const aliasedNameSchema = z.object({
+  raw: z.string(),
+  entityType: entityTypeSchema,
+  /** The roster label it resolved to. */
+  name: z.string(),
+  scope: z.enum(["event", "cross_year"]),
+  rows: z.array(z.number().int()),
+});
+
 const namedEntitySchema = z.object({
   entityId: z.string(),
   name: z.string(),
@@ -101,6 +147,10 @@ export const importValidationReportSchema = z.object({
    * this field existed read as empty.
    */
   rankersInFile: z.array(z.string()).default([]),
+  /** Ranking kinds: names resolved through a saved alias. Absent on older reports. */
+  aliasedNames: z.array(aliasedNameSchema).optional(),
+  /** Roster kinds. Absent on older reports. */
+  rosterChanges: rosterChangesSchema.optional(),
 });
 
 export const uploadImportSchema = z.object({
@@ -122,6 +172,11 @@ export const saveAliasesSchema = z.object({
     .max(500),
 });
 
+export const removeAliasSchema = z.object({
+  eventId: z.uuid(),
+  aliasId: z.uuid(),
+});
+
 export const IMPORT_FILE_EXTENSIONS = [".xlsx", ".xls", ".csv"] as const;
 /** 4 MB: Vercel caps a function request body at 4.5 MB, multipart overhead included. */
 export const IMPORT_MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -136,6 +191,17 @@ export type UnknownName = z.infer<typeof unknownNameSchema>;
 export type ImportValidationReport = z.infer<typeof importValidationReportSchema>;
 export type UploadImportInput = z.infer<typeof uploadImportSchema>;
 export type SaveAliasesInput = z.infer<typeof saveAliasesSchema>;
+export type RemoveAliasInput = z.infer<typeof removeAliasSchema>;
+export type AliasedName = z.infer<typeof aliasedNameSchema>;
+export type RosterChanges = z.infer<typeof rosterChangesSchema>;
+
+/** "A, B, and 3 more" when `names` is a sample of `total`, else "A, B, and C". Used by the report and the apply confirm. */
+export function nameSample(names: string[], total = names.length): string {
+  const rest = total - names.length;
+  if (rest > 0) return `${names.join(", ")}, and ${rest} more`;
+  if (names.length <= 2) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
+}
 
 export function isRankingKind(kind: ImportKind): kind is RankingKind {
   return (rankingKinds as readonly string[]).includes(kind);

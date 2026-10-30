@@ -29,7 +29,8 @@ export async function inviteAdmin(input: unknown): Promise<ActionResult<InviteSe
   const parsed = adminInviteSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await createInvite(getDb(), { ...parsed.data, invitedBy: actor.id });
-  if (result.ok) revalidatePath(TEAM_PATH);
+  // "internal" means the invite was saved but its email failed: show it so Resend is there.
+  if (result.ok || result.error.code === "internal") revalidatePath(TEAM_PATH);
   return result;
 }
 

@@ -1,4 +1,4 @@
-import { and, eq, not, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, not, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@/db/client";
 import { emailMessages, type EmailDeliveryEvent, type EmailMessageStatus } from "@/db/schema";
@@ -140,21 +140,46 @@ export async function recordDeliveryEvent(db: Db, event: DeliveryEvent): Promise
   const status = STATUS_FOR[event.type];
   const seen = sql`${emailMessages.events} @> ${JSON.stringify([{ id: entry.id }])}::jsonb`;
 
-  const updated = await db
-    .update(emailMessages)
-    .set({
-      events: sql`${emailMessages.events} || ${JSON.stringify([entry])}::jsonb`,
-      lastEventAt: sql`greatest(${emailMessages.lastEventAt}, ${event.at}::timestamptz)`,
-      providerMessageId: sql`coalesce(${emailMessages.providerMessageId}, ${event.providerMessageId})`,
-      ...(status
-        ? {
-            status: sql`case when ${rankOf(emailMessages.status)} < ${RANK[status]} then ${status}::email_message_status else ${emailMessages.status} end`,
-          }
-        : {}),
-    })
-    .where(and(target, not(seen)))
-    .returning({ id: emailMessages.id });
-  if (updated.length > 0) return "recorded";
+  // One transaction, so the event and the request cleanup below land together.
+  const recorded = await db.transaction(async (tx) => {
+    const updated = await tx
+      .update(emailMessages)
+      .set({
+        events: sql`${emailMessages.events} || ${JSON.stringify([entry])}::jsonb`,
+        lastEventAt: sql`greatest(${emailMessages.lastEventAt}, ${event.at}::timestamptz)`,
+        providerMessageId: sql`coalesce(${emailMessages.providerMessageId}, ${event.providerMessageId})`,
+        ...(status
+          ? {
+              status: sql`case when ${rankOf(emailMessages.status)} < ${RANK[status]} then ${status}::email_message_status else ${emailMessages.status} end`,
+            }
+          : {}),
+      })
+      .where(and(target, not(seen)))
+      .returning({ id: emailMessages.id, campaignId: emailMessages.campaignId, batchKey: emailMessages.batchKey });
+    if (updated.length === 0) return false;
+    // A status from the provider proves it took the batch, so no retry will need
+    // the saved request (it holds schedule links): clear it for the whole batch.
+    // A retry then finds this message past queued and marks the rest sent (D185).
+    // Rows another webhook of the same batch holds are skipped, not waited on
+    // (two waiting on each other would deadlock); that webhook clears them.
+    for (const { campaignId, batchKey } of updated) {
+      if (!status || !batchKey) continue;
+      const pending = tx
+        .select({ id: emailMessages.id })
+        .from(emailMessages)
+        .where(
+          and(
+            eq(emailMessages.campaignId, campaignId),
+            eq(emailMessages.batchKey, batchKey),
+            isNotNull(emailMessages.request),
+          ),
+        )
+        .for("update", { skipLocked: true });
+      await tx.update(emailMessages).set({ request: null }).where(inArray(emailMessages.id, pending));
+    }
+    return true;
+  });
+  if (recorded) return "recorded";
 
   const [existing] = await db.select({ id: emailMessages.id }).from(emailMessages).where(target).limit(1);
   return existing ? "duplicate" : "unknown";

@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { emailCampaigns, events, type EventStatus } from "@/db/schema";
+import { repairStaleSends } from "@/server/email/campaign-status";
 
 /**
  * Moves the event to `to` only when its current status is `from` (one status
@@ -32,9 +33,12 @@ export const SEND_IN_PROGRESS_MESSAGE = "An email send is in progress. Wait for 
 /**
  * True while any email campaign of the event has status `sending`. Unlock and
  * archive call it inside their transaction, after taking the event row, so a
- * send that started against the locked schedule finishes against it.
+ * send that started against the locked schedule finishes against it. A
+ * campaign stuck in `sending` past `STALE_SEND_HOURS` died with its request:
+ * it is marked failed first, with an audit row, so it no longer blocks them.
  */
 export async function hasSendInProgress(db: Db, eventId: string): Promise<boolean> {
+  await repairStaleSends(db, eventId);
   const [row] = await db
     .select({ id: emailCampaigns.id })
     .from(emailCampaigns)

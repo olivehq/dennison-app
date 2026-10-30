@@ -129,6 +129,29 @@ export const rankingListColumns = {
   },
 } as const satisfies Record<string, TemplateColumn>;
 
+/** The supplier rankings layout: the ranker is a supplier, named by SUPPLIER or FULL_NAME. */
+export const supplierRankingListColumns = {
+  supplier: {
+    header: "SUPPLIER",
+    required: true,
+    description: "The supplier's name as on the roster. FULL_NAME also works.",
+    aliases: rankingListColumns.fullName.aliases,
+  },
+  email: {
+    header: "EMAIL",
+    required: false,
+    description: "Optional. The supplier's admin or attendee contact email; when present it identifies the row instead of the name.",
+    aliases: rankingListColumns.email.aliases,
+  },
+  choice: {
+    header: "CHOICE #1 ... CHOICE #N",
+    required: true,
+    description:
+      "One buyer per cell, in rank order: their email (matched first), full name, or company. Use the email when two buyers share a name or company.",
+    aliases: [],
+  },
+} as const satisfies Record<string, TemplateColumn>;
+
 const rankingFormats: readonly ImportFormat[] = ["list", "matrix"];
 
 export const templates: Record<ImportKind, ImportTemplate> = {
@@ -167,7 +190,7 @@ export const templates: Record<ImportKind, ImportTemplate> = {
     description:
       "eShow export: one row per supplier, CHOICE #n columns name participants. A choice can be the buyer's email (matched first), name, or company. Use the email when two buyers share a name or company.",
     formats: rankingFormats,
-    columns: Object.values(rankingListColumns),
+    columns: Object.values(supplierRankingListColumns),
   },
 };
 
@@ -213,17 +236,72 @@ export function findColumn(headers: string[], column: TemplateColumn): number {
   return headers.findIndex((header) => wanted.has(normaliseHeader(header)));
 }
 
-/** An empty workbook with the template's headers, for the download link on the upload card. */
+/**
+ * Which kind of file the headers describe, or null when they match none or
+ * more than one. Used to refuse a file dropped on the wrong card, so it only
+ * answers when the shape is unambiguous: a participants file with Organization
+ * and Category columns also looks like a suppliers file (name and type), and
+ * then the card's own parser decides.
+ */
+export function detectShape(headers: string[]): "participants" | "suppliers" | "rankings" | null {
+  if (headers.some((header) => CHOICE_HEADER.test(header.trim()))) return "rankings";
+  const has = (column: TemplateColumn) => findColumn(headers, column) !== -1;
+  const suppliers = has(supplierColumns.name) && has(supplierColumns.type);
+  const participants = has(participantColumns.email) && has(participantColumns.firstName) && has(participantColumns.lastName);
+  if (suppliers === participants) return null;
+  return suppliers ? "suppliers" : "participants";
+}
+
+const CHOICE_COUNT = 40;
+
+/**
+ * The example row of the participants and suppliers templates. Those imports
+ * create people, so an example row left in a filled template is refused by
+ * validation instead of becoming a real participant or supplier.
+ */
+export const EXAMPLE_PARTICIPANT_EMAIL = "jane.doe@example.com";
+export const EXAMPLE_SUPPLIER_NAME = "Example Bay Hotel";
+
+/**
+ * Header and one example row per kind (scope change order: "Download buttons
+ * for each Olive template, with an example row"). The three ranking files
+ * differ in who ranks and what the choices name. Names use example.com so a
+ * forgotten example row in a ranking file shows up as an unknown name; in the
+ * participants and suppliers files validation refuses it (see above).
+ */
+const TEMPLATE_SHEETS: Record<ImportKind, { sheet: string; headers: string[]; example: string[] }> = {
+  participants: {
+    sheet: "Participants",
+    headers: Object.values(participantColumns).map((column) => column.header),
+    example: [EXAMPLE_PARTICIPANT_EMAIL, "Jane", "Doe", "Example Meetings Co", "Meeting planner", "yes"],
+  },
+  suppliers: {
+    sheet: "Suppliers",
+    headers: Object.values(supplierColumns).map((column) => column.header),
+    example: [EXAMPLE_SUPPLIER_NAME, "hotel", "Sam Lee", "sam.lee@example.com", "Ana Ruiz", "ana.ruiz@example.com"],
+  },
+  buyer_biztech_rankings: {
+    sheet: "Biztech rankings",
+    headers: ["FIRST_NAME", "LAST_NAME", "FULL_NAME", "EMAIL"],
+    example: ["Jane", "Doe", "Jane Doe", "jane.doe@example.com", "Example AV Services", "Example Event Apps"],
+  },
+  buyer_hotel_rankings: {
+    sheet: "Hotel rankings",
+    headers: ["FIRST_NAME", "LAST_NAME", "FULL_NAME", "EMAIL"],
+    example: ["Jane", "Doe", "Jane Doe", "jane.doe@example.com", "Example Bay Hotel", "Example Valley Resort"],
+  },
+  supplier_rankings: {
+    sheet: "Supplier rankings",
+    headers: ["SUPPLIER", "EMAIL"],
+    example: ["Example Bay Hotel", "sam.lee@example.com", "jane.doe@example.com", "Chris Park", "Example Meetings Co"],
+  },
+};
+
+/** The template workbook with its example row, for the download link on the upload card. */
 export function templateWorkbook(kind: ImportKind): Buffer {
-  const template = templates[kind];
-  if (template.formats.includes("template")) {
-    return writeSheet(
-      template.columns.map((column) => column.header),
-      [],
-      template.title,
-    );
-  }
-  const headers = ["FIRST_NAME", "LAST_NAME", "FULL_NAME", "EMAIL"];
-  for (let n = 1; n <= 40; n += 1) headers.push(`CHOICE #${n}`);
-  return writeSheet(headers, [], "Report");
+  const { sheet, headers, example } = TEMPLATE_SHEETS[kind];
+  const choices = templates[kind].formats.includes("template")
+    ? []
+    : Array.from({ length: CHOICE_COUNT }, (_, i) => `CHOICE #${i + 1}`);
+  return writeSheet([...headers, ...choices], [example], sheet);
 }

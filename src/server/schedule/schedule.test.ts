@@ -15,7 +15,6 @@ import {
 import { createTestDb } from "@/db/test-db";
 import { NOT_ACTIVE_RUN_MESSAGE } from "@/lib/schemas/schedule";
 import { listAudit } from "@/server/audit/audit";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { getActiveRun } from "@/server/matching/queries";
@@ -28,11 +27,13 @@ import {
   swapCandidates,
   undoAudit,
   UNDO_CONFLICT_HINT,
+  undoBlocker,
   VERSION_CONFLICT_MESSAGE,
   type SwapCandidate,
 } from "./edits";
 import { lockSchedule, planDesks, reassignDesks, unlockSchedule } from "./lock";
 import { getScheduleView } from "./queries";
+import { getScheduleViewSnapshot } from "./views";
 import { loadPersonSchedule } from "./snapshot";
 
 let db: Db;
@@ -129,6 +130,19 @@ describe("getScheduleView", () => {
     }
     expect(view.health.suppliersOffTarget).toEqual([]);
     expect(Array.isArray(view.health.buyersBelowMin)).toBe(true);
+  });
+
+  it("getScheduleViewSnapshot reads the same view (a savepoint inside a transaction still works)", async () => {
+    const view = await getScheduleView(seeded.eventId, db);
+    expect(await getScheduleViewSnapshot(seeded.eventId, db)).toEqual(view);
+    expect(await db.transaction((tx) => getScheduleViewSnapshot(seeded.eventId, tx))).toEqual(view);
+    expect(await getScheduleViewSnapshot("not-a-uuid", db)).toBeNull();
+  });
+
+  it("getScheduleViewSnapshot pairs the run version with its own appointments when a save lands during the read", async () => {
+    const before = (await rows()).length;
+    const [view] = await Promise.all([getScheduleViewSnapshot(seeded.eventId, db), removeOne()]);
+    expect(view?.run?.version === 1 ? before : before - 1).toBe(view?.appointments.length);
   });
 
   it("loadPersonSchedule shows OPEN gaps and no ranks", async () => {
@@ -584,6 +598,7 @@ describe("lock and unlock", () => {
     if (!result.ok) return;
     // 12 buyers + 6 supplier admins + 3 attendees
     expect(result.data.tokensIssued).toBe(21);
+    expect(result.data.tokensKept).toBe(0);
     const tokens = await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId));
     expect(tokens).toHaveLength(21);
 
@@ -601,7 +616,33 @@ describe("lock and unlock", () => {
     expect(event.status).toBe("locked");
 
     const again = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
-    expect(again).toEqual({ ok: false, error: { code: "conflict", message: "The schedule is already locked." } });
+    expect(again).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
+  });
+
+  it("a second lock issues no new links and reports the ones it kept", async () => {
+    const first = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(first.ok).toBe(true);
+    const unlocked = await unlockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId, reason: "Check a desk" });
+    expect(unlocked.ok).toBe(true);
+    const second = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.data.tokensIssued).toBe(0);
+    expect(second.data.tokensKept).toBe(21);
+    expect(second.data.linksRevoked).toBe(0);
+
+    // A link revoked while unlocked is not replaced by lock, and isn't counted as kept.
+    const again = await unlockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId, reason: "Revoke one link" });
+    expect(again.ok).toBe(true);
+    const [one] = await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId)).limit(1);
+    await db.update(accessTokens).set({ revokedAt: new Date() }).where(eq(accessTokens.id, one.id));
+    const third = await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId });
+    expect(third.ok && third.data).toMatchObject({ tokensIssued: 0, tokensKept: 20, linksRevoked: 1 });
+    if (!third.ok) return;
+    expect(third.data.revokedNames).toHaveLength(1);
+    expect(third.data.revokedNames[0]).toMatch(/\S/);
+    const locks = await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.lock" } }, db);
+    expect(locks.rows[0].after).toMatchObject({ tokensIssued: 0, tokensKept: 20, linksRevoked: 1 });
   });
 
   it("lock on an archived event says it is archived, not already locked", async () => {
@@ -713,37 +754,37 @@ describe("status races (compare-and-set)", () => {
   const setStatus = (status: "matched" | "locked" | "archived") => () =>
     db.update(events).set({ status }).where(eq(events.id, seeded.eventId));
 
-  it("lock is a conflict when the event was locked between its read and its write", async () => {
+  it("lock reports locked when another lock lands before its write", async () => {
     const result = await lockSchedule(raceBeforeTransaction(db, setStatus("locked")), {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
     });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect(await db.select().from(accessTokens).where(eq(accessTokens.eventId, seeded.eventId))).toHaveLength(0);
     expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.lock" } }, db)).total).toBe(0);
   });
 
-  it("unlock is a conflict when the event was unlocked or archived in between", async () => {
+  it("unlock reports archived when an archive lands before its write", async () => {
     expect((await lockSchedule(db, { eventId: seeded.eventId, adminId: seeded.adminId })).ok).toBe(true);
     const raced = await unlockSchedule(raceBeforeTransaction(db, setStatus("archived")), {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
       reason: "Late change",
     });
-    expect(raced).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(raced).toEqual({ ok: false, error: { code: "locked", message: "This event is archived and can't be changed." } });
     const [event] = await db.select().from(events).where(eq(events.id, seeded.eventId));
     expect(event.status).toBe("archived");
     expect((await listAudit({ eventId: seeded.eventId, filters: { action: "schedule.unlock" } }, db)).total).toBe(0);
   });
 
-  it("an edit or desk change that lands after a lock is a conflict, not a write", async () => {
+  it("an edit or desk change after a lock reports locked and writes nothing", async () => {
     const [a] = await rows();
     const edit = await removeAppointment(
       raceBeforeTransaction(db, setStatus("locked")),
       { runId, version: await version(), slot: a.slot, supplierId: a.supplierId, buyerId: a.buyerId },
       seeded.adminId,
     );
-    expect(edit).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(edit).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await rows()).some((r) => r.id === a.id)).toBe(true);
 
     await setStatus("matched")();
@@ -751,7 +792,7 @@ describe("status races (compare-and-set)", () => {
       eventId: seeded.eventId,
       adminId: seeded.adminId,
     });
-    expect(!desks.ok && desks.error.code).toBe("conflict");
+    expect(!desks.ok && desks.error.code).toBe("locked");
   });
 });
 
@@ -1071,5 +1112,51 @@ describe("unlock while an email send is in progress", () => {
 
     await db.update(emailCampaigns).set({ status: "sent" }).where(eq(emailCampaigns.id, campaign.id));
     expect((await unlockSchedule(db, input)).ok).toBe(true);
+  });
+});
+
+describe("undoBlocker", () => {
+  const snap = (slot: number, buyerId: string, supplierId: string) => ({
+    runId: "00000000-0000-4000-8000-000000000000",
+    slot,
+    buyerId,
+    supplierId,
+    buyerRank: 1,
+    supplierRank: 1,
+    source: "manual",
+    pinned: false,
+  });
+  const names: Record<string, string> = {
+    "00000001-0000-4000-8000-000000000000": "B1",
+    "00000002-0000-4000-8000-000000000000": "B2",
+    "00000003-0000-4000-8000-000000000000": "S1",
+    "00000004-0000-4000-8000-000000000000": "S2",
+  };
+  const name = (id: string) => names[id] ?? id;
+
+  it("is null when the undo would fit, and words a refilled slot like the undo does", () => {
+    const removal = { before: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"), after: null, name };
+    expect(undoBlocker({ ...removal, current: [{ slot: 8, buyerId: "00000002-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBeNull();
+    expect(undoBlocker({ ...removal, current: [{ slot: 9, buyerId: "00000002-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBe(
+      `S1 already has B2 in slot 9. ${UNDO_CONFLICT_HINT}`,
+    );
+    expect(undoBlocker({ ...removal, current: [{ slot: 9, buyerId: "00000001-0000-4000-8000-000000000000", supplierId: "00000004-0000-4000-8000-000000000000" }] })).toBe(
+      `B1 is already booked in slot 9 with S2. ${UNDO_CONFLICT_HINT}`,
+    );
+  });
+
+  it("checks that an added meeting is still there, and who has withdrawn", () => {
+    const addition = { before: null, after: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"), name };
+    expect(undoBlocker({ ...addition, current: [{ slot: 9, buyerId: "00000001-0000-4000-8000-000000000000", supplierId: "00000003-0000-4000-8000-000000000000" }] })).toBeNull();
+    expect(undoBlocker({ ...addition, current: [] })).toMatch(/no longer in the schedule/);
+    expect(
+      undoBlocker({
+        before: snap(9, "00000001-0000-4000-8000-000000000000", "00000003-0000-4000-8000-000000000000"),
+        after: null,
+        current: [],
+        name,
+        withdrawn: new Map([["00000001-0000-4000-8000-000000000000", "Participants" as const]]),
+      }),
+    ).toMatch(/^B1 has withdrawn, so this change can't be undone\. Restore them on the Participants page/);
   });
 });

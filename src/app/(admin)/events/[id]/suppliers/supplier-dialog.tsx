@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -82,12 +83,18 @@ type SupplierDialogProps = {
   eventId: string;
   /** Null to add a supplier. */
   supplier: SupplierFormData | null;
+  /** Which contacts hold a link that works now. Changing that contact's email revokes it, so saving asks first. */
+  liveLinks?: { adminContact: boolean; attendeeContact: boolean };
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
 
-export function SupplierDialog({ eventId, supplier, open, onOpenChange }: SupplierDialogProps) {
+const NO_LIVE_LINKS = { adminContact: false, attendeeContact: false };
+
+export function SupplierDialog({ eventId, supplier, liveLinks = NO_LIVE_LINKS, open, onOpenChange }: SupplierDialogProps) {
   const router = useRouter();
+  // Values waiting on the "Change email?" confirm, with the names of the contacts whose live link it would revoke.
+  const [confirming, setConfirming] = React.useState<{ values: FormOutput; names: string[] } | null>(null);
   const editing = supplier !== null;
   const {
     register,
@@ -105,25 +112,43 @@ export function SupplierDialog({ eventId, supplier, open, onOpenChange }: Suppli
     if (open) reset(defaults(supplier));
   }, [open, supplier, reset]);
 
-  const onSubmit = async (values: FormOutput) => {
+  const save = async (values: FormOutput) => {
     const result = await saveSupplier({ ...values, eventId, id: supplier?.id });
     if (!result.ok) {
       applyActionError(result.error, setError, FIELDS);
-      if (result.error.code === "locked") router.refresh();
+      // The event was locked or archived in another tab: the edit can't be saved, so close the form on the refreshed page.
+      if (result.error.code === "locked") {
+        onOpenChange(false);
+        router.refresh();
+      }
       return;
     }
-    const emailsChanged =
-      editing &&
-      ((supplier.adminContactEmail ?? null) !== (values.adminContact?.email ?? null) ||
-        (supplier.attendeeContactEmail ?? null) !== (values.attendeeContact?.email ?? null));
+    const { linksRevoked } = result.data;
     toast.success(
       editing
-        ? emailsChanged
-          ? "Supplier saved. Links for the changed contact emails were revoked."
-          : "Supplier saved."
+        ? linksRevoked > 0
+          ? `${values.name} saved. ${linksRevoked === 1 ? "1 link was" : `${linksRevoked} links were`} revoked because a contact email changed.`
+          : `${values.name} saved.`
         : `${values.name} added.`,
     );
     onOpenChange(false);
+  };
+
+  const onSubmit = async (values: FormOutput) => {
+    if (editing) {
+      const names: string[] = [];
+      if (liveLinks.adminContact && (supplier.adminContactEmail ?? null) !== (values.adminContact?.email ?? null)) {
+        names.push(supplier.adminContactName || supplier.name);
+      }
+      if (liveLinks.attendeeContact && (supplier.attendeeContactEmail ?? null) !== (values.attendeeContact?.email ?? null)) {
+        names.push(supplier.attendeeContactName || supplier.name);
+      }
+      if (names.length > 0) {
+        setConfirming({ values, names });
+        return;
+      }
+    }
+    await save(values);
   };
 
   const contactFields = (key: "adminContact" | "attendeeContact", legend: string, hint: string) => {
@@ -223,6 +248,25 @@ export function SupplierDialog({ eventId, supplier, open, onOpenChange }: Suppli
           </DialogFooter>
         </form>
       </DialogContent>
+      <ConfirmDialog
+        open={confirming !== null}
+        onOpenChange={(next) => !next && setConfirming(null)}
+        title={
+          confirming && confirming.names.length > 1
+            ? `Change the emails for ${confirming.names.join(" and ")}?`
+            : `Change ${confirming?.names[0] ?? "their"}'s email?`
+        }
+        description={
+          confirming && confirming.names.length > 1
+            ? "Their current schedule links stop working. Send them the new links from Emails after saving."
+            : "Their current schedule link stops working. Send them the new link from Emails after saving."
+        }
+        confirmLabel="Change email"
+        destructive
+        onConfirm={async () => {
+          if (confirming) await save(confirming.values);
+        }}
+      />
     </Dialog>
   );
 }

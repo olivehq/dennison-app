@@ -17,8 +17,8 @@ type ThemeToggleProps = {
 function ThemeIcons() {
   return (
     <>
-      <SunIcon className="dark:hidden" aria-hidden="true" />
-      <MoonIcon className="hidden dark:block" aria-hidden="true" />
+      <MoonIcon className="dark:hidden" aria-hidden="true" />
+      <SunIcon className="hidden dark:block" aria-hidden="true" />
     </>
   );
 }
@@ -31,7 +31,8 @@ export function ThemeToggle({ variant = "icon", className }: ThemeToggleProps) {
     return (
       <DropdownMenuItem onSelect={toggle} className={className}>
         <ThemeIcons />
-        Switch theme
+        <span className="dark:hidden">Use dark theme</span>
+        <span className="hidden dark:inline">Use light theme</span>
       </DropdownMenuItem>
     );
   }

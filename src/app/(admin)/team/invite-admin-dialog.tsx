@@ -49,6 +49,8 @@ export function InviteAdminDialog() {
         setError(key as keyof AdminInviteInput, { message: messages[0] });
       }
       if (Object.keys(fieldErrors).length === 0) toast.error(result.error.message);
+      // The invite was saved and now shows in the list with Resend.
+      if (result.error.code === "internal") onOpenChange(false);
       return;
     }
     if (result.data.delivered) toast.success(`Invite sent to ${values.email}.`);

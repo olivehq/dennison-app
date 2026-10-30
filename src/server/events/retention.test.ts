@@ -12,12 +12,15 @@ import {
   imports,
   nameAliases,
   participants,
+  pendingFileDeletions,
   rankings,
   suppliers,
 } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
-import { getFile, importFileKey, putFile, useMemoryStorageForTests } from "@/lib/storage";
+import { failNextDeletesForTests, getFile, importFileKey, putFile, useMemoryStorageForTests } from "@/lib/storage";
 import { listAudit, recordAudit } from "@/server/audit/audit";
+import { STALE_SEND_REASON } from "@/server/email/campaign-status";
+import { drainFileDeletions } from "@/server/files/cleanup";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
 import { lockSchedule } from "@/server/schedule/lock";
@@ -28,7 +31,6 @@ import {
   retentionDeadline,
   retentionDeleteDate,
   STALE_SEND_HOURS,
-  STALE_SEND_REASON,
 } from "./retention";
 import { raceBeforeTransaction } from "./test-race";
 
@@ -147,7 +149,6 @@ describe("deleteExpiredParticipantData", () => {
 
     const results = await deleteExpiredParticipantData(db, new Date("2027-02-09T09:00:00Z"));
     expect(results.map((r) => r.eventId)).toEqual([due.eventId]);
-    expect(results[0].fileErrors).toEqual([]);
     expect(results[0].deleted).toMatchObject({
       participants: 12,
       suppliers: 6,
@@ -173,6 +174,7 @@ describe("deleteExpiredParticipantData", () => {
       nameAliases: 0,
     });
     expect(await getFile(due.fileKey)).toBeNull();
+    expect(await db.select().from(pendingFileDeletions).where(eq(pendingFileDeletions.storageKey, due.fileKey))).toHaveLength(0);
     const globals = (await db.select().from(nameAliases).where(isNull(nameAliases.eventId))).map((a) => a.id);
     expect(globals).not.toContain(dueGlobal.id);
     expect(globals).toEqual(expect.arrayContaining([supplierGlobal.id, keptGlobal.id]));
@@ -241,6 +243,25 @@ describe("deleteExpiredParticipantData", () => {
     expect(later.map((r) => r.eventId)).toContain(event.eventId);
     expect((await countFor(event.eventId)).participants).toBe(0);
   });
+
+  it("queues the import files in its transaction, so a failed delete survives to the next run", async () => {
+    const event = await fullEvent();
+    const queued = () => db.select().from(pendingFileDeletions).where(eq(pendingFileDeletions.storageKey, event.fileKey));
+
+    failNextDeletesForTests();
+    const results = await deleteExpiredParticipantData(db, new Date("2027-02-12T09:00:00Z"));
+    expect(results.map((r) => r.eventId)).toContain(event.eventId);
+    // The import row is gone, but the queue still knows the file.
+    expect(await countFor(event.eventId)).toMatchObject({ imports: 0 });
+    expect(await getFile(event.fileKey)).not.toBeNull();
+    expect(await queued()).toMatchObject([{ attempts: 1 }]);
+
+    // The next cron run: nothing left to delete in the database, the file goes.
+    expect(await deleteExpiredParticipantData(db, new Date("2027-02-13T09:00:00Z"))).toEqual([]);
+    expect(await drainFileDeletions(db, { now: new Date("2027-02-13T09:00:00Z") })).toMatchObject({ deleted: 1, pending: 0 });
+    expect(await getFile(event.fileKey)).toBeNull();
+    expect(await queued()).toEqual([]);
+  });
 });
 
 describe("stale sends and empty archived events", () => {
@@ -265,6 +286,46 @@ describe("stale sends and empty archived events", () => {
       .from(auditEvents)
       .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.entityId, campaign.id)));
     expect(audit).toMatchObject({ adminId: null, after: { status: "failed", failureReason: STALE_SEND_REASON } });
+  });
+
+  it("records a stale send it fails even when a live send keeps the event from being deleted", async () => {
+    const event = await fullEvent();
+    const [stale] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.eventId, event.eventId));
+    const now = new Date("2027-02-10T09:00:00Z");
+    await db
+      .update(emailCampaigns)
+      .set({ status: "sending", updatedAt: new Date(now.getTime() - (STALE_SEND_HOURS + 1) * 60 * 60 * 1000) })
+      .where(eq(emailCampaigns.id, stale.id));
+    const [live] = await db
+      .insert(emailCampaigns)
+      .values({
+        eventId: event.eventId,
+        name: "Reminder",
+        fromName: "D&A",
+        fromEmail: "schedule@example.com",
+        replyTo: "staff@example.com",
+        subject: "Reminder",
+        htmlBody: "<p>Hi</p>",
+        audience: "all",
+        kind: "reminder",
+        status: "sending",
+        updatedAt: new Date(now.getTime() - 60 * 1000),
+      })
+      .returning();
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const results = await deleteExpiredParticipantData(db, now);
+    warn.mockRestore();
+    expect(results.map((r) => r.eventId)).not.toContain(event.eventId);
+    expect((await countFor(event.eventId)).participants).toBeGreaterThan(0);
+    const statuses = await db.select({ id: emailCampaigns.id, status: emailCampaigns.status }).from(emailCampaigns).where(eq(emailCampaigns.eventId, event.eventId));
+    expect(Object.fromEntries(statuses.map((c) => [c.id, c.status]))).toEqual({ [stale.id]: "failed", [live.id]: "sending" });
+    const audit = await db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "email.send"), eq(auditEvents.eventId, event.eventId)));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ entityId: stale.id, adminId: null, after: { status: "failed", failureReason: STALE_SEND_REASON } });
   });
 
   it("records the deletion once for an overdue archived event that has nothing to delete", async () => {

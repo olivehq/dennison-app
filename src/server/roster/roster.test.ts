@@ -5,7 +5,6 @@ import { accessTokens, admins, appointments, auditEvents, events, matchRuns, par
 import { createTestDb } from "@/db/test-db";
 import { defaultEventSettings } from "@/lib/schemas";
 import { recipientKey } from "@/lib/schemas/email";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { decryptToken } from "@/lib/tokens";
 import { issueTokenForContact, linksForContacts, revokeToken, verifyToken } from "@/server/tokens/tokens";
@@ -271,7 +270,7 @@ describe("editability under the event row lock (D85)", () => {
     const [person] = await db.insert(suppliers).values({ eventId: event, name: "Late Lodge", type: "hotel" }).returning();
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, event));
     const result = await withdrawSupplier(raceBeforeTransaction(db, lock), { id: person.id, adminId });
-    expect(result).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(result).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await getSupplier(person.id, db))?.status).toBe("active");
     expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, person.id))).toHaveLength(0);
   });
@@ -473,7 +472,7 @@ describe("changing a contact's email while their link is live", () => {
     const old = await issueTokenForContact(db, { eventId: event, contactType: "buyer", entityId: id, expiresAt: expiresAt() });
 
     const result = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "ann.new@example.com" }, adminId });
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: true, data: { id, linksRevoked: 1 } });
 
     expect(await verifyToken(db, old.token)).toBeNull();
     const [fresh] = await liveTokens(id);
@@ -494,7 +493,7 @@ describe("changing a contact's email while their link is live", () => {
     const attendee = await issueTokenForContact(db, { eventId: event, contactType: "supplier_attendee", entityId: id, expiresAt: expiresAt() });
 
     const result = await upsertSupplier(db, { eventId: event, id, data: { ...inn, adminContact: { name: "Pat", email: "pat.new@inn.com" } }, adminId });
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: true, data: { id, linksRevoked: 1 } });
 
     expect(await verifyToken(db, admin.token)).toBeNull();
     expect(await verifyToken(db, attendee.token)).toMatchObject({ contactType: "supplier_attendee" });
@@ -518,12 +517,25 @@ describe("changing a contact's email while their link is live", () => {
     expect((await revokeToken(db, old.tokenId, adminId)).ok).toBe(true);
 
     const result = await upsertParticipant(db, { eventId: event, id, data: { ...ann, email: "ann.new@example.com" }, adminId });
-    expect(result.ok).toBe(true);
+    // Nothing was live, so the save reports no revoked links and the toast doesn't claim any.
+    expect(result).toEqual({ ok: true, data: { id, linksRevoked: 0 } });
 
     expect(await liveTokens(id)).toHaveLength(0);
     const audit = await updateAudit(id, "participant.update");
     expect(audit.after).not.toHaveProperty("linksReissued");
     expect(audit.note).toBe("Email changed; 0 links revoked.");
+  });
+
+  it("reports no revoked links for a supplier contact email change when nobody had a link", async () => {
+    const event = await createEvent("Supplier email without links");
+    const created = await upsertSupplier(db, { eventId: event, data: inn, adminId });
+    if (!created.ok) throw new Error("setup");
+    const id = created.data.id;
+
+    const changed = await upsertSupplier(db, { eventId: event, id, data: { ...inn, adminContact: { name: "Pat", email: "pat.new@inn.com" } }, adminId });
+    expect(changed).toEqual({ ok: true, data: { id, linksRevoked: 0 } });
+    const unchanged = await upsertSupplier(db, { eventId: event, id, data: { ...inn, name: "Reissue Inn 2" }, adminId });
+    expect(unchanged).toEqual({ ok: true, data: { id, linksRevoked: 0 } });
   });
 
   it("does not issue a link when the old one had expired", async () => {

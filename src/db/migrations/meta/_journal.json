@@ -29,6 +29,20 @@
       "when": 1792212991725,
       "tag": "0003_far_betty_brant",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793293073988,
+      "tag": "0004_branding_file_cleanup_email_batches",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793295956879,
+      "tag": "0005_two_factor",
+      "breakpoints": true
     }
   ]
 }

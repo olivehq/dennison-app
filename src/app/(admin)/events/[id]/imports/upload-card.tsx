@@ -151,7 +151,8 @@ export function UploadCard({ eventId, kind, latest, state, lockedReason }: Uploa
                 <PopoverDescription>{KIND_DESCRIPTIONS[kind]}</PopoverDescription>
               </PopoverHeader>
               <p className="text-xs text-muted-foreground">
-                {ACCEPT.join(", ")} up to 4 MB. Drop the file on the card or choose it.
+                {ACCEPT.join(", ")} up to 4 MB. Drop the file on the card or choose it. The template has one example row; replace it with
+                your data.
               </p>
               <Button variant="outline" size="sm" className="self-start" asChild>
                 <a href={templateHref(kind)} download>

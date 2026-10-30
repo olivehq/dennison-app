@@ -98,10 +98,20 @@ function list(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, string>): string {
+/**
+ * `names` is how the schedule names a buyer (D34: "Organization - Title"). `people`
+ * names the same ids by the person's own name, for roster and link rows; it
+ * defaults to `names`, and an id it lacks falls back to `names`.
+ */
+export function describeAudit(
+  row: DescribableAudit,
+  names: ReadonlyMap<string, string>,
+  people: ReadonlyMap<string, string> = names,
+): string {
   const before = bag(row.before);
   const after = bag(row.after);
   const name = (id: unknown, fallback: string): string => (typeof id === "string" && names.get(id)) || fallback;
+  const person = (id: unknown, fallback: string): string => (typeof id === "string" && (people.get(id) ?? names.get(id))) || fallback;
   const [area, verb] = row.action.split(".", 2);
 
   // Schedule edits (appointment snapshots in before and after).
@@ -128,7 +138,16 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
       return `Unpinned ${buyer(after)} at ${where(after)}`;
     case "schedule.lock": {
       const tokens = num(after.tokensIssued);
-      return `Locked the schedule and assigned desks${tokens !== null ? `. Issued ${plural(tokens, "new participant link")}` : ""}`;
+      if (tokens === null) return "Locked the schedule and assigned desks";
+      // Rows written before Oct 29 don't record the kept and revoked counts.
+      const kept = num(after.tokensKept);
+      const revoked = num(after.linksRevoked);
+      const links = [
+        `issued ${plural(tokens, "new participant link")}`,
+        ...(kept ? [`kept ${kept}`] : []),
+        ...(revoked ? [`left ${plural(revoked, "revoked link")} alone`] : []),
+      ];
+      return `Locked the schedule and assigned desks. ${list(links).replace(/^i/, "I")}`;
     }
     case "schedule.unlock":
       return row.note ? `Unlocked the schedule: ${row.note}` : "Unlocked the schedule";
@@ -163,7 +182,7 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
     const fromRow = str(after.name) ?? str(before.name) ?? str(after.displayName);
     const first = str(after.firstName) ?? str(before.firstName);
     const last = str(after.lastName) ?? str(before.lastName);
-    return name(row.entityId, fromRow ?? (first || last ? [first, last].filter(Boolean).join(" ") : fallback));
+    return person(row.entityId, fromRow ?? (first || last ? [first, last].filter(Boolean).join(" ") : fallback));
   };
   if (area === "participant" || area === "supplier") {
     const who = personName(area === "participant" ? "a participant" : "a supplier");
@@ -187,7 +206,7 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
     }
   }
   if (area === "token") {
-    const who = name(after.entityId, "a contact");
+    const who = person(after.entityId, "a contact");
     if (verb === "regenerate") return `Sent ${who} a new link. The old one stopped working`;
     if (verb === "revoke") return `Revoked the link for ${who}`;
   }
@@ -213,6 +232,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
         return `Stopped ignoring ${file ?? `a ${kind} file`}`;
     }
   }
+  if (row.action === "alias.remove") {
+    const mapsTo = str(before.mapsTo);
+    return `Removed the saved name match "${str(before.raw) ?? "?"}"${mapsTo ? ` to ${mapsTo}` : ""}`;
+  }
   if (row.action === "alias.save") {
     return `Matched the name "${str(after.raw) ?? "?"}" to ${name(after.entityId, "someone on the roster")}`;
   }
@@ -228,6 +251,13 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
     case "event.settings": {
       const fields = changedKeys(before, after, SETTING_LABELS);
       return fields.length ? `Changed the settings: ${list(fields)}` : "Saved the settings";
+    }
+    case "event.branding": {
+      const changed = [
+        before.primaryColor !== after.primaryColor || before.accentColor !== after.accentColor ? "colors" : null,
+        before.logoKey !== after.logoKey ? (after.logoKey ? "logo" : "logo removed") : null,
+      ].filter((c): c is string => c !== null);
+      return changed.length ? `Changed the schedule page branding: ${list(changed)}` : "Saved the schedule page branding";
     }
     case "event.retention":
       return after.retainData
@@ -254,6 +284,10 @@ export function describeAudit(row: DescribableAudit, names: ReadonlyMap<string, 
       const to = str(after.name);
       return from && to ? `Changed their name from "${from}" to "${to}"` : "Changed their name";
     }
+    case "admin.two_factor_enable":
+      return "Turned on two-factor sign-in";
+    case "admin.two_factor_disable":
+      return "Turned off two-factor sign-in";
     case "admin.password_change":
       return after.otherSessionsSignedOut === true
         ? "Changed their password and signed out their other sessions"

@@ -15,7 +15,12 @@ let seeded: Seeded;
 let runId: string;
 
 async function removeFirst() {
-  const [first] = await db.select().from(appointments).where(eq(appointments.runId, runId)).limit(1);
+  const [first] = await db
+    .select()
+    .from(appointments)
+    .where(eq(appointments.runId, runId))
+    .orderBy(appointments.slot, appointments.supplierId, appointments.buyerId)
+    .limit(1);
   const run = await getActiveRun(seeded.eventId, db);
   const result = await removeAppointment(
     db,
@@ -72,6 +77,25 @@ describe("getActivityPage", () => {
     });
   });
 
+  it("names people by their own name on roster rows and by the organization label on schedule rows", async () => {
+    // Buyer 0 has an organization and title, so the schedule calls them "Org 0 - Title 0".
+    const buyer = seeded.buyers[0];
+    await recordAudit(db, {
+      eventId: seeded.eventId,
+      adminId: seeded.adminId,
+      action: "participant.withdraw",
+      entityType: "participant",
+      entityId: buyer.id,
+      before: { status: "active" },
+      after: { status: "withdrawn" },
+    });
+    const { auditEventId } = await removeFirst();
+    const page = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
+    expect(page.rows.find((r) => r.action === "participant.withdraw")!.sentence).toBe("Withdrew Buyer0 Person");
+    expect(page.rows.find((r) => r.id === auditEventId)!.sentence).toMatch(/^Removed (Org \d+ - Title \d+|Buyer\d+ Person) from /);
+    expect(page.people.find((p) => p.value === buyer.id)!.label).toBe("Org 0 - Title 0");
+  });
+
   it("disables undo while locked and for runs that are no longer active", async () => {
     const { auditEventId } = await removeFirst();
     await db.update(events).set({ status: "locked" }).where(eq(events.id, seeded.eventId));
@@ -88,6 +112,47 @@ describe("getActivityPage", () => {
     await activateRun(db, { runId: rerun.data.runId, adminId: seeded.adminId });
     page = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
     expect(page.rows.find((r) => r.id === auditEventId)!.undo).toMatchObject({ available: false, reason: expect.stringMatching(/no longer active/) });
+  });
+
+  it("disables undo with the reason when a later change refilled the slot, matching what undo would say", async () => {
+    // Pick a meeting whose slot can be refilled by another buyer at the same
+    // desk, remove it, then block the undo with that later meeting. Inserted
+    // directly: this test is about undo's conflict check, not about who may be
+    // added, and which meetings the seeded run has depends on its random ids.
+    const all = await db
+      .select()
+      .from(appointments)
+      .where(eq(appointments.runId, runId))
+      .orderBy(appointments.slot, appointments.supplierId, appointments.buyerId);
+    const blockerFor = (m: (typeof all)[number]) =>
+      seeded.buyers.find(
+        (b) =>
+          b.id !== m.buyerId &&
+          !all.some((a) => a.slot === m.slot && a.buyerId === b.id) &&
+          !all.some((a) => a.buyerId === b.id && a.supplierId === m.supplierId),
+      );
+    const first = all.find((m) => blockerFor(m) !== undefined)!;
+    expect(first).toBeDefined();
+    const blocker = blockerFor(first)!;
+    const run = await getActiveRun(seeded.eventId, db);
+    const removed = await removeAppointment(
+      db,
+      { runId, version: run!.version, slot: first.slot, supplierId: first.supplierId, buyerId: first.buyerId },
+      seeded.adminId,
+    );
+    if (!removed.ok) throw new Error(removed.error.message);
+    const { auditEventId } = removed.data;
+    await db
+      .insert(appointments)
+      .values({ runId, eventId: seeded.eventId, slot: first.slot, supplierId: first.supplierId, buyerId: blocker.id, source: "manual" });
+
+    const page = (await getActivityPage(seeded.eventId, { page: 1 }, db))!;
+    const undo = page.rows.find((r) => r.id === auditEventId)!.undo;
+    const attempt = await undoAudit(db, { auditEventId, adminId: seeded.adminId });
+    expect(attempt.ok).toBe(false);
+    if (attempt.ok) return;
+    expect(undo).toEqual({ available: false, reason: attempt.error.message });
+    expect(attempt.error.message).toMatch(/already has .+ in slot \d+\. Move or remove that meeting first, then undo again\.$/);
   });
 
   it("filters by type, person, and whole days in the event timezone", async () => {

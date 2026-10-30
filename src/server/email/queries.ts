@@ -11,7 +11,8 @@ import {
 } from "@/db/schema";
 import { compareNames } from "@/lib/names";
 import { recipientKey } from "@/lib/schemas/email";
-import { isResendable } from "./campaigns";
+import { linksForContacts } from "@/server/tokens/tokens";
+import { isResendable } from "./delivery";
 import { listAudienceContacts } from "./recipients";
 import { scheduleChangeState, type ScheduleChangeState } from "./schedule-hash";
 
@@ -102,7 +103,7 @@ export type CampaignDetail = {
   sentByName: string | null;
   messages: DeliveryRow[];
   stats: StatusCounts;
-  /** Recipients "Resend to bounced" would send to, before leaving out revoked links. */
+  /** Recipients "Retry delivery" would send to, before leaving out revoked links. */
   resendable: number;
 };
 
@@ -160,11 +161,20 @@ export async function getCampaign(campaignId: string, db: Db = getDb()): Promise
     sentByName: sender[0]?.name ?? null,
     messages,
     stats: countByCampaign(latest).get(campaignId) ?? emptyCounts(),
-    resendable: latest.filter(isResendable).length + neverMessaged,
+    resendable: latest.filter((m) => isResendable(m)).length + neverMessaged,
   };
 }
 
-export type AudienceOption = { key: string; contactType: ContactType; name: string; email: string };
+export type AudienceOption = {
+  key: string;
+  contactType: ContactType;
+  name: string;
+  email: string;
+  /** Their schedule changed since their last email (the "changed" audience). */
+  changed: boolean;
+  /** Their newest link was revoked, so a send skips them. */
+  linkRevoked: boolean;
+};
 
 export type AudienceOptions = {
   contacts: AudienceOption[];
@@ -176,9 +186,19 @@ export type AudienceOptions = {
 export async function getAudienceOptions(eventId: string, db: Db = getDb()): Promise<AudienceOptions | null> {
   const [contacts, state] = await Promise.all([listAudienceContacts(db, eventId), scheduleChangeState(db, eventId)]);
   if (!contacts) return null;
+  // Read only: nothing is issued here, so this just finds who a send would skip.
+  const links = await linksForContacts(db, eventId, contacts, { issueMissing: false });
+  const revoked = links.ok ? links.data.revoked : new Set<string>();
   const buyers = contacts.filter((c) => c.contactType === "buyer").length;
   return {
-    contacts: contacts.map((c) => ({ key: c.key, contactType: c.contactType, name: c.name, email: c.email })),
+    contacts: contacts.map((c) => ({
+      key: c.key,
+      contactType: c.contactType,
+      name: c.name,
+      email: c.email,
+      changed: state.changed.has(c.key),
+      linkRevoked: revoked.has(c.key),
+    })),
     counts: {
       all: contacts.length,
       buyers,

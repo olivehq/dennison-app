@@ -1,9 +1,11 @@
 "use client";
 
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, PinOffIcon } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import type { EditPreview } from "./schedule-model";
+import { PIN_DROP_NOTE, type EditPreview } from "./schedule-model";
 
 /** One sentence for a confirm dialog: the changes, then each count that moves. */
 export function previewSentence(preview: EditPreview): string {
@@ -58,14 +60,36 @@ export function EditPreviewPanel({
           </ul>
         </div>
       ) : null}
+      {preview.dropsPin ? (
+        <Alert>
+          <PinOffIcon />
+          <AlertDescription>{PIN_DROP_NOTE}</AlertDescription>
+        </Alert>
+      ) : null}
       <div className="flex justify-end gap-2">
         <Button variant="outline" disabled={pending} onClick={onCancel}>
           Cancel
         </Button>
-        <Button disabled={pending} onClick={onSave}>
-          {pending ? <Spinner data-icon="inline-start" /> : null}
-          Save
-        </Button>
+        {preview.dropsPin ? (
+          <ConfirmDialog
+            title="Replace a pinned meeting?"
+            description={PIN_DROP_NOTE}
+            confirmLabel="Replace and remove pin"
+            destructive
+            onConfirm={onSave}
+            trigger={
+              <Button disabled={pending}>
+                {pending ? <Spinner data-icon="inline-start" /> : null}
+                Save
+              </Button>
+            }
+          />
+        ) : (
+          <Button disabled={pending} onClick={onSave}>
+            {pending ? <Spinner data-icon="inline-start" /> : null}
+            Save
+          </Button>
+        )}
       </div>
     </div>
   );

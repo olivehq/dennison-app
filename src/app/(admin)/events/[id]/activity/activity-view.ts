@@ -22,6 +22,17 @@ export function isFiltered(params: ActivityFilterParams): boolean {
   return FILTER_KEYS.some((key) => Boolean(params[key]));
 }
 
+/** The empty log's title and hint. A From after the To is called out, since the dates alone look fine. */
+export function emptyActivityText(params: ActivityFilterParams): { title: string; description: string } {
+  if (!isFiltered(params)) {
+    return { title: "No changes yet", description: "Imports, matching runs, and schedule edits will show here." };
+  }
+  if (params.from && params.to && params.from > params.to) {
+    return { title: "No changes match these filters", description: "The From date is after the To date. Swap them or clear one." };
+  }
+  return { title: "No changes match these filters", description: "Clear a filter or widen the dates." };
+}
+
 function sameFilters(a: ActivityFilterParams, b: ActivityFilterParams): boolean {
   return FILTER_KEYS.every((key) => (a[key] ?? undefined) === (b[key] ?? undefined));
 }

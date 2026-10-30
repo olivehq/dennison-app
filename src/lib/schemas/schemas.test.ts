@@ -38,6 +38,30 @@ describe("eventSettingsSchema", () => {
   });
 });
 
+describe("eventSettingsSchema messages", () => {
+  const messagesFor = (settings: Record<string, unknown>) => {
+    const result = eventSettingsSchema.safeParse({ ...defaultEventSettings, ...settings });
+    if (result.success) return {};
+    return Object.fromEntries(result.error.issues.map((i) => [i.path.join("."), i.message]));
+  };
+
+  it("says what to enter for a number that is too big, too small, blank, or fractional", () => {
+    expect(messagesFor({ hotelRankCutoff: 1027 }).hotelRankCutoff).toBe("Enter a whole number from 1 to 500.");
+    expect(messagesFor({ mutualTopN: 0 }).mutualTopN).toBe("Enter a whole number from 1 to 500.");
+    expect(messagesFor({ supplierTarget: Number.NaN }).supplierTarget).toBe("Enter a whole number from 1 to 20.");
+    expect(messagesFor({ buyerMin: 1.5 }).buyerMin).toBe("Enter a whole number from 0 to 20.");
+    expect(messagesFor({ slotCount: 21 }).slotCount).toBe("Enter a whole number from 1 to 20.");
+  });
+
+  it("never shows raw validator text", () => {
+    for (const messages of [
+      messagesFor({ hotelRankCutoff: 1027, mutualTopN: -1, buyerMax: Number.NaN, buyerIdeal: undefined, slots: [] }),
+    ]) {
+      for (const message of Object.values(messages)) expect(message).not.toMatch(/Too (big|small)|expected|Invalid input/);
+    }
+  });
+});
+
 describe("eventSchema", () => {
   it("validates the timezone against the IANA list", () => {
     const base = { name: "AW 2026", eventDate: "2026-11-10" };

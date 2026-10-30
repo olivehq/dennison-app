@@ -28,6 +28,7 @@ import {
   type LinkInfo,
   type StatusFilter,
 } from "../_roster/types";
+import { fullNameFor } from "@/server/roster/display-name";
 import { ParticipantDialog, type ParticipantFormData } from "./participant-dialog";
 
 export type ParticipantTableRow = ParticipantFormData & {
@@ -159,7 +160,7 @@ export function ParticipantsTable({
             const item = row.original;
             return (
               <RosterRowActions
-                name={item.displayLabel}
+                name={fullNameFor(item) || item.displayLabel}
                 withdrawn={item.status === "withdrawn"}
                 lockedReason={lockedReason}
                 linksBlockedReason={linksBlockedReason}
@@ -208,7 +209,7 @@ export function ParticipantsTable({
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="all">Any biztech</SelectItem>
+              <SelectItem value="all">All biztech</SelectItem>
               <SelectItem value="in">Opted in</SelectItem>
               <SelectItem value="out">Opted out</SelectItem>
             </SelectGroup>
@@ -219,6 +220,7 @@ export function ParticipantsTable({
       <ParticipantDialog
         eventId={eventId}
         participant={editing}
+        hasLiveLink={editing?.link?.state === "active"}
         open={editing !== null}
         onOpenChange={(open) => !open && setEditing(null)}
       />

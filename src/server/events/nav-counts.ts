@@ -5,7 +5,7 @@ import { appointments, participants, suppliers } from "@/db/schema";
 import type { ImportState } from "@/lib/schemas/import";
 import { getImportStatusByKind } from "@/server/imports/queries";
 import { findActiveRun } from "@/server/matching/runs";
-import { getEvent } from "./queries";
+import { countActiveRoster, getEvent } from "./queries";
 
 export type EventNavCounts = {
   /** Active participants. */
@@ -89,24 +89,18 @@ async function countScheduleProblems(
 export async function getEventNavCounts(eventId: string, db: Db = getDb()): Promise<EventNavCounts | null> {
   if (!z.uuid().safeParse(eventId).success) return null;
   // The event and active run are the same reads the layout and page make, so a render shares them.
-  const [event, activeRun, [participantRow], [supplierRow], importsWaiting] = await Promise.all([
+  // The roster counts too: the overview and matching pages read them in the same render.
+  const [event, activeRun, roster, importsWaiting] = await Promise.all([
     getEvent(eventId, db),
     findActiveRun(db, eventId),
-    db
-      .select({ n: count() })
-      .from(participants)
-      .where(and(eq(participants.eventId, eventId), eq(participants.status, "active"))),
-    db
-      .select({ n: count() })
-      .from(suppliers)
-      .where(and(eq(suppliers.eventId, eventId), eq(suppliers.status, "active"))),
+    countActiveRoster(db, eventId),
     countImportsWaiting(db, eventId),
   ]);
   if (!event) return null;
 
   return {
-    participants: participantRow?.n ?? 0,
-    suppliers: supplierRow?.n ?? 0,
+    participants: roster.participants,
+    suppliers: roster.suppliers,
     importsWaiting,
     scheduleProblems: activeRun ? await countScheduleProblems(db, eventId, activeRun.id, event.settings) : null,
   };

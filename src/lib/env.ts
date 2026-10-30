@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isExampleAddress } from "@/lib/email/example-address";
 
 const DEV_SECRET_PLACEHOLDER = "dev-only-secret-change-me-before-deploying-0000";
 
@@ -8,6 +9,7 @@ const optionalUrl = z.preprocess(emptyToUndefined, z.url().optional());
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  VERCEL_ENV: optionalString,
   DATABASE_URL: optionalUrl,
   // Where PGlite and local uploads live when DATABASE_URL and Blob are unset.
   LOCAL_DATA_DIR: z.preprocess(emptyToUndefined, z.string().default(".data")),
@@ -19,8 +21,9 @@ const envSchema = z.object({
   RESEND_WEBHOOK_SECRET: optionalString,
   EMAIL_FROM: z.preprocess(
     emptyToUndefined,
-    z.string().default("AW Appointment Show <schedule@example.com>"),
+    z.string().default("AW appointment matching <schedule@example.com>"),
   ),
+  SUPPORT_EMAIL: z.preprocess(emptyToUndefined, z.email().optional()),
   CRON_SECRET: optionalString,
   SENTRY_DSN: optionalString,
   NEXT_PUBLIC_SENTRY_DSN: optionalString,
@@ -35,23 +38,34 @@ const raw = parsed.data;
 
 type ParsedEnv = z.infer<typeof envSchema>;
 
-/**
- * What a production deployment is missing. Production needs a real database,
- * its public URL, Blob storage, both secrets, and CRON_SECRET (without it the
- * retention cron answers 503 and data is never deleted, D69); RESEND_API_KEY
- * stays optional (previews may not send mail, and `sendCampaign` refuses instead).
- */
+/** Runtime production requirements. Vercel previews may omit email credentials. */
 export function productionEnvProblems(values: ParsedEnv): string[] {
+  if (values.NODE_ENV !== "production") return [];
   const problems: string[] = [];
   if (!values.DATABASE_URL) problems.push("DATABASE_URL must be set in production.");
-  if (values.APP_URL.startsWith("http://localhost")) {
-    problems.push("APP_URL must be the public URL of this deployment, not http://localhost.");
+  const url = new URL(values.APP_URL);
+  const host = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (url.protocol !== "https:" || !host.includes(".") ||
+      /(^|\.)(localhost|example\.(com|org|net))$/.test(host) ||
+      host === "127.0.0.1" || host === "0.0.0.0" || host === "[::1]") {
+    problems.push("APP_URL must be an https URL with this deployment's real public host, not localhost or an example.com/org/net placeholder.");
   }
   if (!values.BLOB_READ_WRITE_TOKEN) problems.push("BLOB_READ_WRITE_TOKEN must be set in production.");
-  if (!values.BETTER_AUTH_SECRET) problems.push("BETTER_AUTH_SECRET must be set in production.");
-  if (!values.TOKEN_PEPPER) problems.push("TOKEN_PEPPER must be set in production.");
-  if (!values.CRON_SECRET) {
-    problems.push("CRON_SECRET must be set in production, or the retention cron can't run.");
+  for (const name of ["BETTER_AUTH_SECRET", "TOKEN_PEPPER", "CRON_SECRET"] as const) {
+    const value = values[name];
+    if (!value || value.trim().length < 32 ||
+        /change[-_ ]?(me|this)|placeholder|dev[-_ ](only|secret)|your[-_ ]|example|replace[-_ ]?(me|this|with)|^(secret|password|test)[-_ ]/i.test(value) || /^(.)\1+$/.test(value.trim())) {
+      problems.push(`${name} must be set to a random secret of at least 32 characters in production. Generate one with openssl rand -base64 32.`);
+    }
+  }
+  if (values.VERCEL_ENV === "production") {
+    for (const name of ["RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"] as const) {
+      if (!values[name]?.trim()) problems.push(`${name} must be set for Vercel production. Set the Resend ${name === "RESEND_API_KEY" ? "API key with send access" : "webhook signing secret for /api/webhooks/resend"}.`);
+    }
+    // Invites and password resets go out from EMAIL_FROM; Resend refuses example.com.
+    if (isExampleAddress(values.EMAIL_FROM)) {
+      problems.push('EMAIL_FROM must be an address on your verified Resend domain for Vercel production, for example "AW appointment matching <schedule@yourdomain.com>".');
+    }
   }
   return problems;
 }

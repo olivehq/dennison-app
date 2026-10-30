@@ -9,7 +9,7 @@ import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import type { ImportKind, ImportState } from "@/lib/schemas/import";
+import { nameSample, type ImportKind, type ImportState, type RosterChanges } from "@/lib/schemas/import";
 import { applyImportAction } from "@/server/imports/actions";
 import type { ApplySummary } from "@/server/imports/imports";
 import { setImportIgnored } from "../ignore-toggle";
@@ -24,6 +24,8 @@ type ApplyPanelProps = {
   rankings: number;
   /** Ranking kinds: the people with a row in the file. */
   rankers: number;
+  /** Roster kinds: field changes for people already on the roster, or null on older reports. */
+  rosterChanges: RosterChanges | null;
   /** Ranking kinds: their current rankings an apply replaces, or null when the report can't tell. */
   replacing: number | null;
   /** The event opts people in from the biztech file (D1). */
@@ -56,19 +58,38 @@ function rankingChanges({ kind, rankers, rankings, replacing }: ApplyPanelProps)
   return lines;
 }
 
+/** Per-field changes and who isn't in the file, for the confirm and the applied summary. */
+function rosterChangeLines(changes: RosterChanges, noun: string): string[] {
+  const lines = changes.fields.map(
+    (field) => `${field.field} changes for ${plural(field.count, noun)}: ${nameSample(field.names, field.count)}.`,
+  );
+  if (changes.missing.length > 0) {
+    lines.push(`Not in this file, kept as is: ${nameSample(changes.missing.slice(0, 5), changes.missing.length)}.`);
+  }
+  return lines;
+}
+
+function rosterCounts(rows: number, changes: RosterChanges | null, noun: string, matchedBy: string): string {
+  if (!changes) return `Adds or updates ${plural(rows, noun)}, matched by ${matchedBy}.`;
+  const added = rows - changes.updated - changes.unchanged;
+  return `Adds ${plural(added, noun)} and updates ${changes.updated}, matched by ${matchedBy}. ${changes.unchanged} already match the file.`;
+}
+
 function whatChanges(props: ApplyPanelProps): string[] {
-  const { kind, rows, biztechFromFile, eventIsDraft } = props;
+  const { kind, rows, biztechFromFile, eventIsDraft, rosterChanges } = props;
   const lines: string[] = [];
   switch (kind) {
     case "participants":
       lines.push(
-        `Adds or updates ${plural(rows, "participant")}, matched by email. Withdrawn people stay withdrawn and nobody is deleted.`,
+        `${rosterCounts(rows, rosterChanges, "participant", "email")} Withdrawn people stay withdrawn and nobody is deleted.`,
+        ...(rosterChanges ? rosterChangeLines(rosterChanges, "participant") : []),
         "A blank biztech opt-in cell keeps the current value.",
       );
       break;
     case "suppliers":
       lines.push(
-        `Adds or updates ${plural(rows, "supplier")}, matched by name. Withdrawn suppliers stay withdrawn.`,
+        `${rosterCounts(rows, rosterChanges, "supplier", "name")} Withdrawn suppliers stay withdrawn.`,
+        ...(rosterChanges ? rosterChangeLines(rosterChanges, "supplier") : []),
         "If a contact email changed, that contact's schedule link is revoked.",
       );
       break;
@@ -104,10 +125,17 @@ function blockedReason(props: ApplyPanelProps): string | null {
   }
 }
 
-function summaryLines(summary: ApplySummary): string[] {
+function summaryLines(summary: ApplySummary, changes: RosterChanges | null): string[] {
   const lines: string[] = [];
   if (summary.kind === "participants" || summary.kind === "suppliers") {
-    lines.push(`${summary.created} added, ${summary.updated} updated.`);
+    if (changes) {
+      lines.push(
+        `${summary.created} added, ${changes.updated} updated, ${changes.unchanged} unchanged.`,
+        ...rosterChangeLines(changes, summary.kind === "participants" ? "participant" : "supplier"),
+      );
+    } else {
+      lines.push(`${summary.created} added, ${summary.updated} updated.`);
+    }
   } else {
     lines.push(
       `${plural(summary.rankingsWritten, "ranking")} written for ${plural(summary.rankers, rankerNoun(summary.kind))}, replacing ${plural(summary.rankingsDeleted, "earlier ranking")}. Everyone else kept their rankings.`,
@@ -116,7 +144,7 @@ function summaryLines(summary: ApplySummary): string[] {
       lines.push(`${summary.optedIn} opted in to biztech, ${summary.optedOut} opted out.`);
     }
     if (summary.aliasesSaved > 0) {
-      lines.push(`${plural(summary.aliasesSaved, "spelling")} saved as automatic aliases for next time.`);
+      lines.push(`${plural(summary.aliasesSaved, "spelling")} saved as aliases, reused for later files of this event and next year's files with the same name.`);
     }
   }
   if (summary.eventAdvanced) lines.push("The event moved from Draft to Imported.");
@@ -154,7 +182,7 @@ export function ApplyPanel(props: ApplyPanelProps) {
         <AlertTitle>Applied</AlertTitle>
         <AlertDescription className="flex flex-col gap-2">
           <ul className="flex flex-col gap-0.5">
-            {summaryLines(summary).map((line) => (
+            {summaryLines(summary, props.rosterChanges).map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
@@ -180,12 +208,21 @@ export function ApplyPanel(props: ApplyPanelProps) {
             {whatChanges(props).map((line) => (
               <span key={line}>{line}</span>
             ))}
+            {props.rosterChanges && props.rosterChanges.cleared.length > 0 ? (
+              <span className="font-medium text-destructive">
+                Clears the organization or title of {plural(props.rosterChanges.cleared.length, "participant")} who
+                {props.rosterChanges.cleared.length === 1 ? " has" : " have"} both:{" "}
+                {props.rosterChanges.cleared.map((entry) => `${entry.name} (${entry.fields.join(" and ")})`).join(", ")}.
+              </span>
+            ) : null}
             {props.newerExists ? (
               <span className="font-medium text-foreground">A newer file of this kind was uploaded after this one.</span>
             ) : null}
           </span>
         }
         confirmLabel="Apply import"
+        // Ranking files replace the rankings already stored, and a roster file can blank people's details; neither can be undone.
+        destructive={(props.kind !== "participants" && props.kind !== "suppliers") || (props.rosterChanges?.cleared.length ?? 0) > 0}
         onConfirm={apply}
         trigger={<Button disabled={blocked !== null}>Apply import</Button>}
       />

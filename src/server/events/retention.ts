@@ -1,10 +1,9 @@
-import { and, eq, inArray, isNotNull, isNull, lt, notLike, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, notInArray, notLike, or } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import {
   accessTokens,
   appointments,
   auditEvents,
-  emailCampaigns,
   emailMessages,
   events,
   imports,
@@ -15,11 +14,14 @@ import {
   suppliers,
   type Event,
 } from "@/db/schema";
-import { deleteFile } from "@/lib/storage";
 import { endOfDayInTimezone } from "@/lib/time";
 import { recordAudit } from "@/server/audit/audit";
+import { repairStaleSends, STALE_SEND_HOURS } from "@/server/email/campaign-status";
+import { deleteQueuedFilesNow, queueFileDeletions } from "@/server/files/cleanup";
 import { wasParticipantDataDeleted } from "./queries";
 import { hasSendInProgress } from "./status";
+
+export { STALE_SEND_HOURS };
 
 /**
  * Data retention (SOW 4, scope section 8): participant data is deleted 90
@@ -58,37 +60,7 @@ export type RetentionResult = {
   eventId: string;
   name: string;
   deleted: RetentionCounts;
-  /** Storage keys that could not be deleted; the rows are gone, so retry by hand. */
-  fileErrors: string[];
 };
-
-/**
- * A campaign still `sending` this long after its claim died with its request.
- * A send runs inside one server request, and the platform stops a request
- * after minutes, not hours, so nothing real is still sending after 6 hours. The margin is wide because failing a live send would
- * let retention delete messages it is still writing, while the cost of
- * waiting is only a later deletion, and retention runs once a day anyway.
- */
-export const STALE_SEND_HOURS = 6;
-
-/** The reason a stale send's `email.send` audit row gives. */
-export const STALE_SEND_REASON = `The send stopped without finishing and was still marked sending after ${STALE_SEND_HOURS} hours, so the retention job marked it failed.`;
-
-/**
- * Moves the event's campaigns that have been `sending` for more than
- * `STALE_SEND_HOURS` (by `updatedAt`, which the claim sets and nothing else
- * changes mid-send) to `failed`. Call it with the event row locked. Returns
- * the ids it failed.
- */
-async function failStaleSends(tx: Db, eventId: string, now: Date): Promise<string[]> {
-  const cutoff = new Date(now.getTime() - STALE_SEND_HOURS * 60 * 60 * 1000);
-  const rows = await tx
-    .update(emailCampaigns)
-    .set({ status: "failed" })
-    .where(and(eq(emailCampaigns.eventId, eventId), eq(emailCampaigns.status, "sending"), lt(emailCampaigns.updatedAt, cutoff)))
-    .returning({ id: emailCampaigns.id });
-  return rows.map((r) => r.id);
-}
 
 function isDue(event: Event, now: Date): boolean {
   return event.settings.retainData !== true && retentionDeadline(event) <= now;
@@ -101,9 +73,10 @@ function isEmpty(counts: RetentionCounts): boolean {
 /**
  * Deletes participant data of every event past its retention deadline and
  * archives it. One transaction and one audit row per event; stored import
- * files are deleted after the rows commit. An archived event with nothing left
- * to delete gets the audit row once (so the settings card can say the data is
- * gone) and is skipped after that, so the daily run is quiet. An event with a
+ * files are queued for deletion in it and deleted after the commit (D184).
+ * An archived event with nothing left to delete gets the audit row once (so
+ * the settings card can say the data is gone) and is skipped after that, so
+ * the daily run is quiet. An event with a
  * campaign mid-send is skipped too and picked up by a later run; a send stuck
  * for more than `STALE_SEND_HOURS` is marked failed first.
  */
@@ -126,10 +99,7 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
       // A campaign mid-send still writes messages for this event. The daily
       // cron tries again once the send has finished. One stuck for hours
       // died with its request and would block deletion forever.
-      const staleSends = await failStaleSends(tx, event.id, now);
-      for (const id of staleSends) {
-        console.warn(`[retention] event ${event.id}: campaign ${id} was stuck sending, marked it failed.`);
-      }
+      const staleSends = await repairStaleSends(tx, event.id, now);
       if (await hasSendInProgress(tx, event.id)) {
         console.warn(`[retention] event ${event.id}: skipped, an email send is in progress. The next run retries.`);
         return null;
@@ -178,6 +148,8 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
                 eq(auditEvents.eventId, event.id),
                 // Event-level rows (name, settings, retention) hold no personal data.
                 notLike(auditEvents.action, "event.%"),
+                // The stale-send rows just written hold only their reason.
+                notInArray(auditEvents.id, staleSends.map((s) => s.auditId)),
                 or(isNotNull(auditEvents.before), isNotNull(auditEvents.after), isNotNull(auditEvents.note)),
               ),
             )
@@ -193,19 +165,8 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
         return null;
       }
 
-      // After the redaction above, so these rows keep their reason.
-      for (const id of staleSends) {
-        await recordAudit(tx, {
-          eventId: event.id,
-          adminId: null,
-          action: "email.send",
-          entityType: "email_campaign",
-          entityId: id,
-          before: { status: "sending" },
-          after: { status: "failed", failureReason: STALE_SEND_REASON },
-        });
-      }
-
+      // With the import rows gone nothing points at the files; the queue keeps them until storage confirms.
+      await queueFileDeletions(tx, files.map((f) => f.key));
       await tx.update(events).set({ status: "archived" }).where(eq(events.id, event.id));
       await recordAudit(tx, {
         eventId: event.id,
@@ -220,15 +181,8 @@ export async function deleteExpiredParticipantData(db: Db, now: Date = new Date(
     });
     if (!outcome) continue;
 
-    const fileErrors: string[] = [];
-    for (const key of outcome.keys) {
-      try {
-        await deleteFile(key);
-      } catch {
-        fileErrors.push(key);
-      }
-    }
-    results.push({ eventId: candidate.id, name: outcome.name, deleted: outcome.counts, fileErrors });
+    await deleteQueuedFilesNow(db, outcome.keys);
+    results.push({ eventId: candidate.id, name: outcome.name, deleted: outcome.counts });
   }
   return results;
 }

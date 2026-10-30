@@ -12,6 +12,7 @@ import { CountChip } from "./count-chip";
 import {
   appointmentsOf,
   byFewest,
+  emptyFreeBuyersText,
   freeIn,
   healthOf,
   healthText,
@@ -210,7 +211,7 @@ export function SlotBoard({ model, slots, slot, liveSlot, live, onPick, query, f
               })
             ) : (
               <li className="px-2 py-3 text-sm text-muted-foreground">
-                {query ? "No free buyer matches your search." : "Every buyer has a meeting in this slot."}
+                {emptyFreeBuyersText({ anyFree: allFree.length > 0, q: query, flagged })}
               </li>
             )}
           </ul>

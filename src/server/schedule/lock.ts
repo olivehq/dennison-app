@@ -3,21 +3,18 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@/db/client";
 import { appointments, participants, suppliers, type Supplier } from "@/db/schema";
 import { fail, type ActionResult } from "@/lib/errors";
-import { eventAllows } from "@/lib/event-gates";
 import { compareNames } from "@/lib/names";
 import { recordAudit } from "@/server/audit/audit";
 import {
-  ARCHIVED_MESSAGE,
-  assertEventEditable,
   EventChangedError,
   inEventTransaction,
-  isEventEditable,
   Refused,
 } from "@/server/events/editable";
 import { getEvent } from "@/server/events/queries";
 import { advanceStatus, hasSendInProgress, SEND_IN_PROGRESS_MESSAGE } from "@/server/events/status";
 import { findActiveRun } from "@/server/matching/runs";
-import { issueTokensForEvent } from "@/server/tokens/tokens";
+import { fullNameFor } from "@/server/roster/display-name";
+import { issueTokensForEvent, linksForContacts, listContacts } from "@/server/tokens/tokens";
 
 /**
  * Lock, unlock, and desk numbers (scope 2.5, D17). Locking freezes the
@@ -78,6 +75,12 @@ export type LockResult = {
   eventId: string;
   desks: DeskAssignment[];
   tokensIssued: number;
+  /** Current contacts whose link was already live and stayed (unlock keeps them), so a second lock issues none. */
+  tokensKept: number;
+  /** Current contacts whose newest link was revoked: lock doesn't replace it; Regenerate on the roster does. */
+  linksRevoked: number;
+  /** Who those revoked contacts are, in name order: a buyer by full name, a supplier contact as "Supplier (Contact)". */
+  revokedNames: string[];
 };
 
 /** Appointments of the run where the buyer or the supplier has withdrawn since it was built. */
@@ -103,8 +106,8 @@ function withdrawnLockMessage(n: number): string {
  * Freezes the schedule: desks (D17), participant links (D14), status `locked`.
  * The transaction claims the event row first and the status change is a
  * compare-and-set on the status read here, so the row is held while desks
- * and links are written, and a concurrent edit, lock, or archive makes this a
- * conflict. Refused while any appointment involves a withdrawn person, and
+ * and links are written. Concurrent locks and archives return their refusal;
+ * other status or active-run changes return conflict. Refused while any appointment involves a withdrawn person, and
  * with the archived message on an archived event.
  */
 export async function lockSchedule(
@@ -113,12 +116,10 @@ export async function lockSchedule(
 ): Promise<ActionResult<LockResult>> {
   const event = await getEvent(input.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  if (event.status === "archived") return fail("locked", ARCHIVED_MESSAGE);
-  if (!isEventEditable(event)) return fail("conflict", "The schedule is already locked.");
   const active = await findActiveRun(db, event.id);
-  if (!active) return fail("validation", "Run matching and activate a run before locking.");
 
   return inEventTransaction(db, event.id, "edit", async (tx) => {
+    if (!active) throw new Refused(fail("validation", "Run matching and activate a run before locking."));
     if (!(await advanceStatus(tx, event.id, event.status, "locked"))) throw new EventChangedError();
     // Read again under the row lock: the active run or a withdrawal may have changed since.
     const current = await findActiveRun(tx, event.id);
@@ -129,6 +130,16 @@ export async function lockSchedule(
     const issued = await issueTokensForEvent(tx, event.id);
     // Throwing rolls the desk changes back; the event was loaded a moment ago so this cannot happen.
     if (!issued.ok) throw new Error(issued.error.message);
+    // Counted per current contact (D180), not per token: a withdrawn person's live
+    // token is not a kept link, and a revoked newest link means that contact has none.
+    const contacts = await listContacts(tx, event.id);
+    const contactLinks = await linksForContacts(tx, event.id, contacts, { issueMissing: false });
+    if (!contactLinks.ok) throw new Error(contactLinks.error.message);
+    const tokensKept = Math.max(0, contactLinks.data.links.size - issued.data.length);
+    const revokedNames = contacts
+      .filter((c) => contactLinks.data.revoked.has(c.key))
+      .map((c) => (c.buyer ? fullNameFor(c.buyer) || c.name : c.name))
+      .sort(compareNames);
     await recordAudit(tx, {
       eventId: event.id,
       adminId: input.adminId,
@@ -136,9 +147,23 @@ export async function lockSchedule(
       entityType: "event",
       entityId: event.id,
       before: { status: event.status },
-      after: { status: "locked", runId: active.id, desks, tokensIssued: issued.data.length },
+      after: {
+        status: "locked",
+        runId: active.id,
+        desks,
+        tokensIssued: issued.data.length,
+        tokensKept,
+        linksRevoked: contactLinks.data.revoked.size,
+      },
     });
-    return { eventId: event.id, desks, tokensIssued: issued.data.length };
+    return {
+      eventId: event.id,
+      desks,
+      tokensIssued: issued.data.length,
+      tokensKept,
+      linksRevoked: contactLinks.data.revoked.size,
+      revokedNames,
+    };
   });
 }
 
@@ -155,7 +180,6 @@ export async function unlockSchedule(
   if (reason === "") return fail("validation", "Say why you are unlocking.", { reason: ["Required."] });
   const event = await getEvent(input.eventId, db);
   if (!event) return fail("not_found", "That event no longer exists.");
-  if (!eventAllows("locked", event.status)) return fail("validation", "The schedule is not locked.");
   return inEventTransaction(db, event.id, "locked", async (tx) => {
     if (!(await advanceStatus(tx, event.id, event.status, "matched"))) throw new EventChangedError();
     // Checked under the row lock the status change took; throwing rolls it back.
@@ -179,11 +203,7 @@ export async function reassignDesks(
   db: Db,
   input: { eventId: string; adminId: string },
 ): Promise<ActionResult<{ eventId: string; desks: DeskAssignment[] }>> {
-  const event = await getEvent(input.eventId, db);
-  if (!event) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(event);
-  if (locked) return locked;
-  return inEventTransaction(db, event.id, "edit", async (tx) => {
+  return inEventTransaction(db, input.eventId, "edit", async (tx, event) => {
     const { before, after } = await applyDesks(tx, event.id);
     await recordAudit(tx, {
       eventId: event.id,

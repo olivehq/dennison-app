@@ -6,7 +6,7 @@ import { createTestDb } from "@/db/test-db";
 import { env } from "@/lib/env";
 import { recipientKey } from "@/lib/schemas/email";
 import { decryptToken, generateToken, hashToken } from "@/lib/tokens";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
+import { ARCHIVED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import { startRun } from "@/server/matching/runs";
 import { seedEvent, type Seeded } from "@/server/matching/test-seed";
@@ -402,7 +402,7 @@ describe("regenerate and revoke rules", () => {
     // The event is archived after revoke's check, before its write.
     const archive = () => db.update(events).set({ status: "archived" }).where(eq(events.id, fresh.eventId));
     const archived = await revokeToken(raceBeforeTransaction(db, archive), supplier.tokenId, fresh.adminId);
-    expect(archived).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(archived).toEqual({ ok: false, error: { code: "locked", message: ARCHIVED_MESSAGE } });
     expect((await db.select().from(accessTokens).where(eq(accessTokens.id, supplier.tokenId)))[0].revokedAt).toBeNull();
     expect(await db.select().from(auditEvents).where(eq(auditEvents.entityId, supplier.tokenId))).toHaveLength(0);
   });

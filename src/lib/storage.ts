@@ -99,11 +99,16 @@ function memoryAdapter(): StorageAdapter {
       return files.get(key) ?? null;
     },
     async delete(key) {
+      if (memoryDeleteFailures > 0) {
+        memoryDeleteFailures -= 1;
+        throw Object.assign(new Error(`Storage is unavailable, ${key} was not deleted.`), { name: "StorageUnavailableError" });
+      }
       files.delete(key);
     },
   };
 }
 
+let memoryDeleteFailures = 0;
 let adapter: StorageAdapter | undefined;
 
 function getAdapter(): StorageAdapter {
@@ -117,6 +122,12 @@ function getAdapter(): StorageAdapter {
 /** Swap in an in-memory store. Call once at the top of a test file. */
 export function useMemoryStorageForTests(): void {
   adapter = memoryAdapter();
+  memoryDeleteFailures = 0;
+}
+
+/** Makes the next `count` deletes on the in-memory store throw, as a storage outage would. */
+export function failNextDeletesForTests(count = 1): void {
+  memoryDeleteFailures = count;
 }
 
 export async function putFile(input: {

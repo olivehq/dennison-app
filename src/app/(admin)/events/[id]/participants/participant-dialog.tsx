@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import type { z } from "zod";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +22,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { participantSchema } from "@/lib/schemas/roster";
 import { saveParticipant } from "@/server/roster/actions";
+import { fullNameFor } from "@/server/roster/display-name";
 import { applyActionError } from "../_roster/form-errors";
 
 type FormInput = z.input<typeof participantSchema>;
@@ -52,16 +54,24 @@ function defaults(participant: ParticipantFormData | null): FormInput {
   };
 }
 
+function participantName(participant: Pick<ParticipantFormData, "firstName" | "lastName" | "email">): string {
+  return fullNameFor(participant) || participant.email;
+}
+
 type ParticipantDialogProps = {
   eventId: string;
   /** Null to add a participant. */
   participant: ParticipantFormData | null;
+  /** The participant holds a link that works now. Changing their email revokes it, so saving asks first. */
+  hasLiveLink?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
 
-export function ParticipantDialog({ eventId, participant, open, onOpenChange }: ParticipantDialogProps) {
+export function ParticipantDialog({ eventId, participant, hasLiveLink = false, open, onOpenChange }: ParticipantDialogProps) {
   const router = useRouter();
+  // Values waiting on the "Change email?" confirm.
+  const [confirming, setConfirming] = React.useState<{ values: FormOutput; name: string } | null>(null);
   const editing = participant !== null;
   const {
     register,
@@ -79,22 +89,34 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
     if (open) reset(defaults(participant));
   }, [open, participant, reset]);
 
-  const onSubmit = async (values: FormOutput) => {
+  const save = async (values: FormOutput) => {
     const result = await saveParticipant({ ...values, eventId, id: participant?.id });
     if (!result.ok) {
       applyActionError(result.error, setError, FIELDS);
-      if (result.error.code === "locked") router.refresh();
+      // The event was locked or archived in another tab: the edit can't be saved, so close the form on the refreshed page.
+      if (result.error.code === "locked") {
+        onOpenChange(false);
+        router.refresh();
+      }
       return;
     }
-    const emailChanged = editing && participant.email !== values.email;
+    const name = participantName(values);
     toast.success(
       editing
-        ? emailChanged
-          ? "Participant saved. Their old link was revoked because the email changed."
-          : "Participant saved."
-        : `${values.firstName} ${values.lastName} added.`,
+        ? result.data.linksRevoked > 0
+          ? `${name} saved. Their old link was revoked because the email changed.`
+          : `${name} saved.`
+        : `${name} added.`,
     );
     onOpenChange(false);
+  };
+
+  const onSubmit = async (values: FormOutput) => {
+    if (editing && hasLiveLink && participant.email !== values.email) {
+      setConfirming({ values, name: participantName(participant) });
+      return;
+    }
+    await save(values);
   };
 
   return (
@@ -175,6 +197,17 @@ export function ParticipantDialog({ eventId, participant, open, onOpenChange }: 
           </DialogFooter>
         </form>
       </DialogContent>
+      <ConfirmDialog
+        open={confirming !== null}
+        onOpenChange={(next) => !next && setConfirming(null)}
+        title={`Change ${confirming?.name ?? "their"}'s email?`}
+        description="Their current schedule link stops working. Send them the new link from Emails after saving."
+        confirmLabel="Change email"
+        destructive
+        onConfirm={async () => {
+          if (confirming) await save(confirming.values);
+        }}
+      />
     </Dialog>
   );
 }

@@ -45,6 +45,8 @@ type PersonScheduleProps = {
   renderActions?: (slot: PersonScheduleSlot) => React.ReactNode;
   /** Outlines this slot, e.g. the open slot that was clicked. */
   focusSlot?: number;
+  /** An event's accent color (`#rrggbb`), drawn as a rail on booked rows. */
+  accentColor?: string | null;
 };
 
 export function PersonSchedule({
@@ -57,6 +59,7 @@ export function PersonSchedule({
   personSupplierType,
   renderActions,
   focusSlot,
+  accentColor,
 }: PersonScheduleProps) {
   return (
     <ol
@@ -92,7 +95,9 @@ export function PersonSchedule({
                     : "border bg-card text-card-foreground"
                   : "border-[1.5px] border-dashed border-open text-muted-foreground",
                 focused && "outline-2 outline-offset-2 outline-now",
+                a && accentColor && !treated && "border-l-4",
               )}
+              style={a && accentColor && !treated ? { borderLeftColor: accentColor } : undefined}
             >
               {a ? (
                 <>

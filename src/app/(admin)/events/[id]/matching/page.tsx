@@ -33,7 +33,7 @@ const STATUS_LABEL: Record<RunSummary["status"], string> = {
   failed: "Failed",
 };
 
-/** Rows shown per list in a comparison before "and N more". */
+/** Rows shown per list in a comparison before "and N more"; `?all=1` lifts it. */
 const COMPARE_LIMIT = 40;
 
 function duration(ms: number | null): string {
@@ -51,10 +51,10 @@ export default async function MatchingPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ compare?: string | string[]; against?: string | string[] }>;
+  searchParams: Promise<{ compare?: string | string[]; against?: string | string[]; all?: string | string[] }>;
 }) {
   await requireSession();
-  const [{ id }, { compare, against }] = await Promise.all([params, searchParams]);
+  const [{ id }, { compare, against, all }] = await Promise.all([params, searchParams]);
   const event = await getEvent(id);
   if (!event) notFound();
   const [gate, runs, previews] = await Promise.all([getMatchingGate(event.id), listRuns(event.id), activationPreviews(event.id)]);
@@ -63,6 +63,7 @@ export default async function MatchingPage({
   const compareId =
     typeof compare === "string" && runs.some((r) => r.id === compare && !r.isActive && r.status === "completed") ? compare : null;
   const target: CompareTarget | undefined = against === "active" || against === "parent" ? against : undefined;
+  const showAll = all === "1";
   const comparison = compareId ? await compareRunForPage(event.id, compareId, target) : null;
   const editable = isEventEditable(event);
   const topN = event.settings.mutualTopN;
@@ -176,6 +177,7 @@ export default async function MatchingPage({
                       run={run}
                       expanded={expanded}
                       comparison={expanded ? comparison : null}
+                      showAll={showAll}
                       slotTimes={slotTimes}
                       base={base}
                       created={formatTimestamp(run.createdAt, event.timezone)}
@@ -207,6 +209,7 @@ function RunRows({
   run,
   expanded,
   comparison,
+  showAll,
   slotTimes,
   base,
   created,
@@ -220,6 +223,7 @@ function RunRows({
   run: RunSummary;
   expanded: boolean;
   comparison: RunComparisonView | null;
+  showAll: boolean;
   slotTimes: ReadonlyMap<number, string>;
   base: string;
   created: string;
@@ -314,7 +318,14 @@ function RunRows({
                     ))}
                 </div>
                 {comparison.result.ok ? (
-                  <ComparisonPanel comparison={comparison.result.data} against={comparison.against} slotTimes={slotTimes} />
+                  <ComparisonPanel
+                    comparison={comparison.result.data}
+                    against={comparison.against}
+                    slotTimes={slotTimes}
+                    // Show all keeps the comparison open on the same side; Show fewer drops the flag.
+                    listHref={`${base}?compare=${run.id}&against=${comparison.against}`}
+                    showAll={showAll}
+                  />
                 ) : (
                   <p className="text-sm text-destructive">{comparison.result.error.message}</p>
                 )}
@@ -358,11 +369,16 @@ function ComparisonPanel({
   comparison,
   against,
   slotTimes,
+  listHref,
+  showAll,
 }: {
   comparison: RunComparison;
   against: CompareTarget;
   slotTimes: ReadonlyMap<number, string>;
+  listHref: string;
+  showAll: boolean;
 }) {
+  const more = { listHref, showAll };
   const { added, removed, countChanges } = comparison;
   if (added.length === 0 && removed.length === 0) {
     return (
@@ -376,13 +392,13 @@ function ComparisonPanel({
   return (
     <div className="flex flex-col gap-5 text-sm">
       <p className="font-semibold">
-        {against === "active" ? "Activating this run adds" : "Against the run it kept from, this run adds"} {added.length} and
-        removes {removed.length} appointments, and changes the count of {countChanges.length}{" "}
-        {countChanges.length === 1 ? "person" : "people"}.
+        {against === "active" ? "Activating this run adds" : "Against the run it kept from, this run adds"}{" "}
+        {added.length === 1 ? "1 appointment" : `${added.length} appointments`} and removes {removed.length}, and changes the
+        count of {countChanges.length} {countChanges.length === 1 ? "person" : "people"}.
       </p>
-      <AppointmentTable title="Added" rows={added} slotTimes={slotTimes} />
-      <AppointmentTable title="Removed" rows={removed} slotTimes={slotTimes} />
-      <CompareSection title="Counts that change" total={countChanges.length}>
+      <AppointmentTable title="Added" rows={added} slotTimes={slotTimes} more={more} />
+      <AppointmentTable title="Removed" rows={removed} slotTimes={slotTimes} more={more} />
+      <CompareSection title="Counts that change" total={countChanges.length} more={more}>
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
@@ -393,7 +409,7 @@ function ComparisonPanel({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {countChanges.slice(0, COMPARE_LIMIT).map((c) => (
+            {countChanges.slice(0, showAll ? undefined : COMPARE_LIMIT).map((c) => (
               <TableRow key={c.personId}>
                 <TableCell className="pl-3 whitespace-normal">{c.name}</TableCell>
                 <TableCell>{c.type === "buyer" ? "Buyer" : "Supplier"}</TableCell>
@@ -408,8 +424,20 @@ function ComparisonPanel({
   );
 }
 
-/** One titled block of the comparison: the table, "None" when empty, and "and N more" past the limit. */
-function CompareSection({ title, total, children }: { title: string; total: number; children: React.ReactNode }) {
+type CompareMore = { listHref: string; showAll: boolean };
+
+/** One titled block of the comparison: the table, "None" when empty, and "and N more" with Show all past the limit. */
+function CompareSection({
+  title,
+  total,
+  more,
+  children,
+}: {
+  title: string;
+  total: number;
+  more: CompareMore;
+  children: React.ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-1.5">
       <h3 className="font-semibold">
@@ -420,7 +448,18 @@ function CompareSection({ title, total, children }: { title: string; total: numb
       ) : (
         <div className="rounded-md border bg-background">{children}</div>
       )}
-      {total > COMPARE_LIMIT ? <p className="text-muted-foreground">and {total - COMPARE_LIMIT} more</p> : null}
+      {total > COMPARE_LIMIT ? (
+        <p className="text-muted-foreground">
+          {more.showAll ? `All ${total} shown. ` : `and ${total - COMPARE_LIMIT} more. `}
+          <Link
+            href={more.showAll ? more.listHref : `${more.listHref}&all=1`}
+            scroll={false}
+            className="font-semibold text-foreground underline underline-offset-4"
+          >
+            {more.showAll ? "Show fewer" : "Show all"}
+          </Link>
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -429,13 +468,15 @@ function AppointmentTable({
   title,
   rows,
   slotTimes,
+  more,
 }: {
   title: string;
   rows: AppointmentView[];
   slotTimes: ReadonlyMap<number, string>;
+  more: CompareMore;
 }) {
   return (
-    <CompareSection title={title} total={rows.length}>
+    <CompareSection title={title} total={rows.length} more={more}>
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
@@ -446,7 +487,7 @@ function AppointmentTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.slice(0, COMPARE_LIMIT).map((a) => (
+          {rows.slice(0, more.showAll ? undefined : COMPARE_LIMIT).map((a) => (
             <TableRow key={a.id}>
               <TableCell className="pl-3 tabular-nums">{a.slot}</TableCell>
               <TableCell className="tabular-nums">{slotTimes.get(a.slot) ?? "–"}</TableCell>

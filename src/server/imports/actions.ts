@@ -7,6 +7,7 @@ import { fail, fromZod, type ActionResult } from "@/lib/errors";
 import {
   IMPORT_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
+  removeAliasSchema,
   saveAliasesSchema,
   uploadImportSchema,
   type ImportKind,
@@ -18,6 +19,8 @@ import {
   createImport,
   deleteImportRecord,
   ignoreImport,
+  recheckImport,
+  removeAlias,
   saveAliases,
   stopIgnoringImport,
   type ApplySummary,
@@ -51,9 +54,11 @@ export async function uploadImport(
   if (!parsed.success) return fromZod(parsed.error);
 
   const file = formData.get("file");
-  if (!(file instanceof File) || file.size === 0) {
+  // A form with no file chosen still sends an empty, unnamed File.
+  if (!(file instanceof File) || (file.size === 0 && file.name === "")) {
     return fail("validation", "Choose a file to upload.", { file: ["Required."] });
   }
+  if (file.size === 0) return fail("validation", "The file is empty.", { file: ["The file is empty."] });
   if (!hasAllowedExtension(file.name)) {
     return fail("validation", "Upload an .xlsx, .xls, or .csv file.", {
       file: ["Use .xlsx, .xls, or .csv."],
@@ -84,6 +89,18 @@ export async function saveAliasesAction(
   const parsed = saveAliasesSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await saveAliases(getDb(), { ...parsed.data, adminId: actor.id });
+  if (result.ok) revalidateEvent(parsed.data.eventId);
+  return result;
+}
+
+/** Removes one saved name mapping from the list on the Imports page and re-validates pending imports. */
+export async function removeAliasAction(
+  input: unknown,
+): Promise<ActionResult<{ aliasId: string; imports: { importId: string; kind: ImportKind; state: ImportState }[] }>> {
+  const actor = await requireAdmin();
+  const parsed = removeAliasSchema.safeParse(input);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await removeAlias(getDb(), { ...parsed.data, adminId: actor.id });
   if (result.ok) revalidateEvent(parsed.data.eventId);
   return result;
 }
@@ -135,6 +152,21 @@ export async function stopIgnoringImportAction(
   const parsed = idSchema.safeParse(importId);
   if (!parsed.success) return fromZod(parsed.error);
   const result = await stopIgnoringImport(getDb(), { importId: parsed.data, adminId: actor.id });
+  if (result.ok) {
+    const row = await getImport(parsed.data);
+    if (row) revalidateEvent(row.eventId);
+  }
+  return result;
+}
+
+/** Checks a waiting file again, for a report made before the roster changed. */
+export async function recheckImportAction(
+  importId: unknown,
+): Promise<ActionResult<{ importId: string; state: ImportState }>> {
+  await requireAdmin();
+  const parsed = idSchema.safeParse(importId);
+  if (!parsed.success) return fromZod(parsed.error);
+  const result = await recheckImport(getDb(), { importId: parsed.data });
   if (result.ok) {
     const row = await getImport(parsed.data);
     if (row) revalidateEvent(row.eventId);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActivitySummary } from "@/server/audit/queries";
-import { activityQuery, entryTone, groupByDay, isFiltered, summaryStats } from "./activity-view";
+import { activityQuery, emptyActivityText, entryTone, groupByDay, isFiltered, summaryStats } from "./activity-view";
 
 const summary: ActivitySummary = {
   today: "2026-11-10",
@@ -78,5 +78,19 @@ describe("entryTone", () => {
     expect(entryTone({ action: "participant.withdraw", area: "roster" })).toBe("removal");
     expect(entryTone({ action: "event.settings", area: "settings" })).toBe("quiet");
     expect(entryTone({ action: "admin.invite_revoke", area: null })).toBe("removal");
+  });
+});
+
+describe("emptyActivityText", () => {
+  it("tells an empty log from a filtered one, and calls out a backwards date range", () => {
+    expect(emptyActivityText({}).title).toBe("No changes yet");
+    expect(emptyActivityText({ type: "schedule" })).toEqual({
+      title: "No changes match these filters",
+      description: "Clear a filter or widen the dates.",
+    });
+    expect(emptyActivityText({ from: "2026-10-30", to: "2026-10-29" }).description).toBe(
+      "The From date is after the To date. Swap them or clear one.",
+    );
+    expect(emptyActivityText({ from: "2026-10-29", to: "2026-10-29" }).description).toBe("Clear a filter or widen the dates.");
   });
 });

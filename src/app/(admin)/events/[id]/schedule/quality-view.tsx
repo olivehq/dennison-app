@@ -17,6 +17,8 @@ import {
   healthOf,
   personLabel,
   personMatches,
+  plural,
+  qualityVerdict,
   type Person,
   type ScheduleModel,
   type Targets,
@@ -86,13 +88,18 @@ export function QualityView({
     },
   ];
 
-  const verdict =
-    `${total} appointments over ${slots.length} slots. ` +
-    (stats.suppliersAtTarget === stats.totalSuppliers
-      ? `Every supplier has ${targets.supplierTarget}. `
-      : `${stats.suppliersAtTarget} of ${stats.totalSuppliers} suppliers have ${targets.supplierTarget}. `) +
-    `${stats.buyersInRange} of ${stats.totalBuyers} buyers are within ${targets.buyerMin} to ${targets.buyerMax}` +
-    (below.length + above.length ? `; ${below.length + above.length} need attention.` : ".");
+  const verdict = qualityVerdict({
+    appointments: total,
+    slots: slots.length,
+    suppliersAtTarget: stats.suppliersAtTarget,
+    totalSuppliers: stats.totalSuppliers,
+    supplierTarget: targets.supplierTarget,
+    buyersInRange: stats.buyersInRange,
+    totalBuyers: stats.totalBuyers,
+    buyerMin: targets.buyerMin,
+    buyerMax: targets.buyerMax,
+    outOfRange: below.length + above.length,
+  });
 
   return (
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_400px]">
@@ -100,7 +107,7 @@ export function QualityView({
         <p className="max-w-[62ch] font-display text-xl leading-snug font-semibold text-balance sm:text-[22px]">{verdict}</p>
 
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="Appointments" value={total} sub={`${slots.length} slots, ${stats.totalSuppliers} desks`} />
+          <StatCard label="Appointments" value={total} sub={`${plural(slots.length, "slot")}, ${plural(stats.totalSuppliers, "desk")}`} />
           <StatCard
             label={`Suppliers at ${targets.supplierTarget}`}
             value={stats.suppliersAtTarget}
@@ -244,7 +251,7 @@ export function QualityView({
               empty={
                 offSuppliers.length
                   ? "None match your search."
-                  : `All ${activeSuppliers} suppliers have exactly ${targets.supplierTarget}.`
+                  : `${activeSuppliers === 1 ? "The only supplier has" : `All ${activeSuppliers} suppliers have`} exactly ${targets.supplierTarget}.`
               }
               why={(p) => (p.kind === "supplier" ? `${TYPE_LABEL[p.type]}, desk ${p.desk ?? "not set"}` : "")}
               targets={targets}
@@ -254,7 +261,7 @@ export function QualityView({
         </Card>
         <Alert>
           <PencilLineIcon />
-          <AlertTitle>{manual === 1 ? "1 manual change" : `${manual} manual changes`}</AlertTitle>
+          <AlertTitle>{plural(manual, "manual change")}</AlertTitle>
           <AlertDescription>
             Replacements, additions, and removals saved on this run, not counting ones undone. Running matching without
             keeping existing appointments would replace them.

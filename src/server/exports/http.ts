@@ -1,9 +1,11 @@
 import { z } from "zod";
-import type { Event, MatchRun } from "@/db/schema";
+import type { Event } from "@/db/schema";
 import { getSession } from "@/server/auth/session";
 import { getEvent } from "@/server/events/queries";
 import { getActiveRun } from "@/server/matching/queries";
 import { isEventEditable } from "@/server/events/editable";
+import { getScheduleViewSnapshot, type ScheduleRun, type ScheduleView } from "@/server/schedule/views";
+import { recordExport } from "./actions";
 import { eventYear } from "./common";
 import { EXPORT_CONTENT_TYPES, exportFilename, needsRun, type ExportKind } from "./kinds";
 import { needsLock } from "./queries";
@@ -17,8 +19,6 @@ import { needsLock } from "./queries";
 export type ExportContext = {
   adminId: string;
   event: Event;
-  /** Null for exports that need no run (`needsRun`). */
-  run: Pick<MatchRun, "id" | "version"> | null;
   year: string;
 };
 
@@ -29,35 +29,96 @@ export function plainResponse(status: number, message: string): Response {
   });
 }
 
-/** Session (401), event (404), active run (409, unless the export needs none), and lock for the access list (409), in that order. */
+const NO_SCHEDULE = "There is no active schedule yet. Run matching and activate a run first.";
+const NOT_LOCKED = "Lock the schedule before downloading the participant access list.";
+
+/** Session (401), then a well-formed event id (404). */
+async function signedInAdmin(eventId: string): Promise<{ adminId: string } | Response> {
+  const session = await getSession();
+  if (!session) return plainResponse(401, "Sign in to download exports.");
+  if (!z.uuid().safeParse(eventId).success) return plainResponse(404, "That event does not exist.");
+  return { adminId: session.user.id };
+}
+
+/** Session (401), event (404), active run (409), and lock for the access list (409), in that order. Used by the access route; the GET exports go through `exportRoute`. */
 export async function loadExportContext(
   eventId: string,
   kind: ExportKind,
 ): Promise<{ ok: true; context: ExportContext } | { ok: false; response: Response }> {
-  const session = await getSession();
-  if (!session) return { ok: false, response: plainResponse(401, "Sign in to download exports.") };
-  if (!z.uuid().safeParse(eventId).success) {
-    return { ok: false, response: plainResponse(404, "That event does not exist.") };
-  }
+  const admin = await signedInAdmin(eventId);
+  if (admin instanceof Response) return { ok: false, response: admin };
   const event = await getEvent(eventId);
   if (!event) return { ok: false, response: plainResponse(404, "That event does not exist.") };
-  const run = needsRun(kind) ? await getActiveRun(event.id) : null;
-  if (needsRun(kind) && !run) {
-    return {
-      ok: false,
-      response: plainResponse(409, "There is no active schedule yet. Run matching and activate a run first."),
-    };
+  if (needsRun(kind) && !(await getActiveRun(event.id))) return { ok: false, response: plainResponse(409, NO_SCHEDULE) };
+  if (needsLock(kind) && isEventEditable(event)) return { ok: false, response: plainResponse(409, NOT_LOCKED) };
+  return { ok: true, context: { adminId: admin.adminId, event, year: eventYear(event.eventDate) } };
+}
+
+/** The exports a GET route serves: everything but the access list, which issues links on POST. */
+type GetExportKind = Exclude<ExportKind, "access_list">;
+type RunExportKind = "master" | "schedules" | "report";
+
+/** The schedule view with an active run, as the builders of the run-based exports receive it. */
+export type ActiveScheduleView = ScheduleView & { run: ScheduleRun };
+
+/** What a builder hands back: the file, and extra facts for the audit row. */
+export type ExportBuild = { body: BodyInit; details?: Record<string, unknown> };
+
+/** Builds the file. Returning a `Response` refuses instead, such as a run without statistics; it is sent as is and nothing is audited. */
+export type ExportBuilder<K extends GetExportKind> = (
+  context: ExportContext,
+  view: K extends RunExportKind ? ActiveScheduleView : null,
+) => Promise<ExportBuild | Response>;
+
+/**
+ * One GET export from request to response. Checks the session (401), loads the
+ * event and, for the run-based kinds, the schedule view once, as one snapshot
+ * (404, 409), calls `build`, writes the audit row with the run id and version
+ * of that same view, and returns the download. The audit row goes before the response so a
+ * streamed file cannot outrun it. Any failure is logged without names, emails,
+ * or tokens and answered with a short 500.
+ */
+export async function exportRoute<K extends GetExportKind>(
+  kind: K,
+  params: Promise<{ eventId: string }>,
+  build: ExportBuilder<K>,
+): Promise<Response> {
+  let eventId: string | undefined;
+  try {
+    ({ eventId } = await params);
+    const admin = await signedInAdmin(eventId);
+    if (admin instanceof Response) return admin;
+
+    let event: Event | null;
+    let view: ActiveScheduleView | null = null;
+    if (needsRun(kind)) {
+      const loaded = await getScheduleViewSnapshot(eventId);
+      event = loaded?.event ?? null;
+      if (loaded?.run) view = { ...loaded, run: loaded.run };
+    } else {
+      event = await getEvent(eventId);
+    }
+    if (!event) return plainResponse(404, "That event does not exist.");
+    if (needsRun(kind) && !view) return plainResponse(409, NO_SCHEDULE);
+
+    const context: ExportContext = { adminId: admin.adminId, event, year: eventYear(event.eventDate) };
+    const built = await build(context, view as K extends RunExportKind ? ActiveScheduleView : null);
+    if (built instanceof Response) return built;
+
+    await recordExport({
+      eventId: event.id,
+      adminId: admin.adminId,
+      kind,
+      ...(view ? { runId: view.run.id, runVersion: view.run.version } : {}),
+      details: built.details,
+    });
+    return fileResponse(built.body, kind, context.year);
+  } catch (error) {
+    // Error messages can quote SQL parameters and names, so log only the kind of error.
+    const type = error instanceof Error ? error.name : typeof error;
+    console.error(`[exports] ${kind} export of event ${eventId ?? "unknown"} failed (${type}).`);
+    return plainResponse(500, "The export failed. Try again, and tell your administrator if it keeps happening.");
   }
-  if (needsLock(kind) && isEventEditable(event)) {
-    return {
-      ok: false,
-      response: plainResponse(409, "Lock the schedule before downloading the participant access list."),
-    };
-  }
-  return {
-    ok: true,
-    context: { adminId: session.user.id, event, run: run ? { id: run.id, version: run.version } : null, year: eventYear(event.eventDate) },
-  };
 }
 
 /** A download with the spec's file name. */

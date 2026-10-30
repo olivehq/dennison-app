@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findUnknownFields, MERGE_FIELDS, renderTemplate, renderText, SAMPLE_MERGE_VALUES, type MergeValues } from "./merge";
+import { findUnknownFields, isExampleAddress, MERGE_FIELDS, renderTemplate, renderText, SAMPLE_MERGE_VALUES, type MergeValues } from "./merge";
 
 const values: MergeValues = {
   ...SAMPLE_MERGE_VALUES,
@@ -50,7 +50,18 @@ describe("merge fields", () => {
 
   it("renders subjects as plain text without escaping", () => {
     expect(renderText("{{organization}}: your {{event_name}} schedule", values)).toBe(
-      "Smith & <Sons>: your AW Appointment Show schedule",
+      "Smith & <Sons>: your AW appointment matching schedule",
     );
+  });
+});
+
+describe("isExampleAddress", () => {
+  it("flags the reserved example domains and their subdomains only", () => {
+    expect(isExampleAddress("schedule@example.com")).toBe(true);
+    expect(isExampleAddress("Schedule@Mail.Example.ORG")).toBe(true);
+    expect(isExampleAddress("a@example.net")).toBe(true);
+    expect(isExampleAddress("schedule@da-events.com")).toBe(false);
+    expect(isExampleAddress("schedule@notexample.com")).toBe(false);
+    expect(isExampleAddress("schedule@example.com.au")).toBe(false);
   });
 });

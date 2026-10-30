@@ -1,6 +1,8 @@
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import type { EmailAudience, EmailCampaignKind } from "@/lib/schemas/email";
+import type { EmailSetup } from "@/server/email/campaigns";
+import { EMAIL_NOT_CONFIGURED_MESSAGE, isExampleAddress } from "@/server/email/merge";
 
 /** Words for the emails pages, in one place so every screen says the same thing. */
 
@@ -20,6 +22,13 @@ export const AUDIENCE_LABELS: Record<EmailAudience, string> = {
   selected: "Selected people",
   changed_since_last_send: "Changed since last email",
 };
+
+/** The audience as the end of "Update email to ...". */
+export function audiencePhrase(audience: EmailAudience): string {
+  return audience === "changed_since_last_send"
+    ? "people whose schedule changed since their last email"
+    : AUDIENCE_LABELS[audience].toLowerCase();
+}
 
 const CAMPAIGN_STATUS_LABELS: Record<CampaignStatus, string> = {
   draft: "Draft",
@@ -76,8 +85,25 @@ export function skippedRevokedMessage(count: number): string {
 /** Shown when mail only went to the server log (no email provider): the campaign page and the send toast. */
 export const NOT_DELIVERED_NOTICE = "This server has no email provider set up.";
 
+export const EXAMPLE_SENDER_REASON =
+  "The From email is on example.com, which no mail provider will send from. Change it to an address on your verified sending domain.";
+
+/** A sent campaign can't be edited, so retrying one from example.com means sending a copy. */
+export const EXAMPLE_SENDER_RETRY_REASON =
+  "This campaign's From email is on example.com, which no mail provider will send from. Duplicate it, change the From email to an address on your verified sending domain, and send the copy.";
+
+/**
+ * Why a send, test, or retry would be refused for the deployment or the
+ * sender, or null. Same rules as the server, so the buttons say so before the click.
+ */
+export function emailSetupReason(setup: EmailSetup, fromEmail: string, { retry = false } = {}): string | null {
+  if (!setup.configured) return EMAIL_NOT_CONFIGURED_MESSAGE;
+  if (setup.refuseExampleSender && isExampleAddress(fromEmail)) return retry ? EXAMPLE_SENDER_RETRY_REASON : EXAMPLE_SENDER_REASON;
+  return null;
+}
+
 /** The toast after a send: what went out, or that nothing did. */
 export function sentMessage(count: number, delivered: boolean): string {
-  if (delivered) return `Sent to ${recipients(count)}`;
+  if (delivered) return `Sent to ${recipients(count)}.`;
   return `Logged ${count} ${count === 1 ? "email" : "emails"}, not sent. ${NOT_DELIVERED_NOTICE}`;
 }

@@ -10,7 +10,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # AW Appointment Matching App
 
-Admin workspace and participant schedule pages for the AW appointment show, built by Olive Technologies for Dennison & Associates. Full requirements: `docs/PROJECT_SCOPE.md`. Decisions where the requirements were silent: `docs/DECISIONS.md`. Architecture and module boundaries: `docs/ARCHITECTURE.md`. Visual direction: `docs/designs/03-resource-timeline/index.html` (the design mockup; open `docs/designs/index.html` for all ten).
+Admin workspace and participant schedule pages for the AW appointment show, built by Olive Technologies for Dennison & Associates. Full requirements: `docs/PROJECT_SCOPE.md`. Decisions where the requirements were silent: `docs/DECISIONS.md`. Architecture and module boundaries: `docs/ARCHITECTURE.md`. Live-run steps for D&A sessions: `docs/RUNBOOK.md`. Visual direction: `docs/designs/03-resource-timeline/index.html` (the design mockup; open `docs/designs/index.html` for all ten).
 
 ## Commands
 
@@ -25,6 +25,7 @@ Admin workspace and participant schedule pages for the AW appointment show, buil
 | Generate a migration after a schema change | `pnpm db:generate` |
 | Apply migrations | `pnpm db:migrate` |
 | Seed a demo event with 2025 data | `pnpm db:seed` |
+| Turn off two-factor sign-in for an admin who lost their app and backup codes | `pnpm reset-two-factor <email>` (signs them out everywhere, writes an audit row) |
 | Create the first admin (no invite needed) | `pnpm create-admin <email> "<name>"` (prompts for the password, or reads `ADMIN_PASSWORD`; a password argument is refused) |
 | Build | `pnpm build` |
 | All checks | `pnpm check` (typecheck, lint, test) |
@@ -47,7 +48,7 @@ src/app/            Routes only. Pages are thin: load data through src/server, r
   api/              Route handlers: auth, exports, webhooks, cron
 src/engine/         Pure matching engine. No imports from next, react, or src/db. Enforced by eslint.
 src/db/             Drizzle schema (schema.ts), client (client.ts), migrations/
-src/server/         Server-only code, one folder per module: auth, events, roster, imports, matching, schedule, exports, email, audit, tokens
+src/server/         Server-only code, one folder per module: auth, events, roster, imports, matching, schedule, exports, email, audit, tokens, files
   <module>/queries.ts   Reads used by pages
   <module>/actions.ts   'use server' mutations. Every action checks the session first.
   <module>/*.test.ts    Tests against PGlite
@@ -79,7 +80,7 @@ A change is done when `pnpm check` passes, new behavior has a test (engine and s
 
 ## Invariants that are easy to break
 
-- A locked event rejects every mutation except unlock, exports, email sends, and participant link actions (regenerate and revoke a link). An archived event rejects all of them except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`inEventTransaction`, `advanceStatus`).
+- Which statuses allow which writes is `EVENT_GATES` in `src/lib/event-gates.ts`; it is the source of truth. In short: a locked or sent event rejects roster, import, matching, schedule, and settings writes, but still allows unlock, exports, email drafts and sends, participant link actions, retention, branding, and archive. An archived event rejects everything except exports. Check `event.status` in the action, not only in the UI, and make status-dependent writes a compare-and-set inside the transaction (`inEventTransaction`, `advanceStatus`).
 - Withdrawn people are excluded from matching input and from "free in slot" lists, but their rankings and past appointments stay in the database.
 - `match_runs.version` increments on every save. A save with a stale version returns the conflict error, never overwrites.
 - The engine must be deterministic for the same input. No `Math.random`, no `Date.now()` inside `src/engine`.

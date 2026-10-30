@@ -12,7 +12,7 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
   return (
     <div className="flex flex-col gap-2 border-t pt-6">
       <p className="text-sm text-muted-foreground">
-        A draft with no participants can be deleted. Events with data can be archived from the overview instead.
+        A draft with no participants, suppliers, or imports can be deleted. Events with data can be archived instead.
       </p>
       <ConfirmDialog
         title="Delete this event?"
@@ -29,15 +29,10 @@ export function DeleteEventButton({ eventId, eventName }: { eventId: string; eve
           const result = await deleteEvent(eventId);
           if (!result.ok) {
             toast.error(result.error.message);
+            router.refresh();
             return;
           }
-          if (result.data.fileErrors.length > 0) {
-            toast.warning(
-              `Event deleted, but ${result.data.fileErrors.length} uploaded file${result.data.fileErrors.length === 1 ? "" : "s"} couldn't be removed from storage. Tell Olive so they can delete them.`,
-            );
-          } else {
-            toast.success("Event deleted.");
-          }
+          toast.success("Event deleted.");
           router.push("/events");
         }}
       />

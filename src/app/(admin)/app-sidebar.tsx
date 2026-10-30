@@ -310,7 +310,7 @@ function AccountMenu({ user, onNavigate }: { user: SidebarUser; onNavigate: () =
                 <AvatarFallback className="font-semibold text-foreground">{initials(user.name, user.email)}</AvatarFallback>
               </Avatar>
               <span className={cn("flex min-w-0 flex-1 flex-col", EXPANDED_ONLY)}>
-                <span className="truncate font-semibold">{user.name}</span>
+                <span className="truncate font-semibold" title={user.name}>{user.name}</span>
                 <span className="truncate text-xs text-muted-foreground">{user.email}</span>
               </span>
               <EllipsisVerticalIcon className={cn("text-muted-foreground", EXPANDED_ONLY)} aria-hidden="true" />
@@ -381,7 +381,7 @@ export function AppSidebar({
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary font-display text-sm font-bold text-primary-foreground">
                   AW
                 </span>
-                <span className="font-display text-base font-bold tracking-[-0.01em]">Appointment matching</span>
+                <span className="font-display text-base font-bold tracking-[-0.01em]">AW appointment matching</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

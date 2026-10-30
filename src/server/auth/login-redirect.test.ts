@@ -17,3 +17,9 @@ describe("loginPathFor", () => {
     expect(loginPathFor("https://evil.com")).toBe("/login");
   });
 });
+
+it("adds the session-ended marker independently of the destination", () => {
+  expect(loginPathFor(null, true)).toBe("/login?sessionEnded=1");
+  expect(loginPathFor("/", true)).toBe("/login?sessionEnded=1");
+  expect(loginPathFor("/events", true)).toBe("/login?next=%2Fevents&sessionEnded=1");
+});

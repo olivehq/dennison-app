@@ -147,7 +147,7 @@ export function LinkFilterSelect({ value, onChange }: { value: LinkFilter; onCha
       </SelectTrigger>
       <SelectContent>
         <SelectGroup>
-          <SelectItem value="all">Any link</SelectItem>
+          <SelectItem value="all">All links</SelectItem>
           <SelectItem value="active">Link active</SelectItem>
           <SelectItem value="revoked">Revoked</SelectItem>
           <SelectItem value="expired">Expired</SelectItem>
@@ -315,7 +315,7 @@ export function RosterRowActions({
           title: `Regenerate the ${pending.label} for ${name}?`,
           description: "The current link stops working right away. You'll see the new link once, so copy it before you close the window.",
           confirmLabel: "Regenerate link",
-          destructive: false,
+          destructive: true,
           onConfirm: async () => {
             const result = await run(() => regenerateTokenAction(pending.tokenId), "New link ready.");
             if (result.ok) setNewLink(result.data.link);

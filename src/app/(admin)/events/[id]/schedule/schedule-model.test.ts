@@ -5,8 +5,11 @@ import {
   attentionCount,
   buildModel,
   candidateCountLine,
+  affectedText,
   describeEdit,
   distribution,
+  emptyFreeBuyersText,
+  emptyLanesText,
   filtersFor,
   freeIn,
   healthOf,
@@ -17,13 +20,19 @@ import {
   lanesFor,
   laneTotal,
   lockCountWarning,
+  lockOutcomeText,
   matchesSearch,
+  needAttentionText,
   openSlotsText,
   parseFree,
   parseView,
   personLabel,
   pickerFor,
   pickerRequestFor,
+  PIN_DROP_NOTE,
+  PIN_NOTE,
+  plural,
+  qualityVerdict,
   readUrlState,
   resultLine,
   sameUrlState,
@@ -399,7 +408,22 @@ describe("describeEdit", () => {
         { personId: "b1", name: "Acme", before: 2, after: 1 },
         { personId: "b2", name: "Beta", before: 0, after: 1 },
       ],
+      dropsPin: false,
     });
+  });
+
+  it("warns only when a replace removes a pinned meeting (D116)", () => {
+    const pinned = buildModel({
+      suppliers: [supplier("s1", "Hyatt", 1, 2)],
+      buyers: [buyer("b1", "Acme", "CEO", 2), buyer("b2", "Beta", "CFO", 0)],
+      appointments: [{ ...appt("a1", 4, "b1", "s1"), pinned: true }],
+    });
+    expect(describeEdit(pinned, { supplierId: "s1", slot: 4, removeBuyerId: "b1", add }).dropsPin).toBe(true);
+    // A plain removal has its own confirm, and an add has no pin to drop.
+    expect(describeEdit(pinned, { supplierId: "s1", slot: 4, removeBuyerId: "b1" }).dropsPin).toBe(false);
+    expect(describeEdit(pinned, { supplierId: "s1", slot: 5, add }).dropsPin).toBe(false);
+    expect(describeEdit(m, { supplierId: "s1", slot: 4, removeBuyerId: "b1", add }).dropsPin).toBe(false);
+    expect(PIN_DROP_NOTE).toBe("This meeting is pinned. Replacing it removes the pin.");
   });
 
   it("counts the supplier for an add or a remove", () => {
@@ -539,5 +563,152 @@ describe("resultLine", () => {
   it("names the board slot on By slot and the whole schedule on Quality", () => {
     expect(resultLine({ ...base, view: "slot", active: ["free", "problems"], free: 3 })).toBe("Slot 3");
     expect(resultLine({ ...base, view: "quality", q: "ace" })).toBe("Whole schedule, matching “ace”");
+  });
+});
+
+describe("emptyLanesText", () => {
+  const off = { free: 0, q: "", flagged: false, withdrawnOnly: false, mostlyNeither: false };
+
+  it("says the slot is full only when Free in is the only reason for the empty list", () => {
+    expect(emptyLanesText({ ...off, mode: "buyer", free: 3 })).toEqual({
+      title: "No one free in slot 3",
+      description: "Every buyer is in a meeting in slot 3.",
+    });
+    expect(emptyLanesText({ ...off, mode: "supplier", free: 3 }).description).toBe(
+      "Every supplier desk is booked in slot 3. Open slots live with buyers below target.",
+    );
+  });
+
+  it("names the active filters when Free in is combined with another", () => {
+    expect(emptyLanesText({ ...off, mode: "buyer", free: 3, flagged: true })).toEqual({
+      title: "No matches",
+      description: "No buyer free in slot 3 has a count problem.",
+    });
+    expect(emptyLanesText({ ...off, mode: "supplier", free: 3, flagged: true, mostlyNeither: true }).description).toBe(
+      "No supplier desk free in slot 3 has a count problem and mostly Neither meetings.",
+    );
+    expect(emptyLanesText({ ...off, mode: "buyer", free: 3, q: " acme " }).description).toBe(
+      "No buyer free in slot 3 matching “acme”.",
+    );
+    expect(emptyLanesText({ ...off, mode: "buyer", free: 3, q: "acme", flagged: true }).description).toBe(
+      "No buyer free in slot 3 matching “acme” has a count problem.",
+    );
+  });
+
+  it("describes filters without Free in, and a search alone", () => {
+    expect(emptyLanesText({ ...off, mode: "buyer", withdrawnOnly: true }).description).toBe(
+      "No buyer has a meeting with someone who withdrew.",
+    );
+    expect(emptyLanesText({ ...off, mode: "buyer", q: "zzz" }).description).toBe(
+      "Nothing matches “zzz”. Search covers supplier names, buyer organizations and titles.",
+    );
+    expect(emptyLanesText({ ...off, mode: "buyer" }).description).toBe("Nobody in this view matches.");
+  });
+});
+
+describe("emptyFreeBuyersText", () => {
+  it("only claims a full slot when nobody is free", () => {
+    expect(emptyFreeBuyersText({ anyFree: false, q: "", flagged: true })).toBe("Every buyer has a meeting in this slot.");
+    expect(emptyFreeBuyersText({ anyFree: true, q: "", flagged: true })).toBe("No free buyer has a count problem.");
+    expect(emptyFreeBuyersText({ anyFree: true, q: "acme", flagged: true })).toBe(
+      "No free buyer matching your search has a count problem.",
+    );
+    expect(emptyFreeBuyersText({ anyFree: true, q: "acme", flagged: false })).toBe("No free buyer matches your search.");
+  });
+});
+
+describe("count headlines", () => {
+  it("needAttentionText agrees with the count", () => {
+    expect(needAttentionText(1)).toBe("1 needs attention");
+    expect(needAttentionText(0)).toBe("0 need attention");
+    expect(needAttentionText(3)).toBe("3 need attention");
+  });
+
+  it("plural keeps the noun in step", () => {
+    expect(plural(1, "slot")).toBe("1 slot");
+    expect(plural(2, "slot")).toBe("2 slots");
+  });
+
+  const verdict = {
+    appointments: 504,
+    slots: 9,
+    suppliersAtTarget: 56,
+    totalSuppliers: 56,
+    supplierTarget: 9,
+    buyersInRange: 64,
+    totalBuyers: 65,
+    buyerMin: 7,
+    buyerMax: 9,
+    outOfRange: 1,
+  };
+
+  it("qualityVerdict says needs for one and need for more", () => {
+    expect(qualityVerdict(verdict)).toBe(
+      "504 appointments over 9 slots. Every supplier has 9. 64 of 65 buyers are within 7 to 9; 1 needs attention.",
+    );
+    expect(qualityVerdict({ ...verdict, buyersInRange: 62, outOfRange: 3, suppliersAtTarget: 55 })).toBe(
+      "504 appointments over 9 slots. 55 of 56 suppliers have 9. 62 of 65 buyers are within 7 to 9; 3 need attention.",
+    );
+    expect(qualityVerdict({ ...verdict, buyersInRange: 65, outOfRange: 0 }).endsWith("65 of 65 buyers are within 7 to 9.")).toBe(true);
+  });
+
+  it("qualityVerdict handles a single appointment, slot, and buyer", () => {
+    expect(
+      qualityVerdict({ ...verdict, appointments: 1, slots: 1, totalBuyers: 1, buyersInRange: 0, outOfRange: 1, suppliersAtTarget: 1, totalSuppliers: 1 }),
+    ).toBe("1 appointment over 1 slot. Every supplier has 9. 0 of 1 buyer is within 7 to 9; 1 needs attention.");
+  });
+});
+
+describe("lockOutcomeText", () => {
+  it("never says everyone has a link when someone's link was revoked", () => {
+    expect(lockOutcomeText({ desks: 56, issued: 0, kept: 176, revoked: 1 })).toBe(
+      "56 desks assigned. 176 links kept. 1 person has a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ desks: 56, issued: 2, kept: 174, revoked: 3 })).toBe(
+      "56 desks assigned. 2 participant links issued, 174 kept. 3 people have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+  });
+
+  it("names up to three people with a revoked link, then counts the rest", () => {
+    const base = { desks: 56, issued: 0, kept: 174 };
+    expect(lockOutcomeText({ ...base, revoked: 1, revokedNames: ["Ann Lee"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee has a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 2, revokedNames: ["Ann Lee", "Bo Chen"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee and Bo Chen have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 3, revokedNames: ["Ann Lee", "Bo Chen", "Cy Dee"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee, Bo Chen and Cy Dee have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+    expect(lockOutcomeText({ ...base, revoked: 5, revokedNames: ["Ann Lee", "Bo Chen", "Cy Dee", "Di Fox", "Ed Gu"] })).toBe(
+      "56 desks assigned. 174 links kept. Ann Lee, Bo Chen, Cy Dee and 2 more have a revoked link and got no new one. Use Regenerate on the roster.",
+    );
+  });
+
+  it("reports issued links on a first lock", () => {
+    expect(lockOutcomeText({ desks: 56, issued: 177, kept: 0 })).toBe("56 desks assigned and 177 participant links issued.");
+    expect(lockOutcomeText({ desks: 1, issued: 1, kept: 0 })).toBe("1 desk assigned and 1 participant link issued.");
+  });
+
+  it("does not say zero links on a second lock, when the first lock's links are kept", () => {
+    expect(lockOutcomeText({ desks: 56, issued: 0, kept: 177 })).toBe("56 desks assigned. Everyone already has a link (177 links).");
+    expect(lockOutcomeText({ desks: 56, issued: 3, kept: 174 })).toBe("56 desks assigned. 3 participant links issued, 174 kept.");
+    expect(lockOutcomeText({ desks: 56, issued: 0, kept: 0 })).toBe("56 desks assigned.");
+  });
+});
+
+describe("toast copy", () => {
+  it("affectedText drops counts that did not move", () => {
+    expect(
+      affectedText([
+        { name: "Art of Mentoring", before: 9, after: 9 },
+        { name: "Medtronic", before: 9, after: 8 },
+      ]),
+    ).toBe("Medtronic: 9 → 8.");
+    expect(affectedText([{ name: "Art of Mentoring", before: 9, after: 9 }])).toBe("");
+  });
+
+  it("the pin note says what runs do with a pin", () => {
+    expect(PIN_NOTE).toBe("Marked as reviewed. Re-run and keep existing keeps this meeting; Run matching clears pins.");
   });
 });

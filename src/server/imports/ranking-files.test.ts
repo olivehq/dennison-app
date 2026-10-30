@@ -7,7 +7,6 @@ import { defaultEventSettings } from "@/lib/schemas";
 import type { ImportKind } from "@/lib/schemas/import";
 import { useMemoryStorageForTests } from "@/lib/storage";
 import { writeSheet } from "@/lib/xlsx";
-import { EVENT_CHANGED_MESSAGE } from "@/server/events/editable";
 import { raceBeforeTransaction } from "@/server/events/test-race";
 import {
   applyImport,
@@ -438,7 +437,7 @@ describe("ignoring a file (feedback item 4)", () => {
 
     const lock = () => db.update(events).set({ status: "locked" }).where(eq(events.id, roster.eventId));
     const raced = await ignoreImport(raceBeforeTransaction(db, lock), { importId: pending, adminId });
-    expect(raced).toEqual({ ok: false, error: { code: "conflict", message: EVENT_CHANGED_MESSAGE } });
+    expect(raced).toEqual({ ok: false, error: { code: "locked", message: "The schedule is locked. Unlock it on the Schedule page to make changes." } });
     expect((await getImport(pending, db))?.status).toBe("validated");
     await db.update(events).set({ status: "imported" }).where(eq(events.id, roster.eventId));
   });

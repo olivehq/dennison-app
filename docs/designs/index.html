@@ -46,8 +46,8 @@ const designs = [
 const grid = document.getElementById("grid");
 for (const [slug, name, blurb] of designs) {
   const a = document.createElement("a");
-  a.className = "tile"; a.href = `${slug}/`;
-  a.innerHTML = `<div class="thumb"><iframe loading="lazy" tabindex="-1" aria-hidden="true" src="${slug}/"></iframe></div>
+  a.className = "tile"; a.href = `${slug}/index.html`;
+  a.innerHTML = `<div class="thumb"><iframe loading="lazy" tabindex="-1" aria-hidden="true" src="${slug}/index.html"></iframe></div>
     <div class="meta"><h2>${name}</h2><p>${blurb}</p></div>`;
   grid.append(a);
 }

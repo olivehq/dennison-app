@@ -33,7 +33,7 @@ import {
 } from "@/lib/schemas/schedule";
 import { recordAudit } from "@/server/audit/audit";
 import { compareNames } from "@/lib/names";
-import { assertEventEditable, inEventTransaction, Refused } from "@/server/events/editable";
+import { inEventTransaction, Refused } from "@/server/events/editable";
 import {
   loadPeople,
   loadRoster,
@@ -140,8 +140,6 @@ async function loadContext(db: Db, runId: string): Promise<ActionResult<EditCont
   if (run.status !== "completed") return fail("validation", "That run did not complete, so it cannot be edited.");
   const roster = await loadRoster(db, run.eventId);
   if (!roster) return fail("not_found", "That event no longer exists.");
-  const locked = assertEventEditable(roster.event);
-  if (locked) return locked;
   // D33: only the active run is edited, so a colleague's activation stops stale editors.
   if (!run.isActive) return fail("conflict", NOT_ACTIVE_RUN_MESSAGE);
   const rows = await db.select().from(appointments).where(eq(appointments.runId, run.id));
@@ -205,8 +203,11 @@ function checkEligible(ctx: EditContext, buyerId: string, supplierId: string, un
   return null;
 }
 
-function describeConflict(ctx: EditContext, conflict: Conflict, changed: { buyerId: string; supplierId: string }): string {
-  const name = (id: string) => ctx.roster.names.get(id) ?? id;
+function describeConflict(
+  name: (id: string) => string,
+  conflict: Conflict,
+  changed: { buyerId: string; supplierId: string },
+): string {
   switch (conflict.kind) {
     case "buyer_double_booked": {
       const other = conflict.supplierIds.find((id) => id !== changed.supplierId) ?? conflict.supplierIds[0];
@@ -223,6 +224,10 @@ function describeConflict(ctx: EditContext, conflict: Conflict, changed: { buyer
 
 /** Appended to a hard-rule conflict when an undo hits it, so the admin knows the way out. */
 export const UNDO_CONFLICT_HINT = "Move or remove that meeting first, then undo again.";
+/** Undo of a change whose meeting is gone: the same words on the disabled button and on a click (D193). */
+export const NOTHING_TO_UNDO_MESSAGE = "That meeting is no longer in the schedule, so there is nothing to undo.";
+const appointmentGone = (options: EditOptions) =>
+  fail("not_found", options.undoOf ? NOTHING_TO_UNDO_MESSAGE : "That appointment no longer exists. Reload the schedule.");
 
 /** The hard rules, checked by the engine on the schedule as it would be after the edit. */
 function checkConflicts(
@@ -233,7 +238,7 @@ function checkConflicts(
 ): ActionResult<never> | null {
   const conflicts = findConflicts(wouldBe);
   if (conflicts.length === 0) return null;
-  const message = describeConflict(ctx, conflicts[0], changed);
+  const message = describeConflict((id) => ctx.roster.names.get(id) ?? id, conflicts[0], changed);
   return fail("conflict", undo ? `${message} ${UNDO_CONFLICT_HINT}` : message);
 }
 
@@ -437,7 +442,7 @@ export async function replaceAppointment(
   }
   const planner: Planner = (ctx) => {
     const existing = findRow(ctx, input.slot, input.supplierId, input.removeBuyerId);
-    if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
+    if (!existing) return appointmentGone(options);
     const badSlot = checkSlot(ctx, input.slot);
     if (badSlot) return badSlot;
     const ineligible = checkEligible(ctx, input.addBuyerId, input.supplierId, options.undoOf !== undefined);
@@ -505,7 +510,7 @@ export async function removeAppointment(
 ): Promise<ActionResult<EditResult>> {
   const planner: Planner = (ctx) => {
     const existing = findRow(ctx, input.slot, input.supplierId, input.buyerId);
-    if (!existing) return fail("not_found", "That appointment no longer exists. Reload the schedule.");
+    if (!existing) return appointmentGone(options);
     return ok({
       wouldBe: ctx.rows.filter((r) => r.id !== existing.id).map(toEngineRow),
       change: {
@@ -647,6 +652,45 @@ export async function swapCandidates(db: Db, input: SwapCandidatesInput): Promis
 }
 
 export { undoNote };
+
+/**
+ * Why undoing this edit would fail right now, or null when nothing in the
+ * schedule blocks it. Replays the undo on the active run's current meetings
+ * and words the first hard-rule clash exactly as `undoAudit` would, so the
+ * activity log can disable Undo with the reason instead of failing on click.
+ * Eligibility and N/A rules are left to the click; withdrawn people are not
+ * (`withdrawn` maps ids to the page that restores them).
+ */
+export function undoBlocker(input: {
+  before: unknown;
+  after: unknown;
+  current: readonly { slot: number; buyerId: string; supplierId: string }[];
+  name: (id: string) => string;
+  withdrawn?: ReadonlyMap<string, "Participants" | "Suppliers">;
+}): string | null {
+  const before = parseSnapshot(input.before);
+  const after = parseSnapshot(input.after);
+  if (!before && !after) return null;
+  let rows = input.current.map((r) => ({ slot: r.slot, buyerId: r.buyerId, supplierId: r.supplierId }));
+  if (after) {
+    const present = rows.some((r) => r.slot === after.slot && r.supplierId === after.supplierId && r.buyerId === after.buyerId);
+    if (!present) return NOTHING_TO_UNDO_MESSAGE;
+    rows = rows.filter((r) => !(r.slot === after.slot && r.supplierId === after.supplierId && r.buyerId === after.buyerId));
+  }
+  if (before) {
+    for (const id of [before.buyerId, before.supplierId]) {
+      const page = input.withdrawn?.get(id);
+      if (page) return undoWithdrawnMessage(input.name(id), page);
+    }
+    rows.push({ slot: before.slot, buyerId: before.buyerId, supplierId: before.supplierId });
+    const wouldBe = rows.map((r) => ({ ...r, buyerRank: null, supplierRank: null, source: "manual" as const, pinned: false }));
+    const conflicts = findConflicts(wouldBe);
+    if (conflicts.length > 0) {
+      return `${describeConflict(input.name, conflicts[0], before)} ${UNDO_CONFLICT_HINT}`;
+    }
+  }
+  return null;
+}
 
 function parseSnapshot(value: unknown): AppointmentSnapshot | null {
   if (value === null || value === undefined) return null;

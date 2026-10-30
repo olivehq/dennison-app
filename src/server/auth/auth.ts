@@ -1,12 +1,15 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
+import { haveIBeenPwned, isPasswordCompromised, twoFactor } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
 import { getDb, type Db } from "@/db/client";
-import { accounts, admins, rateLimits, sessions, verifications } from "@/db/schema";
-import { sendEmail } from "@/lib/email/adapter";
+import { accounts, admins, rateLimits, sessions, twoFactors, verifications } from "@/db/schema";
+import { isEmailConfigured, sendEmail } from "@/lib/email/adapter";
 import { env } from "@/lib/env";
+import { BREACHED_PASSWORD_MESSAGE } from "@/lib/schemas/auth";
+import { recordAudit } from "@/server/audit/audit";
 import { acceptInvite, findPendingInviteByToken } from "./admins";
 
 const ONE_HOUR = 60 * 60;
@@ -14,17 +17,32 @@ const TEN_MINUTES = 60 * 10;
 const TWELVE_HOURS = 12 * ONE_HOUR;
 const STRICT_RATE_LIMIT = { window: TEN_MINUTES, max: 5 };
 
+export const APP_NAME = "AW appointment matching";
+
+/** The Better Auth routes that can turn two-factor sign-in on or off. */
+const TWO_FACTOR_TOGGLE_PATHS = new Set(["/two-factor/verify-totp", "/two-factor/enable", "/two-factor/disable"]);
+
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
+
+export type CreateAuthOptions = {
+  /**
+   * Check new passwords against Have I Been Pwned's range API. On by default
+   * outside tests, so the test suite never reaches the network; a test that
+   * turns it on stubs `fetch`.
+   */
+  checkBreachedPasswords?: boolean;
+};
 
 /**
  * Builds a Better Auth instance bound to one database handle. Tests call this
  * with a PGlite db; the app uses the `getAuth()` singleton.
  */
-export function createAuth(db: Db) {
+export function createAuth(db: Db, options: CreateAuthOptions = {}) {
+  const checkBreachedPasswords = options.checkBreachedPasswords ?? env.isProduction;
   return betterAuth({
-    appName: "AW Appointment Show",
+    appName: APP_NAME,
     baseURL: env.APP_URL,
     secret: env.BETTER_AUTH_SECRET,
     trustedOrigins: [env.APP_URL],
@@ -36,19 +54,30 @@ export function createAuth(db: Db) {
         account: accounts,
         verification: verifications,
         rateLimit: rateLimits,
+        twoFactor: twoFactors,
       },
     }),
+    // Names change only through the audited profile action (updateProfileName).
+    disabledPaths: ["/update-user"],
     emailAndPassword: {
       enabled: true,
       minPasswordLength: 10,
       revokeSessionsOnPasswordReset: true,
       resetPasswordTokenExpiresIn: ONE_HOUR,
       sendResetPassword: async ({ user, url }) => {
+        // A disabled admin can't sign in, so the link would be useless. The
+        // form shows the same "Check your inbox" either way.
+        const [row] = await db.select({ disabledAt: admins.disabledAt }).from(admins).where(eq(admins.id, user.id));
+        if (!row || row.disabledAt) return;
+        // Like the invite link (admins.ts): only when no provider will deliver it.
+        if (process.env.NODE_ENV === "development" && !isEmailConfigured()) {
+          console.log(`[email] dev reset link for ${user.email}: ${url}`);
+        }
         const name = escapeHtml(user.name);
         await sendEmail({
           to: user.email,
           from: env.EMAIL_FROM,
-          subject: "Reset your AW Appointment Show password",
+          subject: `Reset your ${APP_NAME} password`,
           html: `<p>Hi ${name},</p><p>Someone asked to reset the password for this account. The link works for one hour.</p><p><a href="${url}">Reset password</a></p><p>If that wasn't you, ignore this email and your password stays the same.</p>`,
           text: `Hi ${user.name},\n\nSomeone asked to reset the password for this account. The link works for one hour.\n\n${url}\n\nIf that wasn't you, ignore this email and your password stays the same.`,
           tags: { kind: "password_reset" },
@@ -71,10 +100,37 @@ export function createAuth(db: Db) {
       window: 60,
       max: 100,
       customRules: {
+        "/get-session": { window: 60, max: 1000 },
+        "/two-factor/verify-totp": { window: 60, max: 10 },
+        "/two-factor/verify-backup-code": { window: 60, max: 10 },
+        "/reset-password": STRICT_RATE_LIMIT,
         "/sign-in/email": STRICT_RATE_LIMIT,
         "/sign-up/email": STRICT_RATE_LIMIT,
         "/request-password-reset": STRICT_RATE_LIMIT,
+        "/change-password": STRICT_RATE_LIMIT,
       },
+    },
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        // "Trust this device" would let a cookie skip the code step for 30
+        // days. The app never offers it, and a direct call can't ask for it.
+        if (ctx.path.startsWith("/two-factor/verify") && (ctx.body as { trustDevice?: unknown } | undefined)?.trustDevice) {
+          throw new APIError("BAD_REQUEST", { message: "This app doesn't remember devices. Enter a code each time." });
+        }
+        // The reset route uses up its link before it hashes the new password,
+        // so the breach check for resets runs only here, once, before that:
+        // a breached password, or a breach service that is down, leaves the
+        // link usable. The plugin below checks sign-up and change password.
+        if (!checkBreachedPasswords || ctx.path !== "/reset-password") return;
+        const body = ctx.body as { token?: unknown; newPassword?: unknown } | undefined;
+        // Same precedence as Better Auth's route: the body token, else `?token=`.
+        const token = body?.token || (ctx.query as { token?: unknown } | undefined)?.token;
+        if (typeof token !== "string" || typeof body?.newPassword !== "string") return;
+        if (!(await ctx.context.internalAdapter.findVerificationValue(`reset-password:${token}`))) return;
+        if (await isPasswordCompromised(body.newPassword)) {
+          throw new APIError("BAD_REQUEST", { message: BREACHED_PASSWORD_MESSAGE, code: "PASSWORD_COMPROMISED" });
+        }
+      }),
     },
     databaseHooks: {
       user: {
@@ -116,6 +172,25 @@ export function createAuth(db: Db) {
             }
           },
         },
+        update: {
+          // Turning two-factor sign-in on or off writes `twoFactorEnabled`
+          // through Better Auth's routes, whether the browser or a server call
+          // made the request, so the audit row is written here. The session
+          // the route checked still holds the value from before the change.
+          after: async (user, context) => {
+            const enabled = (user as { twoFactorEnabled?: unknown }).twoFactorEnabled;
+            if (typeof enabled !== "boolean" || !context || !TWO_FACTOR_TOGGLE_PATHS.has(context.path)) return;
+            const sessionUser = context.context.session?.user as { twoFactorEnabled?: boolean | null } | undefined;
+            if ((sessionUser?.twoFactorEnabled ?? false) === enabled) return;
+            await recordAudit(db, {
+              eventId: null,
+              adminId: user.id,
+              action: enabled ? "admin.two_factor_enable" : "admin.two_factor_disable",
+              entityType: "admin",
+              entityId: user.id,
+            });
+          },
+        },
       },
       session: {
         create: {
@@ -133,7 +208,22 @@ export function createAuth(db: Db) {
         },
       },
     },
-    plugins: [nextCookies()],
+    plugins: [
+      twoFactor({
+        issuer: APP_NAME,
+        // The sign-in step takes 6-digit codes from an authenticator app or a
+        // backup code. The app offers no email codes and no "trust this device".
+        totpOptions: { digits: 6, period: 30 },
+      }),
+      haveIBeenPwned({
+        enabled: checkBreachedPasswords,
+        // Resets are checked in the before hook above, once, before the link is used.
+        paths: ["/sign-up/email", "/change-password"],
+        customPasswordCompromisedMessage: BREACHED_PASSWORD_MESSAGE,
+      }),
+      // Must stay last: it copies Set-Cookie from Server Action calls.
+      nextCookies(),
+    ],
   });
 }
 

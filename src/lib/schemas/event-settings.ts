@@ -3,11 +3,17 @@ import { buildSlots, MINUTES_PER_DAY } from "@/lib/time";
 
 export const MAX_SLOT_COUNT = 20;
 
+/** A whole number in range, with one plain message for a blank, fractional, too small, or too big value. */
+function wholeNumber(min: number, max: number) {
+  const message = `Enter a whole number from ${min} to ${max}.`;
+  return z.int({ error: message }).min(min, message).max(max, message);
+}
+
 export const slotSchema = z
   .object({
-    n: z.int().min(1).max(MAX_SLOT_COUNT),
-    startMinutes: z.int().min(0).max(MINUTES_PER_DAY - 1),
-    endMinutes: z.int().min(1).max(MINUTES_PER_DAY),
+    n: wholeNumber(1, MAX_SLOT_COUNT),
+    startMinutes: z.int({ error: "Enter a start time." }).min(0, "Enter a start time.").max(MINUTES_PER_DAY - 1, "Enter a start time."),
+    endMinutes: z.int({ error: "Enter an end time." }).min(1, "Enter an end time.").max(MINUTES_PER_DAY, "Enter an end time."),
   })
   .refine((slot) => slot.endMinutes > slot.startMinutes, {
     message: "A slot must end after it starts.",
@@ -18,14 +24,14 @@ export const biztechOptInRuleSchema = z.enum(["from_biztech_file", "all_opted_in
 
 export const eventSettingsSchema = z
   .object({
-    slotCount: z.int().min(1).max(MAX_SLOT_COUNT),
-    slots: z.array(slotSchema).min(1).max(MAX_SLOT_COUNT),
-    supplierTarget: z.int().min(1).max(MAX_SLOT_COUNT),
-    buyerMin: z.int().min(0).max(MAX_SLOT_COUNT),
-    buyerMax: z.int().min(1).max(MAX_SLOT_COUNT),
-    buyerIdeal: z.int().min(0).max(MAX_SLOT_COUNT),
-    mutualTopN: z.int().min(1).max(500),
-    hotelRankCutoff: z.int().min(1).max(500),
+    slotCount: wholeNumber(1, MAX_SLOT_COUNT),
+    slots: z.array(slotSchema).min(1, "Add at least one slot.").max(MAX_SLOT_COUNT, `Use at most ${MAX_SLOT_COUNT} slots.`),
+    supplierTarget: wholeNumber(1, MAX_SLOT_COUNT),
+    buyerMin: wholeNumber(0, MAX_SLOT_COUNT),
+    buyerMax: wholeNumber(1, MAX_SLOT_COUNT),
+    buyerIdeal: wholeNumber(0, MAX_SLOT_COUNT),
+    mutualTopN: wholeNumber(1, 500),
+    hotelRankCutoff: wholeNumber(1, 500),
     biztechOptInRule: biztechOptInRuleSchema,
     /**
      * D&A asked in writing to keep participant data (SOW 4). When not true, the

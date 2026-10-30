@@ -1,13 +1,14 @@
 import { eq } from "drizzle-orm";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/db/client";
-import { admins, sessions } from "@/db/schema";
+import { admins, rateLimits, sessions } from "@/db/schema";
 import { createTestDb } from "@/db/test-db";
 import { getLoggedEmails } from "@/lib/email/adapter";
+import { BREACH_CHECK_UNAVAILABLE_MESSAGE, BREACHED_PASSWORD_MESSAGE } from "@/lib/schemas/auth";
 import { listAudit } from "@/server/audit/audit";
 import { createInvite } from "./admins";
 import { createAuth, type Auth } from "./auth";
-import { changeAdminPassword, endOtherSessions, resetPasswordAttemptsForTests, updateAdminName } from "./profile";
+import { changeAdminPassword, endOtherSessions, updateAdminName } from "./profile";
 import { listAdminSessions } from "./queries";
 
 const PASSWORD = "correct-horse-battery";
@@ -57,10 +58,6 @@ beforeAll(async () => {
   await db.insert(admins).values({ id: founderId, name: "Founder", email: "founder@example.com" });
 });
 
-beforeEach(() => {
-  resetPasswordAttemptsForTests();
-});
-
 describe("updateAdminName", () => {
   it("saves the name and audits the before and after", async () => {
     const adminId = await createAdmin("name@example.com", "Dana Lee");
@@ -87,6 +84,42 @@ describe("updateAdminName", () => {
       ok: false,
       error: { code: "not_found" },
     });
+  });
+});
+
+describe("changeAdminPassword with the breached-password check", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function attempt(email: string) {
+    const checked = createAuth(db, { checkBreachedPasswords: true });
+    const adminId = await createAdmin(email);
+    const here = await signIn(email, MAC_CHROME);
+    return changeAdminPassword(checked, db, {
+      adminId,
+      headers: here.headers,
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+      revokeOtherSessions: false,
+    });
+  }
+
+  it("shows the breach message on the new password field instead of throwing", async () => {
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha1").update(NEW_PASSWORD).digest("hex").toUpperCase();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(`${hash.slice(5)}:42`, { status: 200 })));
+    const result = await attempt("breached-change@example.com");
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "validation", message: "Check the highlighted fields.", fieldErrors: { newPassword: [BREACHED_PASSWORD_MESSAGE] } },
+    });
+  });
+
+  it("says to try again when the breach service can't be reached", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
+    const result = await attempt("breach-down@example.com");
+    expect(result).toEqual({ ok: false, error: { code: "internal", message: BREACH_CHECK_UNAVAILABLE_MESSAGE } });
   });
 });
 
@@ -178,6 +211,37 @@ describe("changeAdminPassword", () => {
   });
 });
 
+describe("persistent password attempts", () => {
+  it("shares the limit across auth instances and concurrent requests, then expires it", async () => {
+    const adminId = await createAdmin("persistent@example.com");
+    const api = { api: { changePassword: vi.fn().mockRejectedValue(new Error("attempt reached auth")) } } as unknown as Auth;
+    const input = { adminId, headers: new Headers(), currentPassword: "wrong", newPassword: NEW_PASSWORD, revokeOtherSessions: false };
+    const results = await Promise.allSettled(Array.from({ length: 9 }, () => changeAdminPassword(api, db, input)));
+    expect(api.api.changePassword).toHaveBeenCalledTimes(5);
+    expect(results.filter((r) => r.status === "fulfilled" && !r.value.ok && r.value.error.code === "rate_limited")).toHaveLength(4);
+    const secondInstance = { api: { changePassword: vi.fn() } } as unknown as Auth;
+    expect(await changeAdminPassword(secondInstance, db, input)).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+    expect(secondInstance.api.changePassword).not.toHaveBeenCalled();
+    await db.update(rateLimits).set({ lastRequest: Date.now() - 10 * 60 * 1000 - 1 }).where(eq(rateLimits.key, `admin-password-change:${adminId}`));
+    expect((await changeAdminPassword(secondInstance, db, input)).ok).toBe(true);
+    const [row] = await db.select().from(rateLimits).where(eq(rateLimits.key, `admin-password-change:${adminId}`));
+    expect(row.count).toBe(1);
+  });
+
+  it("refuses disabled accounts before profile mutations or password checks", async () => {
+    const adminId = await createAdmin("disabled-profile@example.com");
+    await db.update(admins).set({ disabledAt: new Date() }).where(eq(admins.id, adminId));
+    const api = { api: { changePassword: vi.fn() } } as unknown as Auth;
+    expect(await updateAdminName(db, { adminId, name: "Changed" })).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+    expect(await changeAdminPassword(api, db, { adminId, headers: new Headers(), currentPassword: PASSWORD, newPassword: NEW_PASSWORD, revokeOtherSessions: false })).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+    expect(api.api.changePassword).not.toHaveBeenCalled();
+    expect(await endOtherSessions(db, { adminId, currentSessionId: "unused" })).toMatchObject({ ok: false, error: { code: "unauthorized" } });
+    expect(await sessionIds(adminId)).toHaveLength(1);
+    const [row] = await db.select().from(admins).where(eq(admins.id, adminId));
+    expect(row.name).toBe("Dana Lee");
+  });
+});
+
 describe("sessions", () => {
   it("lists this browser first with a readable device and nothing secret", async () => {
     const adminId = await createAdmin("list@example.com");
@@ -185,14 +249,18 @@ describe("sessions", () => {
     const phone = await signIn("list@example.com", IPHONE_SAFARI);
     const here = await signIn("list@example.com", MAC_CHROME);
     // The phone was used more recently than this browser.
-    await db.update(sessions).set({ updatedAt: new Date(Date.now() + 60_000) }).where(eq(sessions.id, phone.sessionId));
+    await db.update(sessions).set({ updatedAt: new Date(Date.now() + 60_000), ipAddress: "192.0.2.42" }).where(eq(sessions.id, phone.sessionId));
 
     const list = await listAdminSessions({ adminId, currentSessionId: here.sessionId }, db);
     expect(list.map((s) => [s.device, s.current])).toEqual([
       ["Chrome on macOS", true],
       ["Safari on iPhone", false],
     ]);
-    expect(Object.keys(list[0]).sort()).toEqual(["current", "device", "id", "lastActiveAt", "signedInAt"]);
+    expect(Object.keys(list[0]).sort()).toEqual(["current", "device", "id", "ipAddress", "lastActiveAt", "signedInAt"]);
+
+    expect(list[1].ipAddress).toBe("192.0.2.42");
+    expect(list[0].signedInAt).toBeInstanceOf(Date);
+    expect(list[0].lastActiveAt).toBeInstanceOf(Date);
 
     // An expired session is not listed.
     await db.update(sessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(sessions.id, phone.sessionId));

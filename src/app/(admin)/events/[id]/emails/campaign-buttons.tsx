@@ -31,10 +31,20 @@ function useCreateAndOpen() {
   return { pending, run };
 }
 
-export function NewCampaignButton({ eventId, disabled }: { eventId: string; disabled?: boolean }) {
+export function NewCampaignButton({
+  eventId,
+  disabledReason = null,
+}: {
+  eventId: string;
+  disabledReason?: string | null;
+}) {
   const { pending, run } = useCreateAndOpen();
   return (
-    <Button onClick={() => run(() => createCampaignAction({ eventId, kind: "initial" }))} disabled={disabled || pending}>
+    <Button
+      onClick={() => run(() => createCampaignAction({ eventId, kind: "initial" }))}
+      disabled={disabledReason !== null || pending}
+      title={disabledReason ?? undefined}
+    >
       {pending ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
       New campaign
     </Button>
@@ -44,11 +54,11 @@ export function NewCampaignButton({ eventId, disabled }: { eventId: string; disa
 /** Creates an update campaign for the people whose schedule changed since their last email, and opens it. */
 export function SendUpdateButton({
   eventId,
-  disabled,
+  disabledReason = null,
   variant = "default",
 }: {
   eventId: string;
-  disabled?: boolean;
+  disabledReason?: string | null;
   variant?: "default" | "outline";
 }) {
   const { pending, run } = useCreateAndOpen();
@@ -56,10 +66,11 @@ export function SendUpdateButton({
     <Button
       variant={variant}
       onClick={() => run(() => createCampaignAction({ eventId, kind: "update" }))}
-      disabled={disabled || pending}
+      disabled={disabledReason !== null || pending}
+      title={disabledReason ?? undefined}
     >
       {pending ? <Spinner data-icon="inline-start" /> : <MailPlusIcon data-icon="inline-start" />}
-      Send update
+      Draft update
     </Button>
   );
 }
