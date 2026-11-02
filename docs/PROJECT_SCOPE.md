@@ -346,7 +346,7 @@ Admin, all behind login:
 | `/team` | Added. Invite, resend invite, disable admins |
 | `/events` | List, create |
 | `/events/[id]` | Dashboard: status stepper, counts, next action |
-| `/events/[id]/settings` | Slots, times, targets, thresholds, biztech rule |
+| `/events/[id]/settings` | Four tabs: event and slots, matching (targets, thresholds, biztech rule), schedule page branding, participant data |
 | `/events/[id]/participants` | Data Table, contacts, opt-in flag, token status, add, edit, withdraw, "changed since last email" flag |
 | `/events/[id]/suppliers` | Data Table, type, desk, contacts, token status, add, edit, withdraw, "changed since last email" flag |
 | `/events/[id]/imports` | Four upload cards with validation state |
