@@ -3,19 +3,17 @@ import { brandingColorsSchema, readableOn, sniffLogoType } from "./branding";
 
 describe("brandingColorsSchema", () => {
   it("accepts hex colors, lowercases them, and treats empty as none", () => {
-    expect(brandingColorsSchema.parse({ primaryColor: "#1D4ED8", accentColor: "" })).toEqual({
-      primaryColor: "#1d4ed8",
-      accentColor: "",
-    });
+    expect(brandingColorsSchema.parse({ primaryColor: "#1D4ED8" })).toEqual({ primaryColor: "#1d4ed8" });
+    expect(brandingColorsSchema.parse({ primaryColor: "" })).toEqual({ primaryColor: "" });
   });
 
   it.each(["red", "#fff", "1d4ed8", "#1d4ed8ff", "#gg0000"])("rejects %s", (value) => {
-    const result = brandingColorsSchema.safeParse({ primaryColor: value, accentColor: "" });
+    const result = brandingColorsSchema.safeParse({ primaryColor: value });
     expect(result.success).toBe(false);
   });
 
   it("explains a bad color in plain words", () => {
-    const result = brandingColorsSchema.safeParse({ primaryColor: "teal", accentColor: "" });
+    const result = brandingColorsSchema.safeParse({ primaryColor: "teal" });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message)).toEqual([
       "Use a six-digit color like #1d4ed8, or leave it empty.",

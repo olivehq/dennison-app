@@ -8,7 +8,6 @@ import { Controller, useFieldArray, useForm, type FieldErrors, type FieldPath } 
 import { toast } from "sonner";
 import { z } from "zod";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
-import { PageHeader } from "@/components/app/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +31,8 @@ import { buildSlots, formatMinutes, parseClock } from "@/lib/time";
 import { saveEventSettings } from "@/server/events/actions";
 import { describeRebuildUp, describeTargetChanges, fitTargetsToSlots, type MeetingTargets } from "./fit-targets";
 import { firstInvalidField } from "./first-invalid-field";
+import { tabForField } from "./settings-tab";
+import { SettingsPanel, useSettingsTab } from "./settings-tabs";
 
 const formSchema = eventSchema.extend({ settings: eventSettingsSchema });
 type FormValues = z.infer<typeof formSchema>;
@@ -89,6 +90,9 @@ function rebuildDefaults(settings: EventSettings) {
 
 export function EventSettingsForm({ event, readOnlyReason }: { event: EventForForm; readOnlyReason: string | null }) {
   const router = useRouter();
+  const { setTab, isFormTab } = useSettingsTab();
+  /** An input to bring into view. A new object each time, so asking again for the same input works. */
+  const [focusTarget, setFocusTarget] = React.useState<{ id: string } | null>(null);
   const readOnly = readOnlyReason !== null;
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -128,9 +132,14 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
       return;
     }
     // Keys are form paths ("name", "settings.slotCount"); "_" has no field.
+    let first: string | null = null;
     for (const [key, messages] of Object.entries(error.fieldErrors ?? {})) {
-      if (key !== "_") setError(key as FieldPath<FormValues>, { message: messages[0] });
+      if (key === "_") continue;
+      setError(key as FieldPath<FormValues>, { message: messages[0] });
+      first ??= key;
     }
+    // The field with the problem may be on another tab.
+    if (first) setTab(tabForField(first.split(".").at(-1) ?? first));
     toast.error(error.message);
   };
 
@@ -176,10 +185,18 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
   const onInvalid = (invalid: FieldErrors<FormValues>) => {
     const first = firstInvalidField(invalid);
     toast.error(first ? `Can't save yet. ${first.message}` : "Can't save yet. Fix the highlighted fields.");
-    const input = first ? document.getElementById(first.id) : null;
+    if (!first) return;
+    // The input may be on a hidden tab. Both updates render together, so its panel shows before the effect runs.
+    setTab(tabForField(first.id));
+    setFocusTarget({ id: first.id });
+  };
+
+  React.useEffect(() => {
+    if (!focusTarget) return;
+    const input = document.getElementById(focusTarget.id);
     input?.scrollIntoView({ block: "center", behavior: "smooth" });
     input?.focus({ preventScroll: true });
-  };
+  }, [focusTarget]);
 
   const applyRebuild = () => {
     try {
@@ -232,19 +249,9 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
   const numberField = (name: FieldPath<FormValues>) => register(name, { valueAsNumber: true });
 
   return (
-    <form onSubmit={handleSubmit(onSubmit, onInvalid)} noValidate className="flex flex-col gap-6">
-      <PageHeader
-        title="Settings"
-        description="Slot times, meeting targets, and the thresholds the matching engine uses."
-        actions={
-          <Button type="submit" disabled={readOnly || isSubmitting}>
-            {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
-            Save settings
-          </Button>
-        }
-      />
-
-      {readOnly ? (
+    // `contents` keeps the form out of the page layout: the tab panels inside it lay out as the page's own children.
+    <form onSubmit={handleSubmit(onSubmit, onInvalid)} noValidate className="contents">
+      {readOnly && isFormTab ? (
         <Alert>
           <LockIcon />
           <AlertTitle>Read-only</AlertTitle>
@@ -252,296 +259,301 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
         </Alert>
       ) : null}
 
-      <fieldset disabled={readOnly || isSubmitting} className="flex flex-col gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Event</CardTitle>
-            <CardDescription>Shown on every page, export, and email.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <FieldGroup className="max-w-xl">
-              <Field data-invalid={!!errors.name} data-disabled={readOnly}>
-                <FieldLabel htmlFor="name">Name</FieldLabel>
-                <Input id="name" aria-invalid={!!errors.name} {...register("name")} />
-                <FieldError errors={[errors.name]} />
-              </Field>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <Field data-invalid={!!errors.eventDate} data-disabled={readOnly}>
-                  <FieldLabel htmlFor="eventDate">Show date</FieldLabel>
-                  <Input id="eventDate" type="date" aria-invalid={!!errors.eventDate} {...register("eventDate")} />
-                  <FieldError errors={[errors.eventDate]} />
+      <fieldset disabled={readOnly || isSubmitting} className={isFormTab ? "flex flex-col gap-6" : "hidden"}>
+        <SettingsPanel value="event">
+          <Card>
+            <CardHeader>
+              <CardTitle>Event</CardTitle>
+              <CardDescription>Shown on every page, export, and email.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FieldGroup className="max-w-xl">
+                <Field data-invalid={!!errors.name} data-disabled={readOnly}>
+                  <FieldLabel htmlFor="name">Name</FieldLabel>
+                  <Input id="name" aria-invalid={!!errors.name} {...register("name")} />
+                  <FieldError errors={[errors.name]} />
+                </Field>
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <Field data-invalid={!!errors.eventDate} data-disabled={readOnly}>
+                    <FieldLabel htmlFor="eventDate">Show date</FieldLabel>
+                    <Input id="eventDate" type="date" aria-invalid={!!errors.eventDate} {...register("eventDate")} />
+                    <FieldError errors={[errors.eventDate]} />
+                  </Field>
+                  <Controller
+                    control={control}
+                    name="timezone"
+                    render={({ field }) => (
+                      <Field data-invalid={!!errors.timezone} data-disabled={readOnly}>
+                        <FieldLabel htmlFor="timezone">Timezone</FieldLabel>
+                        <Combobox
+                          items={TIMEZONES}
+                          value={field.value}
+                          onValueChange={(value) => field.onChange(value ?? "")}
+                          disabled={readOnly}
+                        >
+                          <ComboboxInput
+                            id="timezone"
+                            placeholder="Search timezones"
+                            aria-invalid={!!errors.timezone}
+                            onBlur={field.onBlur}
+                            className="w-full"
+                            disabled={readOnly}
+                          />
+                          <ComboboxContent>
+                            <ComboboxEmpty>No timezone matches.</ComboboxEmpty>
+                            <ComboboxList>
+                              {(item: string) => (
+                                <ComboboxItem key={item} value={item}>
+                                  {item}
+                                </ComboboxItem>
+                              )}
+                            </ComboboxList>
+                          </ComboboxContent>
+                        </Combobox>
+                        <FieldDescription>Every slot time, export, and email uses this timezone.</FieldDescription>
+                        <FieldError errors={[errors.timezone]} />
+                      </Field>
+                    )}
+                  />
+                </div>
+              </FieldGroup>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Slots</CardTitle>
+              <CardDescription>
+                Rebuild the table from four numbers, then adjust any slot by hand. Slots must stay in order and not overlap.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-5">
+              <FieldSet>
+                <FieldLegend variant="label">Rebuild slots</FieldLegend>
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field className="w-24">
+                    <FieldLabel htmlFor="rebuild-count">Count</FieldLabel>
+                    <Input
+                      id="rebuild-count"
+                      type="number"
+                      min={1}
+                      max={MAX_SLOT_COUNT}
+                      value={rebuild.count}
+                      onChange={(e) => setRebuild({ ...rebuild, count: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Field className="w-32">
+                    <FieldLabel htmlFor="rebuild-start">First start</FieldLabel>
+                    <Input
+                      id="rebuild-start"
+                      type="time"
+                      value={minutesToTimeValue(rebuild.firstStart)}
+                      onChange={(e) => setRebuild({ ...rebuild, firstStart: timeValueToMinutes(e.target.value, rebuild.firstStart) })}
+                    />
+                  </Field>
+                  <Field className="w-28">
+                    <FieldLabel htmlFor="rebuild-duration">Minutes each</FieldLabel>
+                    <Input
+                      id="rebuild-duration"
+                      type="number"
+                      min={1}
+                      max={180}
+                      value={rebuild.duration}
+                      onChange={(e) => setRebuild({ ...rebuild, duration: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Field className="w-28">
+                    <FieldLabel htmlFor="rebuild-gap">Gap between</FieldLabel>
+                    <Input
+                      id="rebuild-gap"
+                      type="number"
+                      min={0}
+                      max={120}
+                      value={rebuild.gap}
+                      onChange={(e) => setRebuild({ ...rebuild, gap: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={applyRebuild}
+                    disabled={
+                      readOnly ||
+                      !Number.isInteger(rebuild.count) ||
+                      rebuild.count < 1 ||
+                      rebuild.count > MAX_SLOT_COUNT ||
+                      rebuild.duration < 1 ||
+                      rebuild.gap < 0
+                    }
+                  >
+                    Rebuild slots
+                  </Button>
+                </div>
+              </FieldSet>
+
+              <input type="hidden" {...numberField("settings.slotCount")} />
+              <div className="rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="w-16">Slot</TableHead>
+                      <TableHead>Start</TableHead>
+                      <TableHead>End</TableHead>
+                      <TableHead className="text-right">Length</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {fields.map((slot, index) => {
+                      const rowErrors = settingsErrors?.slots?.[index];
+                      return (
+                        <TableRow key={slot.id} className="hover:bg-transparent">
+                          <TableCell className="font-display font-bold tabular-nums">{index + 1}</TableCell>
+                          <TableCell>
+                            <Controller
+                              control={control}
+                              name={`settings.slots.${index}.startMinutes`}
+                              render={({ field }) => (
+                                <Field data-invalid={!!rowErrors?.startMinutes}>
+                                  <FieldLabel htmlFor={`slot-${index}-start`} className="sr-only">
+                                    Slot {index + 1} start
+                                  </FieldLabel>
+                                  <Input
+                                    id={`slot-${index}-start`}
+                                    type="time"
+                                    className="w-32"
+                                    aria-invalid={!!rowErrors?.startMinutes}
+                                    value={minutesToTimeValue(field.value)}
+                                    onChange={(e) => field.onChange(timeValueToMinutes(e.target.value, field.value))}
+                                    onBlur={field.onBlur}
+                                  />
+                                  <FieldError errors={[rowErrors?.startMinutes]} />
+                                </Field>
+                              )}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Controller
+                              control={control}
+                              name={`settings.slots.${index}.endMinutes`}
+                              render={({ field }) => (
+                                <Field data-invalid={!!rowErrors?.endMinutes}>
+                                  <FieldLabel htmlFor={`slot-${index}-end`} className="sr-only">
+                                    Slot {index + 1} end
+                                  </FieldLabel>
+                                  <Input
+                                    id={`slot-${index}-end`}
+                                    type="time"
+                                    className="w-32"
+                                    aria-invalid={!!rowErrors?.endMinutes}
+                                    value={minutesToTimeValue(field.value)}
+                                    onChange={(e) => field.onChange(timeValueToMinutes(e.target.value, field.value))}
+                                    onBlur={field.onBlur}
+                                  />
+                                  <FieldError errors={[rowErrors?.endMinutes]} />
+                                </Field>
+                              )}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right text-muted-foreground tabular-nums">
+                            <SlotLength control={control} index={index} />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              {slotsError || slotCountError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {slotCountError ?? slotsError}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+
+        </SettingsPanel>
+
+        <SettingsPanel value="matching">
+          <Card>
+            <CardHeader>
+              <CardTitle>Targets</CardTitle>
+              <CardDescription>How many meetings each side should get. The engine treats these as hard limits.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                <Field data-invalid={!!settingsErrors?.supplierTarget}>
+                  <FieldLabel htmlFor="supplierTarget">Meetings per supplier</FieldLabel>
+                  <Input id="supplierTarget" type="number" min={1} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.supplierTarget} {...numberField("settings.supplierTarget")} />
+                  <FieldDescription>Usually every slot.</FieldDescription>
+                  <FieldError errors={[settingsErrors?.supplierTarget]} />
+                </Field>
+                <Field data-invalid={!!settingsErrors?.buyerMin}>
+                  <FieldLabel htmlFor="buyerMin">Buyer minimum</FieldLabel>
+                  <Input id="buyerMin" type="number" min={0} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerMin} {...numberField("settings.buyerMin")} />
+                  <FieldError errors={[settingsErrors?.buyerMin]} />
+                </Field>
+                <Field data-invalid={!!settingsErrors?.buyerIdeal}>
+                  <FieldLabel htmlFor="buyerIdeal">Buyer ideal</FieldLabel>
+                  <Input id="buyerIdeal" type="number" min={0} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerIdeal} {...numberField("settings.buyerIdeal")} />
+                  <FieldError errors={[settingsErrors?.buyerIdeal]} />
+                </Field>
+                <Field data-invalid={!!settingsErrors?.buyerMax}>
+                  <FieldLabel htmlFor="buyerMax">Buyer maximum</FieldLabel>
+                  <Input id="buyerMax" type="number" min={1} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerMax} {...numberField("settings.buyerMax")} />
+                  <FieldError errors={[settingsErrors?.buyerMax]} />
+                </Field>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Thresholds</CardTitle>
+              <CardDescription>Where the engine draws its lines when it scores a pair.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                <Field data-invalid={!!settingsErrors?.mutualTopN}>
+                  <FieldLabel htmlFor="mutualTopN">Mutual top N</FieldLabel>
+                  <Input id="mutualTopN" type="number" min={1} max={500} aria-invalid={!!settingsErrors?.mutualTopN} {...numberField("settings.mutualTopN")} />
+                  <FieldDescription>A pair is mutual when both sides ranked each other inside this number.</FieldDescription>
+                  <FieldError errors={[settingsErrors?.mutualTopN]} />
+                </Field>
+                <Field data-invalid={!!settingsErrors?.hotelRankCutoff}>
+                  <FieldLabel htmlFor="hotelRankCutoff">Hotel rank cutoff</FieldLabel>
+                  <Input id="hotelRankCutoff" type="number" min={1} max={500} aria-invalid={!!settingsErrors?.hotelRankCutoff} {...numberField("settings.hotelRankCutoff")} />
+                  <FieldDescription>Hotel choices ranked below this are not used.</FieldDescription>
+                  <FieldError errors={[settingsErrors?.hotelRankCutoff]} />
                 </Field>
                 <Controller
                   control={control}
-                  name="timezone"
+                  name="settings.biztechOptInRule"
                   render={({ field }) => (
-                    <Field data-invalid={!!errors.timezone} data-disabled={readOnly}>
-                      <FieldLabel htmlFor="timezone">Timezone</FieldLabel>
-                      <Combobox
-                        items={TIMEZONES}
-                        value={field.value}
-                        onValueChange={(value) => field.onChange(value ?? "")}
-                        disabled={readOnly}
-                      >
-                        <ComboboxInput
-                          id="timezone"
-                          placeholder="Search timezones"
-                          aria-invalid={!!errors.timezone}
-                          onBlur={field.onBlur}
-                          className="w-full"
-                          disabled={readOnly}
-                        />
-                        <ComboboxContent>
-                          <ComboboxEmpty>No timezone matches.</ComboboxEmpty>
-                          <ComboboxList>
-                            {(item: string) => (
-                              <ComboboxItem key={item} value={item}>
-                                {item}
-                              </ComboboxItem>
-                            )}
-                          </ComboboxList>
-                        </ComboboxContent>
-                      </Combobox>
-                      <FieldDescription>Every slot time, export, and email uses this timezone.</FieldDescription>
-                      <FieldError errors={[errors.timezone]} />
+                    <Field data-invalid={!!settingsErrors?.biztechOptInRule}>
+                      <FieldLabel htmlFor="biztechOptInRule">Biztech opt-in</FieldLabel>
+                      <Select value={field.value} onValueChange={field.onChange} disabled={readOnly}>
+                        <SelectTrigger id="biztechOptInRule" className="w-full" aria-invalid={!!settingsErrors?.biztechOptInRule}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {BIZTECH_RULES.map((rule) => (
+                              <SelectItem key={rule.value} value={rule.value}>
+                                {rule.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FieldDescription>{BIZTECH_RULES.find((r) => r.value === field.value)?.hint}</FieldDescription>
+                      <FieldError errors={[settingsErrors?.biztechOptInRule]} />
                     </Field>
                   )}
                 />
               </div>
-            </FieldGroup>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Slots</CardTitle>
-            <CardDescription>
-              Rebuild the table from four numbers, then adjust any slot by hand. Slots must stay in order and not overlap.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-5">
-            <FieldSet>
-              <FieldLegend variant="label">Rebuild slots</FieldLegend>
-              <div className="flex flex-wrap items-end gap-3">
-                <Field className="w-24">
-                  <FieldLabel htmlFor="rebuild-count">Count</FieldLabel>
-                  <Input
-                    id="rebuild-count"
-                    type="number"
-                    min={1}
-                    max={MAX_SLOT_COUNT}
-                    value={rebuild.count}
-                    onChange={(e) => setRebuild({ ...rebuild, count: Number(e.target.value) })}
-                  />
-                </Field>
-                <Field className="w-32">
-                  <FieldLabel htmlFor="rebuild-start">First start</FieldLabel>
-                  <Input
-                    id="rebuild-start"
-                    type="time"
-                    value={minutesToTimeValue(rebuild.firstStart)}
-                    onChange={(e) => setRebuild({ ...rebuild, firstStart: timeValueToMinutes(e.target.value, rebuild.firstStart) })}
-                  />
-                </Field>
-                <Field className="w-28">
-                  <FieldLabel htmlFor="rebuild-duration">Minutes each</FieldLabel>
-                  <Input
-                    id="rebuild-duration"
-                    type="number"
-                    min={1}
-                    max={180}
-                    value={rebuild.duration}
-                    onChange={(e) => setRebuild({ ...rebuild, duration: Number(e.target.value) })}
-                  />
-                </Field>
-                <Field className="w-28">
-                  <FieldLabel htmlFor="rebuild-gap">Gap between</FieldLabel>
-                  <Input
-                    id="rebuild-gap"
-                    type="number"
-                    min={0}
-                    max={120}
-                    value={rebuild.gap}
-                    onChange={(e) => setRebuild({ ...rebuild, gap: Number(e.target.value) })}
-                  />
-                </Field>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={applyRebuild}
-                  disabled={
-                    readOnly ||
-                    !Number.isInteger(rebuild.count) ||
-                    rebuild.count < 1 ||
-                    rebuild.count > MAX_SLOT_COUNT ||
-                    rebuild.duration < 1 ||
-                    rebuild.gap < 0
-                  }
-                >
-                  Rebuild slots
-                </Button>
-              </div>
-            </FieldSet>
-
-            <input type="hidden" {...numberField("settings.slotCount")} />
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="w-16">Slot</TableHead>
-                    <TableHead>Start</TableHead>
-                    <TableHead>End</TableHead>
-                    <TableHead className="text-right">Length</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {fields.map((slot, index) => {
-                    const rowErrors = settingsErrors?.slots?.[index];
-                    return (
-                      <TableRow key={slot.id} className="hover:bg-transparent">
-                        <TableCell className="font-display font-bold tabular-nums">{index + 1}</TableCell>
-                        <TableCell>
-                          <Controller
-                            control={control}
-                            name={`settings.slots.${index}.startMinutes`}
-                            render={({ field }) => (
-                              <Field data-invalid={!!rowErrors?.startMinutes}>
-                                <FieldLabel htmlFor={`slot-${index}-start`} className="sr-only">
-                                  Slot {index + 1} start
-                                </FieldLabel>
-                                <Input
-                                  id={`slot-${index}-start`}
-                                  type="time"
-                                  className="w-32"
-                                  aria-invalid={!!rowErrors?.startMinutes}
-                                  value={minutesToTimeValue(field.value)}
-                                  onChange={(e) => field.onChange(timeValueToMinutes(e.target.value, field.value))}
-                                  onBlur={field.onBlur}
-                                />
-                                <FieldError errors={[rowErrors?.startMinutes]} />
-                              </Field>
-                            )}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Controller
-                            control={control}
-                            name={`settings.slots.${index}.endMinutes`}
-                            render={({ field }) => (
-                              <Field data-invalid={!!rowErrors?.endMinutes}>
-                                <FieldLabel htmlFor={`slot-${index}-end`} className="sr-only">
-                                  Slot {index + 1} end
-                                </FieldLabel>
-                                <Input
-                                  id={`slot-${index}-end`}
-                                  type="time"
-                                  className="w-32"
-                                  aria-invalid={!!rowErrors?.endMinutes}
-                                  value={minutesToTimeValue(field.value)}
-                                  onChange={(e) => field.onChange(timeValueToMinutes(e.target.value, field.value))}
-                                  onBlur={field.onBlur}
-                                />
-                                <FieldError errors={[rowErrors?.endMinutes]} />
-                              </Field>
-                            )}
-                          />
-                        </TableCell>
-                        <TableCell className="text-right text-muted-foreground tabular-nums">
-                          <SlotLength control={control} index={index} />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-            {slotsError || slotCountError ? (
-              <p role="alert" className="text-sm text-destructive">
-                {slotCountError ?? slotsError}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Targets</CardTitle>
-            <CardDescription>How many meetings each side should get. The engine treats these as hard limits.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              <Field data-invalid={!!settingsErrors?.supplierTarget}>
-                <FieldLabel htmlFor="supplierTarget">Meetings per supplier</FieldLabel>
-                <Input id="supplierTarget" type="number" min={1} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.supplierTarget} {...numberField("settings.supplierTarget")} />
-                <FieldDescription>Usually every slot.</FieldDescription>
-                <FieldError errors={[settingsErrors?.supplierTarget]} />
-              </Field>
-              <Field data-invalid={!!settingsErrors?.buyerMin}>
-                <FieldLabel htmlFor="buyerMin">Buyer minimum</FieldLabel>
-                <Input id="buyerMin" type="number" min={0} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerMin} {...numberField("settings.buyerMin")} />
-                <FieldError errors={[settingsErrors?.buyerMin]} />
-              </Field>
-              <Field data-invalid={!!settingsErrors?.buyerIdeal}>
-                <FieldLabel htmlFor="buyerIdeal">Buyer ideal</FieldLabel>
-                <Input id="buyerIdeal" type="number" min={0} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerIdeal} {...numberField("settings.buyerIdeal")} />
-                <FieldError errors={[settingsErrors?.buyerIdeal]} />
-              </Field>
-              <Field data-invalid={!!settingsErrors?.buyerMax}>
-                <FieldLabel htmlFor="buyerMax">Buyer maximum</FieldLabel>
-                <Input id="buyerMax" type="number" min={1} max={MAX_SLOT_COUNT} aria-invalid={!!settingsErrors?.buyerMax} {...numberField("settings.buyerMax")} />
-                <FieldError errors={[settingsErrors?.buyerMax]} />
-              </Field>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Thresholds</CardTitle>
-            <CardDescription>Where the engine draws its lines when it scores a pair.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              <Field data-invalid={!!settingsErrors?.mutualTopN}>
-                <FieldLabel htmlFor="mutualTopN">Mutual top N</FieldLabel>
-                <Input id="mutualTopN" type="number" min={1} max={500} aria-invalid={!!settingsErrors?.mutualTopN} {...numberField("settings.mutualTopN")} />
-                <FieldDescription>A pair is mutual when both sides ranked each other inside this number.</FieldDescription>
-                <FieldError errors={[settingsErrors?.mutualTopN]} />
-              </Field>
-              <Field data-invalid={!!settingsErrors?.hotelRankCutoff}>
-                <FieldLabel htmlFor="hotelRankCutoff">Hotel rank cutoff</FieldLabel>
-                <Input id="hotelRankCutoff" type="number" min={1} max={500} aria-invalid={!!settingsErrors?.hotelRankCutoff} {...numberField("settings.hotelRankCutoff")} />
-                <FieldDescription>Hotel choices ranked below this are not used.</FieldDescription>
-                <FieldError errors={[settingsErrors?.hotelRankCutoff]} />
-              </Field>
-              <Controller
-                control={control}
-                name="settings.biztechOptInRule"
-                render={({ field }) => (
-                  <Field data-invalid={!!settingsErrors?.biztechOptInRule}>
-                    <FieldLabel htmlFor="biztechOptInRule">Biztech opt-in</FieldLabel>
-                    <Select value={field.value} onValueChange={field.onChange} disabled={readOnly}>
-                      <SelectTrigger id="biztechOptInRule" className="w-full" aria-invalid={!!settingsErrors?.biztechOptInRule}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {BIZTECH_RULES.map((rule) => (
-                            <SelectItem key={rule.value} value={rule.value}>
-                              {rule.label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FieldDescription>{BIZTECH_RULES.find((r) => r.value === field.value)?.hint}</FieldDescription>
-                    <FieldError errors={[settingsErrors?.biztechOptInRule]} />
-                  </Field>
-                )}
-              />
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </SettingsPanel>
       </fieldset>
 
       <ConfirmDialog
@@ -558,8 +570,8 @@ export function EventSettingsForm({ event, readOnlyReason }: { event: EventForFo
         }}
       />
 
-      {!readOnly ? (
-        <div className="flex justify-end">
+      {!readOnly && isFormTab ? (
+        <div className="sticky bottom-0 z-10 flex justify-end border-t bg-background/95 py-3 backdrop-blur">
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
             Save settings

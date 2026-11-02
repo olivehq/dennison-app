@@ -187,7 +187,7 @@ describe("deleteEvent", () => {
     await putFile({ key: logoKey, body: Buffer.from("png"), contentType: "image/png" });
     await db
       .update(events)
-      .set({ branding: { primaryColor: null, accentColor: null, logoKey, logoType: "image/png" } })
+      .set({ branding: { primaryColor: null, logoKey, logoType: "image/png" } })
       .where(eq(events.id, id));
 
     // The delete fails, as a storage outage would.

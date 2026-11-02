@@ -7,7 +7,7 @@ For the D&A session that loads the 2026 files and builds the schedule, and for t
 - Every admin can sign in. Anyone who turned on two-factor sign-in has their authenticator app and their backup codes with them.
 - The files are final versions: participants, suppliers, buyer hotel rankings, buyer biztech rankings, supplier rankings. Keep the originals; the app stores a copy of each upload.
 - Settings on the event match the show: date, timezone, slot count and times, meetings per supplier, buyer minimum, ideal, and maximum, thresholds, biztech rule. Change these before matching; after the lock they are read-only.
-- Optional: branding (logo and colors) on the Settings page. It can be changed later, even after the lock.
+- Optional: branding (a logo and one color) on the Settings page, Schedule page tab. It can be changed later, even after the lock. Ask D&A for their normal logo, the version made for a white page: a PNG with a transparent or white background, or an SVG, about 600 by 150 pixels, under 300 KB. A logo with a colored background shows as a box, and a white-on-transparent logo made for dark backgrounds is hard to read.
 
 ## Loading the files
 

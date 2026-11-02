@@ -92,11 +92,17 @@ describe("exportAvailability lists", () => {
   }
 
   it("flags the access list for people and link changes, and the full lists for people or schedule changes", async () => {
-    await recordAt("access_list", "2026-11-01T10:00:00Z");
-    await recordAt("participants_full", "2026-11-01T10:00:00Z");
-    await recordAt("suppliers_full", "2026-11-01T10:00:00Z");
+    // The setup above wrote audit rows stamped with the real time, so every date here counts forward from after
+    // them. Fixed calendar dates stop working the day the clock passes them.
+    const DAY = 24 * 60 * 60 * 1000;
+    const base = Date.now() + DAY;
+    const at = (days: number) => new Date(base + days * DAY).toISOString();
+
+    await recordAt("access_list", at(1));
+    await recordAt("participants_full", at(1));
+    await recordAt("suppliers_full", at(1));
     // Before the export: nothing to warn about.
-    await recordAction("participant.update", "2026-10-31T10:00:00Z");
+    await recordAction("participant.update", at(0));
     let { exports } = (await exportAvailability(seeded.eventId, db))!;
     expect([exports.access_list, exports.participants_full, exports.suppliers_full].map((e) => e.listChanged)).toEqual([
       false,
@@ -105,14 +111,14 @@ describe("exportAvailability lists", () => {
     ]);
 
     // A new appointment edit changes the full lists' counts, not the links.
-    await recordAction("appointment.replace", "2026-11-02T10:00:00Z");
+    await recordAction("appointment.replace", at(2));
     ({ exports } = (await exportAvailability(seeded.eventId, db))!);
     expect(exports.access_list.listChanged).toBe(false);
     expect(exports.participants_full.listChanged).toBe(true);
     expect(exports.suppliers_full.listChanged).toBe(true);
 
     // A regenerated link changes the access list too.
-    await recordAction("token.regenerate", "2026-11-03T10:00:00Z");
+    await recordAction("token.regenerate", at(3));
     ({ exports } = (await exportAvailability(seeded.eventId, db))!);
     expect(exports.access_list.listChanged).toBe(true);
 
@@ -121,12 +127,12 @@ describe("exportAvailability lists", () => {
     expect(exports.master.scheduleChanged).toBe(false);
 
     // Exporting again clears the warning.
-    await recordAt("access_list", "2026-11-04T10:00:00Z");
+    await recordAt("access_list", at(4));
     ({ exports } = (await exportAvailability(seeded.eventId, db))!);
     expect(exports.access_list.listChanged).toBe(false);
 
     // Retention deletes people and links, so it dates every list.
-    await recordAction("event.retention_delete", "2026-11-05T10:00:00Z");
+    await recordAction("event.retention_delete", at(5));
     ({ exports } = (await exportAvailability(seeded.eventId, db))!);
     expect([exports.access_list, exports.participants_full, exports.suppliers_full].map((e) => e.listChanged)).toEqual([
       true,

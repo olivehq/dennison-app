@@ -23,7 +23,7 @@ const LOGO_EXTENSION: Record<LogoType, string> = {
 };
 
 export type SaveBrandingInput = {
-  /** `primaryColor` and `accentColor`, each a hex color or "". */
+  /** `primaryColor`, a hex color or "". */
   colors: unknown;
   /** A new logo. Replaces the current one. */
   logo?: Buffer | null;
@@ -73,7 +73,6 @@ export async function saveBranding(
       const keepLogo = !input.removeLogo && !uploaded;
       const after: EventBranding = {
         primaryColor: colors.data.primaryColor || null,
-        accentColor: colors.data.accentColor || null,
         logoKey: uploaded ? uploaded.key : keepLogo ? (before?.logoKey ?? null) : null,
         logoType: uploaded ? uploaded.type : keepLogo ? (before?.logoType ?? null) : null,
       };

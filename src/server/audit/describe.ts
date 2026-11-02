@@ -254,7 +254,7 @@ export function describeAudit(
     }
     case "event.branding": {
       const changed = [
-        before.primaryColor !== after.primaryColor || before.accentColor !== after.accentColor ? "colors" : null,
+        before.primaryColor !== after.primaryColor ? "color" : null,
         before.logoKey !== after.logoKey ? (after.logoKey ? "logo" : "logo removed") : null,
       ].filter((c): c is string => c !== null);
       return changed.length ? `Changed the schedule page branding: ${list(changed)}` : "Saved the schedule page branding";
