@@ -59,7 +59,7 @@ export async function setRetainData(id: unknown, retain: unknown): Promise<Actio
 }
 
 /**
- * Expects FormData with `primaryColor`, `accentColor`, an optional `logo`
+ * Expects FormData with `primaryColor`, an optional `logo`
  * file, and `removeLogo` ("true" to clear the current logo).
  */
 export async function saveEventBranding(id: unknown, formData: FormData): Promise<ActionResult<{ id: string }>> {
@@ -72,7 +72,7 @@ export async function saveEventBranding(id: unknown, formData: FormData): Promis
     getDb(),
     parsedId.data,
     {
-      colors: { primaryColor: formData.get("primaryColor") ?? "", accentColor: formData.get("accentColor") ?? "" },
+      colors: { primaryColor: formData.get("primaryColor") ?? "" },
       logo,
       removeLogo: formData.get("removeLogo") === "true",
     },

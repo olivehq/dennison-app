@@ -72,8 +72,8 @@ Allowed list. Each is built from shadcn primitives. Add a new one only when it h
 - `DataTable`: the TanStack wrapper with search, column filters, pagination. `rowClassName` mutes rows such as withdrawn people.
 - `RankBadge`: `B:4`, `S:-`, top-10 highlight.
 - `AppointmentBlock`: the timeline block, business or hotel tone, match strength treatment.
-- `PersonSchedule`: a person's nine slots with OPEN gaps. Used in the detail sheet and the participant page. `accentColor` draws the event's accent as a rail on booked rows.
-- `BrandedHeader`: the top of the participant page (event, date, name, desk, logo, primary color). Used by `/s/[token]` and the branding preview on the settings page.
+- `PersonSchedule`: a person's nine slots with OPEN gaps. Used in the schedule detail sheet. The participant page has its own table, `ScheduleTable` in `src/app/s/[token]/` (D197).
+- `BrandedHeader`: the band at the top of the participant page (event, date, name, desk, logo on a white chip). The band takes the main color, with black or white text for contrast. Used by `/s/[token]` and, with `compact`, by the branding preview on the settings page (D197).
 - `SlotFilter`: free-in-slot select.
 - `ConfirmDialog`: AlertDialog with a typed confirmation for destructive actions.
 - `BrandMark`: the slot-ruler tile beside the product name. Used by the sign-in layout and the admin sidebar.

@@ -105,7 +105,6 @@ export function BrandingCard({
   }, [newLogoSrc]);
 
   const primary = useWatch({ control, name: "primaryColor" });
-  const accent = useWatch({ control, name: "accentColor" });
   const previewLogo = file ? newLogoSrc : removeLogo ? null : logoSrc;
   const dirty = formState.isDirty || file !== null || removeLogo;
 
@@ -130,20 +129,19 @@ export function BrandingCard({
     startTransition(async () => {
       const data = new FormData();
       data.set("primaryColor", values.primaryColor);
-      data.set("accentColor", values.accentColor);
       if (file) data.set("logo", file);
       data.set("removeLogo", String(removeLogo));
       const result = await saveEventBranding(eventId, data);
       if (!result.ok) {
         for (const [key, messages] of Object.entries(result.error.fieldErrors ?? {})) {
           if (key === "logo") setFileError(messages[0]);
-          else if (key === "primaryColor" || key === "accentColor") setError(key, { message: messages[0] });
+          else if (key === "primaryColor") setError(key, { message: messages[0] });
         }
         toast.error(result.error.message);
         return;
       }
       // The saved page remounts this card (its key is the saved branding), clearing the form.
-      const cleared = !values.primaryColor && !values.accentColor && !previewLogo;
+      const cleared = !values.primaryColor && !previewLogo;
       toast.success(
         cleared
           ? "Branding removed. Participant schedule pages show the plain header."
@@ -159,8 +157,8 @@ export function BrandingCard({
       <CardHeader>
         <CardTitle>Schedule page branding</CardTitle>
         <CardDescription>
-          Add a logo and one or two colors. Participants and suppliers see them at the top of the schedule page they
-          open from their link.
+          Add a logo and a color. Participants and suppliers see them at the top of the schedule page they open from
+          their link.
         </CardDescription>
       </CardHeader>
       <form onSubmit={submit}>
@@ -181,7 +179,10 @@ export function BrandingCard({
                 {fileError ? (
                   <FieldError>{fileError}</FieldError>
                 ) : (
-                  <FieldDescription>PNG, JPEG, WebP, or SVG, up to 300 KB. A wide logo on a plain background works best.</FieldDescription>
+                  <FieldDescription>
+                    PNG, JPEG, WebP, or SVG, up to 300 KB. Use your normal logo for a white background. A wide logo, about
+                    600 by 150 pixels, works best.
+                  </FieldDescription>
                 )}
                 {logoSrc && !file ? (
                   <Button
@@ -203,22 +204,7 @@ export function BrandingCard({
                   <ColorField
                     id="primaryColor"
                     label="Main color"
-                    hint="Colors the top border and background tint of the header, and the supplier's desk badge."
-                    value={field.value}
-                    onChange={field.onChange}
-                    error={fieldState.error?.message}
-                    disabled={disabled}
-                  />
-                )}
-              />
-              <Controller
-                control={control}
-                name="accentColor"
-                render={({ field, fieldState }) => (
-                  <ColorField
-                    id="accentColor"
-                    label="Accent color (optional)"
-                    hint="Colors the edge of each booked appointment. Left empty, it uses the main color."
+                    hint="Colors the header band at the top of the schedule page. Text on it turns black or white to stay readable."
                     value={field.value}
                     onChange={field.onChange}
                     error={fieldState.error?.message}
@@ -229,8 +215,9 @@ export function BrandingCard({
             </FieldGroup>
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">Preview</p>
-              <div className="flex flex-col gap-3 rounded-md border bg-background p-4">
+              <div className="overflow-hidden rounded-md border">
                 <BrandedHeader
+                  compact
                   eventName={eventName}
                   dateLabel={dateLabel}
                   name="Sample Supplier"
@@ -238,12 +225,6 @@ export function BrandingCard({
                   primaryColor={HEX.test(primary) ? primary : null}
                   logoSrc={previewLogo}
                 />
-                <div
-                  className="rounded-md border border-l-4 bg-card px-3 py-2 text-sm font-bold"
-                  style={HEX.test(accent || primary) ? { borderLeftColor: accent || primary } : undefined}
-                >
-                  Sample Association - Meeting Planner
-                </div>
               </div>
             </div>
           </div>

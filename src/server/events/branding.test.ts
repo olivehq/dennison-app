@@ -30,7 +30,7 @@ async function makeEvent() {
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>');
-const colors = { primaryColor: "#1D4ED8", accentColor: "#f59e0b" };
+const colors = { primaryColor: "#1D4ED8" };
 
 describe("saveBranding", () => {
   it("saves lowercase colors and a logo, and audits the change", async () => {
@@ -39,7 +39,7 @@ describe("saveBranding", () => {
     expect(result.ok).toBe(true);
 
     const branding = (await getEvent(id, db))!.branding!;
-    expect(branding).toMatchObject({ primaryColor: "#1d4ed8", accentColor: "#f59e0b", logoType: "image/png" });
+    expect(branding).toMatchObject({ primaryColor: "#1d4ed8", logoType: "image/png" });
     expect((await getFile(branding.logoKey!))?.contentType).toBe("image/png");
     const url = logoUrl(id, branding)!;
     expect(url).toMatch(new RegExp(`^/api/branding/${id}/logo-[0-9a-f-]{36}\\.png$`));
@@ -51,17 +51,30 @@ describe("saveBranding", () => {
     expect(await loadCurrentLogo(id, "../../imports/x.csv", db)).toBeNull();
 
     const audit = (await listAudit({ eventId: id }, db)).rows.find((r) => r.action === "event.branding")!;
-    expect(describeAudit(audit, new Map())).toBe("Changed the schedule page branding: colors and logo");
+    expect(describeAudit(audit, new Map())).toBe("Changed the schedule page branding: color and logo");
   });
 
-  it("keeps the logo when only colors change, and clears a color sent empty", async () => {
+  it("keeps the logo when only the color changes, and clears a color sent empty", async () => {
     const id = await makeEvent();
     await saveBranding(db, id, { colors, logo: PNG }, ACTOR);
     const first = (await getEvent(id, db))!.branding!;
 
-    await saveBranding(db, id, { colors: { primaryColor: "#000000", accentColor: "" } }, ACTOR);
+    await saveBranding(db, id, { colors: { primaryColor: "#000000" } }, ACTOR);
     const second = (await getEvent(id, db))!.branding!;
-    expect(second).toMatchObject({ primaryColor: "#000000", accentColor: null, logoKey: first.logoKey });
+    expect(second).toMatchObject({ primaryColor: "#000000", logoKey: first.logoKey });
+
+    await saveBranding(db, id, { colors: { primaryColor: "" } }, ACTOR);
+    expect((await getEvent(id, db))!.branding).toMatchObject({ primaryColor: null, logoKey: first.logoKey });
+  });
+
+  it("drops an accent color saved before it was removed (D197)", async () => {
+    const id = await makeEvent();
+    const legacy = { primaryColor: "#1d4ed8", accentColor: "#f59e0b", logoKey: null, logoType: null };
+    await db.update(events).set({ branding: legacy }).where(eq(events.id, id));
+    expect((await saveBranding(db, id, { colors }, ACTOR)).ok).toBe(true);
+    const saved = (await getEvent(id, db))!.branding!;
+    expect(saved.primaryColor).toBe("#1d4ed8");
+    expect("accentColor" in saved).toBe(false);
   });
 
   it("deletes the old logo file when it is replaced or removed", async () => {
@@ -100,7 +113,7 @@ describe("saveBranding", () => {
 
   it("rejects bad colors, other file types, and big files without changing anything", async () => {
     const id = await makeEvent();
-    const badColor = await saveBranding(db, id, { colors: { primaryColor: "blue", accentColor: "" } }, ACTOR);
+    const badColor = await saveBranding(db, id, { colors: { primaryColor: "blue" } }, ACTOR);
     expect(!badColor.ok && badColor.error.fieldErrors?.primaryColor).toBeDefined();
 
     const html = await saveBranding(db, id, { colors, logo: Buffer.from("<html></html>") }, ACTOR);
@@ -118,7 +131,7 @@ describe("saveBranding", () => {
     expect((await saveBranding(db, id, { colors }, ACTOR)).ok).toBe(true);
 
     await db.update(events).set({ status: "archived" }).where(eq(events.id, id));
-    const archived = await saveBranding(db, id, { colors: { primaryColor: "", accentColor: "" } }, ACTOR);
+    const archived = await saveBranding(db, id, { colors: { primaryColor: "" } }, ACTOR);
     expect(!archived.ok && archived.error.code).toBe("locked");
     expect((await getEvent(id, db))!.branding?.primaryColor).toBe("#1d4ed8");
   });
@@ -139,6 +152,6 @@ describe("branding on other paths", () => {
     const seeded = await seedEvent(db);
     await saveBranding(db, seeded.eventId, { colors, logo: PNG }, seeded.adminId);
     const schedule = await loadPersonSchedule(db, seeded.eventId, { type: "buyer", id: seeded.buyers[0].id });
-    expect(schedule?.event.branding).toMatchObject({ primaryColor: "#1d4ed8", accentColor: "#f59e0b" });
+    expect(schedule?.event.branding).toMatchObject({ primaryColor: "#1d4ed8" });
   });
 });

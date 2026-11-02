@@ -2,12 +2,11 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
 import { BrandedHeader } from "@/components/app/branded-header";
-import { PersonSchedule, type PersonScheduleSlot } from "@/components/app/person-schedule";
-import { Separator } from "@/components/ui/separator";
 import { getDb } from "@/db/client";
 import { formatEventDate } from "@/lib/time";
 import { logoUrl } from "@/server/events/branding";
 import { loadParticipantView } from "@/server/exports/participant";
+import { ScheduleTable, type ScheduleRow } from "./schedule-table";
 
 // Every request re-checks the token and reads the live schedule. Dynamic
 // pages are served with `Cache-Control: private, no-cache, no-store, ...`.
@@ -21,7 +20,7 @@ export const metadata: Metadata = {
 };
 
 function Footer() {
-  return <footer className="pt-2 text-center text-xs text-muted-foreground">Sent by Dennison &amp; Associates</footer>;
+  return <footer className="text-center text-xs text-muted-foreground sm:text-left">Sent by Dennison &amp; Associates</footer>;
 }
 
 export default async function ParticipantSchedulePage({ params }: { params: Promise<{ token: string }> }) {
@@ -34,7 +33,7 @@ export default async function ParticipantSchedulePage({ params }: { params: Prom
   const { event, person, slots } = view.schedule;
   const isSupplier = person.type === "supplier";
   // Built field by field so nothing beyond name and desk can reach the page (no ranks, scope 2.6).
-  const rows: PersonScheduleSlot[] = slots.map((s) => ({
+  const rows: ScheduleRow[] = slots.map((s) => ({
     slot: s.slot,
     start: s.start,
     end: s.end,
@@ -46,36 +45,32 @@ export default async function ParticipantSchedulePage({ params }: { params: Prom
         }
       : null,
   }));
-  const primaryColor = event.branding?.primaryColor ?? null;
-  const accentColor = event.branding?.accentColor ?? primaryColor;
-  const logoSrc = logoUrl(event.id, event.branding);
   const booked = rows.filter((r) => r.appointment).length;
 
   return (
-    <main className="mx-auto flex w-full max-w-[480px] flex-col gap-6 px-4 py-8 print:max-w-none print:px-0 print:py-0">
+    <>
       <BrandedHeader
         eventName={event.name}
         dateLabel={formatEventDate(event.eventDate, event.timezone)}
         name={person.name}
         desk={isSupplier ? person.desk : null}
-        primaryColor={primaryColor}
-        logoSrc={logoSrc}
+        primaryColor={event.branding?.primaryColor ?? null}
+        logoSrc={logoUrl(event.id, event.branding)}
       />
-      <Separator />
-      <section aria-labelledby="appointments-heading" className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 id="appointments-heading" className="text-base font-bold">
-            {booked} of {rows.length} slots booked
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {isSupplier
-              ? "Your appointments, all at your desk."
-              : "Your appointments, each at the supplier's desk."}
-          </p>
-        </div>
-        <PersonSchedule slots={rows} personType={person.type} showRanks={false} accentColor={accentColor} className="print:gap-1" />
-      </section>
-      <Footer />
-    </main>
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6 sm:px-10 sm:py-10 print:max-w-none print:px-0 print:py-4">
+        <section aria-labelledby="appointments-heading" className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+            <h2 id="appointments-heading" className="font-display text-xl font-bold">
+              {booked} of {rows.length} slots booked
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {isSupplier ? "Your appointments, all at your desk." : "Your appointments, each at the supplier's desk."}
+            </p>
+          </div>
+          <ScheduleTable rows={rows} showDesk={!isSupplier} />
+        </section>
+        <Footer />
+      </main>
+    </>
   );
 }

@@ -150,7 +150,7 @@ An ESLint `no-restricted-imports` rule keeps `src/engine` free of Next.js and da
   - `RankBadge` (`B:4` / `S:-`, top-10 highlight)
   - `AppointmentBlock` (supplier, buyer, ranks, business/hotel tone)
   - `SlotFilter` (free-in-slot select)
-  - `PersonSchedule` (the 9-slot detail rail, used in the detail pane and on the participant page)
+  - `PersonSchedule` (the 9-slot detail rail, used in the detail pane)
   - `FileDropzone`
   - `ConfirmDialog`
 - A new composite needs two call sites before it exists. Until then it stays inline.
@@ -184,7 +184,7 @@ Postgres, Drizzle schema. Every row scoped to an `event_id` except `admins`.
 | Table | Purpose | Key columns |
 |---|---|---|
 | `admins`, `sessions`, `accounts`, `verifications` | Better Auth tables | admins also get invited_by, disabled_at |
-| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`), branding jsonb (primary and accent color, logo storage key and type; null until set) |
+| `events` | One per show | name, event_date, timezone (IANA, e.g. `America/Los_Angeles`), status (`draft`, `imported`, `matched`, `locked`, `sent`, `archived`), branding jsonb (main color, logo storage key and type; null until set) |
 | `event_settings` | Per-event tunables | slot_count, slots jsonb `[{n, start, end}]`, supplier_target (9), buyer_min (7), buyer_max (9), buyer_ideal (8), mutual_top_n (10), hotel_rank_cutoff (27), biztech_opt_in_rule |
 | `participants` | Buyers | email (unique per event), first_name, last_name, organization, title, display_name, biztech_opt_in bool, status (`active`, `withdrawn`) |
 | `suppliers` | Suppliers | name, type (`business`, `hotel`), desk_number, desk_override bool, admin_contact (email, name), attendee_contact (email, name), status (`active`, `withdrawn`) |

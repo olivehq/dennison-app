@@ -1,9 +1,12 @@
 import { z } from "zod";
 
-/** An event's look on the participant schedule page. Stored in `events.branding`. */
+/**
+ * An event's look on the participant schedule page. Stored in `events.branding`.
+ * Rows saved before D197 may still carry an `accentColor` key. Nothing reads it,
+ * and the next save drops it.
+ */
 export type EventBranding = {
   primaryColor: string | null;
-  accentColor: string | null;
   /** Storage key of the uploaded logo. */
   logoKey: string | null;
   logoType: LogoType | null;
@@ -24,10 +27,9 @@ const colorField = z
   .refine((value) => value === "" || HEX_COLOR.test(value), "Use a six-digit color like #1d4ed8, or leave it empty.")
   .transform((value) => value.toLowerCase());
 
-/** The two colors as the settings form holds them. An empty string means none. */
+/** The color as the settings form holds it. An empty string means none. */
 export const brandingColorsSchema = z.object({
   primaryColor: colorField,
-  accentColor: colorField,
 });
 
 export type BrandingColors = z.infer<typeof brandingColorsSchema>;

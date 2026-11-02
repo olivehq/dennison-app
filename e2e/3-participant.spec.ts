@@ -35,6 +35,6 @@ test("lock the demo event, then a buyer's link shows nine slots", async ({ page 
 
   await page.goto(new URL(buyer!.link).pathname);
   await expect(page.getByText("Your appointments", { exact: false })).toBeVisible();
-  await expect(page.locator("[data-slot='person-schedule'] > li")).toHaveCount(9);
+  await expect(page.locator("tbody tr")).toHaveCount(9);
   await expect(page.getByText(/rank/i)).toHaveCount(0);
 });

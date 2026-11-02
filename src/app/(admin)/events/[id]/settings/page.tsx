@@ -53,7 +53,7 @@ export default async function EventSettingsPage({
           eventId={event.id}
           eventName={event.name}
           dateLabel={formatEventDate(event.eventDate, event.timezone)}
-          colors={{ primaryColor: event.branding?.primaryColor ?? "", accentColor: event.branding?.accentColor ?? "" }}
+          colors={{ primaryColor: event.branding?.primaryColor ?? "" }}
           logoSrc={logoUrl(event.id, event.branding)}
           archived={archived}
         />
