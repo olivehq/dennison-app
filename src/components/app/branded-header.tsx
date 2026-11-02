@@ -43,10 +43,11 @@ export function BrandedHeader({
       <div
         className={cn(
           "mx-auto flex items-center",
-          compact ? "gap-4 px-4 py-4" : "max-w-5xl gap-6 px-4 py-6 sm:gap-10 sm:px-10 sm:py-10",
+          // Below 768px the logo sits on its own row above the text, so a long name gets the full width.
+          compact ? "gap-4 px-4 py-4" : "max-w-5xl flex-col items-start gap-5 px-4 py-5 sm:px-10 sm:py-8 md:flex-row md:items-center md:gap-10 md:py-10",
         )}
       >
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className={cn("flex min-w-0 flex-col gap-2", compact ? "flex-1" : "w-full md:w-auto md:flex-1")}>
           <p className={cn("font-display font-bold tracking-wide uppercase opacity-80", compact ? "text-xs" : "text-xs sm:text-sm")}>
             {eventName} <span aria-hidden="true">·</span> {dateLabel}
           </p>
@@ -66,14 +67,14 @@ export function BrandedHeader({
           <div
             className={cn(
               "flex shrink-0 items-center justify-center rounded-xl bg-white shadow-sm",
-              compact ? "h-16 max-w-[45%] min-w-20 px-3" : "h-20 max-w-[45%] min-w-24 px-4 sm:h-28 sm:max-w-80 sm:min-w-36 sm:px-6",
+              compact ? "h-16 max-w-[45%] min-w-20 px-3" : "order-first h-14 max-w-full px-4 md:order-last md:h-28 md:max-w-80 md:min-w-36 md:px-6",
             )}
           >
             {/* eslint-disable-next-line @next/next/no-img-element -- served cached by our own route; next/image adds nothing */}
             <img
               src={logoSrc}
               alt={`${eventName} logo`}
-              className={cn("max-w-full object-contain", compact ? "max-h-10" : "max-h-12 sm:max-h-20")}
+              className={cn("max-w-full object-contain", compact ? "max-h-10" : "max-h-8 md:max-h-20")}
             />
           </div>
         ) : null}
