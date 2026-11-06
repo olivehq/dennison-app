@@ -174,6 +174,56 @@ describe("campaign fields", () => {
   });
 });
 
+describe("sending domain", () => {
+  const DOMAIN = "myassociationswest.org";
+
+  it("saves only a From email on the sending domain", async () => {
+    const draft = await newDraft();
+    const offDomain = await updateCampaign(
+      db,
+      { campaignId: draft.id, adminId: seeded.adminId, fields: fieldsOf(draft, { fromEmail: "laura@gmail.com" }) },
+      { senderDomain: DOMAIN },
+    );
+    expect(!offDomain.ok && offDomain.error).toMatchObject({
+      code: "validation",
+      fieldErrors: { fromEmail: [`Use an address on ${DOMAIN}.`] },
+    });
+    // A subdomain is a different domain to Resend, so it is refused too.
+    const subdomain = await updateCampaign(
+      db,
+      { campaignId: draft.id, adminId: seeded.adminId, fields: fieldsOf(draft, { fromEmail: `laura@mail.${DOMAIN}` }) },
+      { senderDomain: DOMAIN },
+    );
+    expect(subdomain.ok).toBe(false);
+    const [unchanged] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, draft.id));
+    expect(unchanged.fromEmail).toBe(draft.fromEmail);
+
+    const onDomain = await updateCampaign(
+      db,
+      { campaignId: draft.id, adminId: seeded.adminId, fields: fieldsOf(draft, { fromEmail: "Laura@MyAssociationsWest.org" }) },
+      { senderDomain: DOMAIN },
+    );
+    expect(onDomain.ok && onDomain.data.fromEmail).toBe(`laura@${DOMAIN}`);
+  });
+
+  it("accepts any address while no sending domain is set", async () => {
+    const draft = await newDraft();
+    const unset = await updateCampaign(
+      db,
+      { campaignId: draft.id, adminId: seeded.adminId, fields: fieldsOf(draft, { fromEmail: "laura@gmail.com" }) },
+      { senderDomain: null },
+    );
+    expect(unset.ok).toBe(true);
+    // The test environment's EMAIL_FROM is an example.com placeholder, so the default is the same.
+    const fallback = await updateCampaign(db, {
+      campaignId: draft.id,
+      adminId: seeded.adminId,
+      fields: fieldsOf(draft, { fromEmail: "other@gmail.com" }),
+    });
+    expect(fallback.ok).toBe(true);
+  });
+});
+
 describe("before lock", () => {
   it("creates a draft with defaults and refuses to send it", async () => {
     const draft = await newDraft();
@@ -532,11 +582,12 @@ describe("sending", () => {
 
   it("tells the page what production needs", () => {
     vi.mocked(isEmailConfigured).mockReturnValue(false);
-    expect(emailSetup(true)).toEqual({ configured: false, refuseExampleSender: true });
+    // The test environment's EMAIL_FROM is the example.com default, so no sending domain is required.
+    expect(emailSetup(true)).toEqual({ configured: false, refuseExampleSender: true, senderDomain: null });
     // Development uses the logger adapter on purpose.
-    expect(emailSetup(false)).toEqual({ configured: true, refuseExampleSender: false });
+    expect(emailSetup(false)).toEqual({ configured: true, refuseExampleSender: false, senderDomain: null });
     vi.mocked(isEmailConfigured).mockReturnValue(true);
-    expect(emailSetup(true)).toEqual({ configured: true, refuseExampleSender: true });
+    expect(emailSetup(true)).toEqual({ configured: true, refuseExampleSender: true, senderDomain: null });
     vi.mocked(isEmailConfigured).mockReset();
   });
 

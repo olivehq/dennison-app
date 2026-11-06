@@ -312,7 +312,7 @@ Added:
 
 ### 2.7 Email notifications
 
-- Campaign editor: from name, from email (D&A sending domain), reply-to address (a D&A inbox, required, so participant replies reach a person), subject, Tiptap HTML body. Merge fields inserted as chips: `{{first_name}}`, `{{last_name}}`, `{{organization}}`, `{{supplier_name}}`, `{{desk}}`, `{{schedule_link}}`, `{{event_name}}`, `{{event_date}}`.
+- Campaign editor: from name, from email (on the sending domain, the domain of `EMAIL_FROM`; D198), reply-to address (a D&A inbox, required, so participant replies reach a person), subject, Tiptap HTML body. Merge fields inserted as chips: `{{first_name}}`, `{{last_name}}`, `{{organization}}`, `{{supplier_name}}`, `{{desk}}`, `{{schedule_link}}`, `{{event_name}}`, `{{event_date}}`.
 - Preview renders for a chosen recipient. Test send to an admin address.
 - Audience: all, buyers only, suppliers only, or selected rows from a Data Table.
 - Send uses Resend's batch API from a Server Action and writes one `email_messages` row per recipient. About 130 recipients fits in two batch calls. No queue system.

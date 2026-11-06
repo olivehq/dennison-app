@@ -31,6 +31,7 @@ import {
   type CampaignFieldsInput,
   type EmailAudience,
 } from "@/lib/schemas/email";
+import { offDomainMessage } from "@/lib/email/sender-domain";
 import type { EmailSetup } from "@/server/email/campaigns";
 import { previewCampaignAction, sendCampaignAction, sendTestAction, updateCampaignAction } from "@/server/email/actions";
 import { findUnknownFields } from "@/server/email/merge";
@@ -249,7 +250,9 @@ export function CampaignEditor({
                   <FieldError errors={[errors.fromEmail]} />
                 </Field>
               </div>
-              <FieldDescription className="-mt-4">The from address must be on the D&amp;A sending domain.</FieldDescription>
+              {emailSetup.senderDomain ? (
+                <FieldDescription className="-mt-4">{offDomainMessage(emailSetup.senderDomain)}</FieldDescription>
+              ) : null}
               <Field data-invalid={!!errors.replyTo}>
                 <FieldLabel htmlFor="campaign-reply-to">Reply-to</FieldLabel>
                 <Input
