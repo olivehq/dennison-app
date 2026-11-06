@@ -1,5 +1,6 @@
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
+import { isOffDomain, offDomainSendReason } from "@/lib/email/sender-domain";
 import type { EmailAudience, EmailCampaignKind } from "@/lib/schemas/email";
 import type { EmailSetup } from "@/server/email/campaigns";
 import { EMAIL_NOT_CONFIGURED_MESSAGE, isExampleAddress } from "@/server/email/merge";
@@ -99,6 +100,9 @@ export const EXAMPLE_SENDER_RETRY_REASON =
 export function emailSetupReason(setup: EmailSetup, fromEmail: string, { retry = false } = {}): string | null {
   if (!setup.configured) return EMAIL_NOT_CONFIGURED_MESSAGE;
   if (setup.refuseExampleSender && isExampleAddress(fromEmail)) return retry ? EXAMPLE_SENDER_RETRY_REASON : EXAMPLE_SENDER_REASON;
+  if (setup.refuseExampleSender && setup.senderDomain && isOffDomain(fromEmail, setup.senderDomain)) {
+    return offDomainSendReason(setup.senderDomain, { retry });
+  }
   return null;
 }
 

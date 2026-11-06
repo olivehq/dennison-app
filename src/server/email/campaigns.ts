@@ -3,6 +3,7 @@ import type { Db } from "@/db/client";
 import { admins, emailCampaigns, emailMessages, events, type EmailCampaign, type EmailCampaignKind, type Event } from "@/db/schema";
 import { isEmailConfigured, sendEmail } from "@/lib/email/adapter";
 import { sanitizeEmailHtml } from "@/lib/email/sanitize-html";
+import { allowedSenderDomain, isOffDomain, offDomainMessage, offDomainSendReason } from "@/lib/email/sender-domain";
 import { env } from "@/lib/env";
 import { fail, fromZod, ok, type ActionResult } from "@/lib/errors";
 import { eventAllows } from "@/lib/event-gates";
@@ -65,10 +66,17 @@ export type EmailSetup = {
   configured: boolean;
   /** True in production: a From address on example.com is refused. */
   refuseExampleSender: boolean;
+  /** The one domain a campaign's From email must be on (the domain of EMAIL_FROM), or null while EMAIL_FROM is a placeholder. */
+  senderDomain: string | null;
 };
 
+/** The domain every campaign sends from, or null until EMAIL_FROM is set to a real address. */
+export function senderDomain(): string | null {
+  return allowedSenderDomain(env.EMAIL_FROM);
+}
+
 export function emailSetup(isProduction: boolean = env.isProduction): EmailSetup {
-  return { configured: !emailNotConfigured(isProduction), refuseExampleSender: isProduction };
+  return { configured: !emailNotConfigured(isProduction), refuseExampleSender: isProduction, senderDomain: senderDomain() };
 }
 
 /** A sent campaign can't be edited, so a retry from example.com means sending a copy. */
@@ -79,6 +87,8 @@ export const RETRY_EXAMPLE_SENDER_MESSAGE =
 function sendProblem(isProduction: boolean, fromEmail: string, { retry = false } = {}): string | null {
   if (emailNotConfigured(isProduction)) return EMAIL_NOT_CONFIGURED_MESSAGE;
   if (isProduction && isExampleAddress(fromEmail)) return retry ? RETRY_EXAMPLE_SENDER_MESSAGE : SEND_EXAMPLE_SENDER_MESSAGE;
+  const domain = senderDomain();
+  if (isProduction && domain && isOffDomain(fromEmail, domain)) return `Nothing was sent. ${offDomainSendReason(domain, { retry })}`;
   return null;
 }
 
@@ -90,6 +100,8 @@ function testSendProblem(isProduction: boolean, fromEmail: string): string | nul
   if (!isProduction) return null;
   if (!isEmailConfigured()) return TEST_NO_API_KEY_MESSAGE;
   if (isExampleAddress(fromEmail)) return TEST_EXAMPLE_SENDER_MESSAGE;
+  const domain = senderDomain();
+  if (domain && isOffDomain(fromEmail, domain)) return `The test email was not sent. ${offDomainSendReason(domain)}`;
   return null;
 }
 
@@ -205,13 +217,23 @@ export async function createCampaign(
   });
 }
 
-/** Saves the editor. Only drafts can change; a sent campaign is a record. */
+/**
+ * Saves the editor. Only drafts can change; a sent campaign is a record. The
+ * From email must be on the sending domain (the domain of EMAIL_FROM) once
+ * that is set, so a typo fails here and not after the Send click. Tests pass
+ * `senderDomain` to set it.
+ */
 export async function updateCampaign(
   db: Db,
   input: { campaignId: string; adminId: string; fields: CampaignFieldsInput },
+  options: { senderDomain?: string | null } = {},
 ): Promise<ActionResult<EmailCampaign>> {
   const parsed = campaignFieldsSchema.safeParse(input.fields);
   if (!parsed.success) return fromZod(parsed.error);
+  const domain = options.senderDomain === undefined ? senderDomain() : options.senderDomain;
+  if (domain && isOffDomain(parsed.data.fromEmail, domain)) {
+    return fail("validation", "Check the highlighted fields.", { fromEmail: [offDomainMessage(domain)] });
+  }
   const campaign = await loadCampaign(db, input.campaignId);
   if (!campaign) return fail("not_found", "That campaign no longer exists.");
   const archived = await refuseArchived(db, campaign.eventId);
